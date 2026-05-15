@@ -2,6 +2,7 @@ databases:
   - name: park4night-db
     databaseName: park4night
     user: park4night_user
+    plan: free
 
 services:
   # 1. Backend Web Service
