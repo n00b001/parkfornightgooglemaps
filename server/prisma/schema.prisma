@@ -1,0 +1,80 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String     @id @default(uuid())
+  googleId      String     @unique
+  email         String     @unique
+  name          String?
+  avatar        String?
+  favorites     Favorite[]
+  reviews       Review[]
+  visits        Visit[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+}
+
+model Place {
+  id          Int        @id // Using Park4night's ID
+  name        String
+  latitude    Float
+  longitude   Float
+  type        String
+  description String?
+  address     String?
+  rating      Float?
+  favorites   Favorite[]
+  reviews     Review[]
+  visits      Visit[]
+  rawData     Json?      // Store full Park4night response for caching
+  lastFetched DateTime   @default(now())
+}
+
+model Favorite {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  place     Place    @relation(fields: [placeId], references: [id])
+  placeId   Int
+  createdAt DateTime @default(now())
+
+  @@unique([userId, placeId])
+}
+
+model Review {
+  id        String   @id @default(uuid())
+  content   String
+  rating    Int
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  place     Place    @relation(fields: [placeId], references: [id])
+  placeId   Int
+  createdAt DateTime @default(now())
+}
+
+model Visit {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  place     Place    @relation(fields: [placeId], references: [id])
+  placeId   Int
+  visitedAt DateTime @default(now())
+
+  @@unique([userId, placeId])
+}
+
+model Session {
+  id        String   @id
+  sid       String   @unique
+  data      String
+  expiresAt DateTime
+}
