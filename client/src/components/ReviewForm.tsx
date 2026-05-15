@@ -1,61 +1,39 @@
 import React, { useState } from 'react';
-import { Star, Send } from 'lucide-react';
+import { X, Star, Send } from 'lucide-react';
 import axios from 'axios';
 
-interface ReviewFormProps {
-  placeId: number;
-  onSuccess: () => void;
-}
-
-const ReviewForm: React.FC<ReviewFormProps> = ({ placeId, onSuccess }) => {
+const ReviewForm: React.FC<any> = ({ placeId, onSuccess }) => {
   const [content, setContent] = useState('');
   const [rating, setRating] = useState(5);
-  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSubmitting(true);
     try {
       await axios.post('/api/reviews', { placeId, content, rating });
       setContent('');
       onSuccess();
     } catch (err) {
-      console.error('Failed to submit review', err);
-    } finally {
-      setIsSubmitting(false);
+      console.error(err);
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} className="mt-6 p-4 bg-gray-50 rounded-2xl">
-      <h3 className="font-bold mb-3">Leave a review</h3>
-      <div className="flex gap-1 mb-3">
-        {[1, 2, 3, 4, 5].map((star) => (
-          <button
-            key={star}
-            type="button"
-            onClick={() => setRating(star)}
-            className={`${rating >= star ? 'text-yellow-400' : 'text-gray-300'}`}
-          >
-            <Star size={24} fill={rating >= star ? 'currentColor' : 'none'} />
+    <form onSubmit={handleSubmit} className="mt-4 p-4 bg-gray-50 rounded-xl">
+      <div className="flex gap-1 mb-2">
+        {[1,2,3,4,5].map(s => (
+          <button key={s} type="button" onClick={() => setRating(s)}>
+            <Star size={16} fill={rating >= s ? 'orange' : 'none'} />
           </button>
         ))}
       </div>
       <textarea
-        className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-        placeholder="Share your experience..."
-        rows={3}
+        className="w-full p-2 border rounded-lg text-sm"
         value={content}
-        onChange={(e) => setContent(e.target.value)}
-        required
+        onChange={e => setContent(e.target.value)}
+        placeholder="Write a review..."
       />
-      <button
-        type="submit"
-        disabled={isSubmitting}
-        className="mt-3 w-full bg-blue-600 text-white py-2 rounded-xl font-bold flex items-center justify-center gap-2 disabled:bg-blue-300"
-      >
-        <Send size={18} />
-        {isSubmitting ? 'Posting...' : 'Post Review'}
+      <button type="submit" className="mt-2 w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1">
+        <Send size={14} /> Post
       </button>
     </form>
   );

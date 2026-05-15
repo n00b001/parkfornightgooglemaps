@@ -1,84 +1,34 @@
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
 
-interface FilterModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onApply: (filters: any) => void;
-}
-
-const PLACE_TYPES = [
-  { id: 'p_prive', name: 'Private Parking' },
-  { id: 'p_gratuit', name: 'Free Parking' },
-  { id: 'camping', name: 'Campsite' },
-  { id: 'aire_prive', name: 'Private Area' },
-  { id: 'ferme', name: 'Farm' }
-];
-
-const FilterModal: React.FC<FilterModalProps> = ({ isOpen, onClose, onApply }) => {
-  const [selectedType, setSelectedType] = useState<string | null>(null);
-  const [minRating, setMinRating] = useState<number | null>(null);
+const FilterModal: React.FC<any> = ({ isOpen, onClose, onApply }) => {
+  const [type, setType] = useState('');
+  const [minRating, setMinRating] = useState('');
 
   if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50">
-      <div className="bg-white w-full max-w-lg rounded-t-2xl sm:rounded-2xl shadow-xl overflow-hidden animate-in slide-in-from-bottom duration-300">
-        <div className="flex items-center justify-between p-4 border-b">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md p-6">
+        <div className="flex justify-between mb-4">
           <h2 className="text-xl font-bold">Filters</h2>
-          <button onClick={onClose} className="p-1 rounded-full hover:bg-gray-100">
-            <X size={24} />
-          </button>
+          <button onClick={onClose}><X size={24} /></button>
         </div>
-
-        <div className="p-6 space-y-6">
+        <div className="space-y-4 mb-6">
           <div>
-            <h3 className="font-semibold mb-3">Place Type</h3>
-            <div className="flex flex-wrap gap-2">
-              {PLACE_TYPES.map(type => (
-                <button
-                  key={type.id}
-                  onClick={() => setSelectedType(selectedType === type.id ? null : type.id)}
-                  className={`px-4 py-2 border rounded-full text-sm transition-colors ${
-                    selectedType === type.id
-                    ? 'bg-blue-600 border-blue-600 text-white'
-                    : 'hover:bg-blue-50 hover:border-blue-500'
-                  }`}
-                >
-                  {type.name}
-                </button>
-              ))}
-            </div>
+            <label className="block text-sm font-bold mb-1">Type</label>
+            <select className="w-full p-2 border rounded-lg" value={type} onChange={e => setType(e.target.value)}>
+              <option value="">All</option>
+              <option value="p_prive">Private Parking</option>
+              <option value="p_gratuit">Free Parking</option>
+              <option value="camping">Campsite</option>
+            </select>
           </div>
-
           <div>
-            <h3 className="font-semibold mb-3">Minimum Rating</h3>
-            <div className="flex space-x-2">
-              {[3, 4, 4.5].map(rating => (
-                <button
-                  key={rating}
-                  onClick={() => setMinRating(minRating === rating ? null : rating)}
-                  className={`px-4 py-2 border rounded-full text-sm transition-colors ${
-                    minRating === rating
-                    ? 'bg-yellow-400 border-yellow-400 text-white'
-                    : 'hover:bg-yellow-50 hover:border-yellow-500'
-                  }`}
-                >
-                  {rating}+ ⭐
-                </button>
-              ))}
-            </div>
+            <label className="block text-sm font-bold mb-1">Min Rating</label>
+            <input type="number" min="0" max="5" step="0.5" className="w-full p-2 border rounded-lg" value={minRating} onChange={e => setMinRating(e.target.value)} />
           </div>
         </div>
-
-        <div className="p-4 border-t flex space-x-3">
-          <button
-            onClick={() => onApply({ type: selectedType, minRating })}
-            className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-colors"
-          >
-            Apply Filters
-          </button>
-        </div>
+        <button onClick={() => onApply({ type, minRating })} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">Apply</button>
       </div>
     </div>
   );

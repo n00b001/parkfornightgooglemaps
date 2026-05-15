@@ -6,47 +6,32 @@ import SearchBar from './components/SearchBar';
 import FilterModal from './components/FilterModal';
 import PlaceDetails from './components/PlaceDetails';
 import { useGpsTracking } from './hooks/useGpsTracking';
-import { addToGoogleMaps } from './utils/googleMaps';
-import { savePlacesToOffline, getOfflinePlaces } from './services/offlineDb';
 
 const App: React.FC = () => {
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [selectedPlace, setSelectedPlace] = useState<any>(null);
-  const [favorites, setFavorites] = useState<number[]>([]);
   const [user, setUser] = useState<any>(null);
   const [mapCenter, setMapCenter] = useState({ lat: 48.8566, lng: 2.3522 });
   const [filters, setFilters] = useState<any>({});
+  const [favorites, setFavorites] = useState<number[]>([]);
 
-  const { data: places = [], isLoading, refetch } = useQuery({
+  const { data: places = [], refetch } = useQuery({
     queryKey: ['places', mapCenter, filters],
     queryFn: async () => {
-      try {
-        const params = {
-          lat: mapCenter.lat,
-          lng: mapCenter.lng,
-          ...filters
-        };
-        const res = await axios.get('/api/places', { params });
-        const data = res.data;
-        await savePlacesToOffline(data);
-        return data;
-      } catch (err) {
-        console.log('Fetching offline data...');
-        return await getOfflinePlaces();
-      }
+      const res = await axios.get('/api/places', { params: { lat: mapCenter.lat, lng: mapCenter.lng, ...filters } });
+      return res.data;
     }
   });
 
   useGpsTracking(places, !!user);
 
   useEffect(() => {
-    axios.get('/auth/me').then(res => setUser(res.data)).catch(() => setUser(null));
-
-    // Get user location on start
-    navigator.geolocation.getCurrentPosition(
-      (pos) => setMapCenter({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      (err) => console.error(err)
-    );
+    axios.get('/auth/me').then(res => {
+      setUser(res.data);
+      if (res.data) {
+        axios.get('/api/favorites').then(fRes => setFavorites(fRes.data.map((f: any) => f.placeId)));
+      }
+    }).catch(() => setUser(null));
   }, []);
 
   const handleToggleFavorite = async (placeId: number) => {
@@ -54,7 +39,6 @@ const App: React.FC = () => {
       window.location.href = '/auth/google';
       return;
     }
-
     if (favorites.includes(placeId)) {
       await axios.delete(`/api/favorites/${placeId}`);
       setFavorites(favorites.filter(id => id !== placeId));
@@ -66,49 +50,21 @@ const App: React.FC = () => {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-gray-100">
-      <SearchBar
-        onSearch={(query) => {
-          // In a real app, use Geocoding API to get lat/lng from query
-          console.log('Searching for:', query);
-          refetch();
-        }}
-        onOpenFilters={() => setIsFilterOpen(true)}
-      />
-
-      <MapContainer
-        places={places}
-        center={mapCenter}
-        onMarkerClick={(place) => setSelectedPlace(place)}
-      />
-
-      <FilterModal
-        isOpen={isFilterOpen}
-        onClose={() => setIsFilterOpen(false)}
-        onApply={(newFilters) => {
-          setFilters(newFilters);
-          setIsFilterOpen(false);
-        }}
-      />
-
+      <SearchBar onSearch={() => refetch()} onOpenFilters={() => setIsFilterOpen(true)} />
+      <MapContainer places={places} center={mapCenter} onMarkerClick={setSelectedPlace} />
+      <FilterModal isOpen={isFilterOpen} onClose={() => setIsFilterOpen(false)} onApply={setFilters} />
       {selectedPlace && (
         <PlaceDetails
           place={selectedPlace}
-          isFavorite={favorites.includes(selectedPlace.id)}
           isAuthenticated={!!user}
           onClose={() => setSelectedPlace(null)}
-          onToggleFavorite={handleToggleFavorite}
-          onAddToGoogleMaps={addToGoogleMaps}
+          onToggleFavorite={() => handleToggleFavorite(selectedPlace.id)}
+          isFavorite={favorites.includes(selectedPlace.id)}
         />
       )}
-
       {!user && (
         <div className="absolute top-4 right-4 z-10">
-          <a
-            href="/auth/google"
-            className="bg-white px-4 py-2 rounded-full shadow-md font-semibold text-sm hover:bg-gray-50 transition-colors"
-          >
-            Sign in with Google
-          </a>
+          <a href="/auth/google" className="bg-white px-4 py-2 rounded-full shadow-md font-bold text-sm">Sign In</a>
         </div>
       )}
     </div>
