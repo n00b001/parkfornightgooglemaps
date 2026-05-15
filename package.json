@@ -22,7 +22,7 @@
     "offline-first"
   ],
   "author": "n00b001",
-  "devDependencies": {
+  "dependencies": {
     "concurrently": "^8.2.0"
   }
 }

@@ -30,7 +30,7 @@ services:
     name: park4night-client
     runtime: static
     buildCommand: npm install && cd client && npm install && npm run build
-    staticPublishPath: client/dist
+    publishDir: client/dist
     envVars:
       - key: VITE_API_URL
         value: https://park4night-server.onrender.com
