@@ -1,14 +1,42 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Search, SlidersHorizontal } from 'lucide-react';
+import { useJsApiLoader } from '@react-google-maps/api';
 
 const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters }) => {
+  const [query, setQuery] = useState('');
+  const { isLoaded } = useJsApiLoader({
+    id: 'google-map-script',
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '',
+    libraries: ['places']
+  });
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!query || !isLoaded) return;
+
+    const geocoder = new google.maps.Geocoder();
+    geocoder.geocode({ address: query }, (results, status) => {
+      if (status === 'OK' && results && results[0]) {
+        const { lat, lng } = results[0].geometry.location;
+        onSearch({ lat: lat(), lng: lng() });
+      }
+    });
+  };
+
   return (
     <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 w-full max-w-md px-4">
-      <div className="flex items-center bg-white rounded-full shadow-lg overflow-hidden">
-        <div className="pl-4"><Search size={20} /></div>
-        <input className="w-full py-3 px-3 outline-none" placeholder="Search..." />
-        <button onClick={onOpenFilters} className="pr-4"><SlidersHorizontal size={20} /></button>
-      </div>
+      <form onSubmit={handleSearch} className="flex items-center bg-white rounded-full shadow-lg overflow-hidden border border-gray-100">
+        <div className="pl-4 text-gray-400"><Search size={20} /></div>
+        <input
+          className="w-full py-4 px-3 outline-none text-sm"
+          placeholder="Search for a location..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <button type="button" onClick={onOpenFilters} className="pr-4 text-gray-500 hover:text-blue-600 transition-colors">
+          <SlidersHorizontal size={20} />
+        </button>
+      </form>
     </div>
   );
 };
