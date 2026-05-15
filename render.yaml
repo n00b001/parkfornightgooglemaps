@@ -1,0 +1,38 @@
+databases:
+  - name: park4night-db
+    databaseName: park4night
+    user: park4night_user
+
+services:
+  - type: web
+    name: park4night-server
+    runtime: node
+    plan: free
+    buildCommand: npm install && cd server && npm install && npx prisma generate
+    startCommand: cd server && npm start
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: park4night-db
+          property: connectionString
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: CLIENT_URL
+        value: https://park4night-client.onrender.com
+
+  - type: web
+    name: park4night-client
+    runtime: static
+    buildCommand: npm install && cd client && npm install && npm run build
+    publishDir: client/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://park4night-server.onrender.com
+      - key: VITE_GOOGLE_MAPS_API_KEY
+        sync: false
