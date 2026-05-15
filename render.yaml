@@ -6,7 +6,7 @@ databases:
 services:
   - type: web
     name: park4night-server
-    env: node
+    runtime: node
     plan: free
     buildCommand: npm install && cd server && npm install && npx prisma generate
     startCommand: cd server && npm start
@@ -28,7 +28,7 @@ services:
 
   - type: web
     name: park4night-client
-    env: static
+    runtime: static
     buildCommand: npm install && cd client && npm install && npm run build
     staticPublishPath: client/dist
     envVars:
