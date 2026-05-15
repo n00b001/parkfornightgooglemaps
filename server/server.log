@@ -1,0 +1,5 @@
+
+> server@1.0.0 start
+> node src/index.js
+
+Server running on port 5000
