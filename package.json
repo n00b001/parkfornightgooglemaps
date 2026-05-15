@@ -1,0 +1,28 @@
+{
+  "name": "parkfornightgooglemaps",
+  "version": "1.0.0",
+  "description": "A modern PWA for finding and sharing parking spots with Google Maps integration",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install && npm --prefix server install && npm --prefix client install",
+    "dev": "concurrently \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
+    "build": "npm --prefix server run build && npm --prefix client run build",
+    "build:server": "npm --prefix server run build",
+    "build:client": "npm --prefix client run build",
+    "start:server": "npm --prefix server start",
+    "start:client": "npm --prefix client preview",
+    "test": "npm --prefix server test && npm --prefix client test",
+    "lint": "npm --prefix server lint && npm --prefix client lint"
+  },
+  "keywords": [
+    "pwa",
+    "parking",
+    "google-maps",
+    "campsite",
+    "offline-first"
+  ],
+  "author": "n00b001",
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  }
+}
