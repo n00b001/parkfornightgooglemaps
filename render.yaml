@@ -1,8 +1,12 @@
+# Enable Preview Environments for every Pull Request
+previews:
+  generation: automatic
+
 databases:
   - name: park4night-db
     databaseName: park4night
     user: park4night_user
-    plan: free
+    plan: free # Ensures the database starts on the free tier
 
 services:
   # 1. Backend Web Service
@@ -31,9 +35,9 @@ services:
   # 2. Frontend Static Site
   - type: web
     name: park4night-client
-    runtime: static # This defines it as a Static Site
+    runtime: static
     buildCommand: npm install && cd client && npm install && npm run build
-    staticPublishPath: client/dist # REPLACED publishDir with staticPublishPath
+    staticPublishPath: client/dist # FIXED: Correct field name is staticPublishPath
     envVars:
       - key: VITE_API_URL
         value: https://park4night-server.onrender.com
