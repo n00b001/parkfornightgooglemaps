@@ -2,15 +2,15 @@ databases:
   - name: park4night-db
     databaseName: park4night
     user: park4night_user
-    plan: free # Must be free to avoid the $7+ charge
+    plan: free # Keep this to avoid the $7/mo Starter charge
 
 services:
-  # 1. Backend Web Service
+  # 1. Backend Web Service (Node.js)
   - type: web
     name: park4night-server
     runtime: node
-    plan: free
-    pullRequestPreviewsEnabled: true # Moves the setting to the service level
+    plan: free # This is required for Node services to stay free
+    pullRequestPreviewsEnabled: true
     buildCommand: npm install && cd server && npm install && npx prisma generate
     startCommand: cd server && npm start
     envVars:
@@ -29,14 +29,14 @@ services:
       - key: CLIENT_URL
         value: https://park4night-client.onrender.com
 
-  # 2. Frontend Static Site
+  # 2. Frontend Static Site (Vite/React/etc.)
   - type: web
     name: park4night-client
-    runtime: static
-    plan: free
-    pullRequestPreviewsEnabled: true # Static site PR previews are always free
+    runtime: static # This makes it a Static Site
+    # REMOVED 'plan: free' from here because static sites don't use the plan field
+    pullRequestPreviewsEnabled: true
     buildCommand: npm install && cd client && npm install && npm run build
-    staticPublishPath: client/dist # Corrected field name
+    staticPublishPath: client/dist # Correct field for static sites
     envVars:
       - key: VITE_API_URL
         value: https://park4night-server.onrender.com
