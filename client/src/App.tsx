@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import axios from './axiosConfig';
 import { useQuery } from '@tanstack/react-query';
 import MapContainer from './components/MapContainer';
 import SearchBar from './components/SearchBar';
@@ -36,7 +36,7 @@ const App: React.FC = () => {
 
   const handleToggleFavorite = async (placeId: number) => {
     if (!user) {
-      window.location.href = '/auth/google';
+      window.location.href = `${import.meta.env.VITE_API_URL}/auth/google`;
       return;
     }
     if (favorites.includes(placeId)) {
@@ -64,7 +64,7 @@ const App: React.FC = () => {
       )}
       {!user && (
         <div className="absolute top-4 right-4 z-10">
-          <a href="/auth/google" className="bg-white px-4 py-2 rounded-full shadow-md font-bold text-sm">Sign In</a>
+          <a href={`${import.meta.env.VITE_API_URL}/auth/google`} className="bg-white px-4 py-2 rounded-full shadow-md font-bold text-sm">Sign In</a>
         </div>
       )}
     </div>
