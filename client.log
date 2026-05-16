@@ -11,3 +11,19 @@
 11:46:01 PM [vite] hmr update /src/components/MapContainer.tsx, /src/index.css
 11:46:04 PM [vite] hmr update /src/components/SearchBar.tsx, /src/index.css
 11:48:11 PM [vite] page reload public/mask-icon.svg
+11:53:24 PM [vite] hmr update /src/App.tsx, /src/index.css
+11:53:39 PM [vite] hmr update /src/index.css
+11:53:39 PM [vite] page reload dist/assets/index-49a591a2.js
+11:53:39 PM [vite] page reload dist/index.html
+11:53:39 PM [vite] page reload dist/manifest.webmanifest
+11:53:39 PM [vite] page reload dist/registerSW.js
+11:53:39 PM [vite] page reload dist/sw.js
+11:53:39 PM [vite] page reload dist/workbox-9c191d2f.js
+11:53:39 PM [vite] page reload dist/index.html
+11:53:39 PM [vite] page reload dist/manifest.webmanifest
+11:53:39 PM [vite] page reload dist/registerSW.js
+11:53:44 PM [vite] page reload dist/sw.js
+11:56:02 PM [vite] page reload dist/manifest.webmanifest
+11:56:02 PM [vite] page reload dist/index.html
+11:56:02 PM [vite] page reload dist/registerSW.js
+11:56:02 PM [vite] page reload dist/sw.js

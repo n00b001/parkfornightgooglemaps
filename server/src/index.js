@@ -16,10 +16,15 @@ const visitRoutes = require('./routes/visits');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
 let pgPool;
 if (process.env.DATABASE_URL) {
   pgPool = new Pool({
-    connectionString: process.env.DATABASE_URL
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
   });
 }
 
