@@ -1,0 +1,13 @@
+
+> client@1.0.0 dev
+> vite
+
+
+  VITE v4.5.14  ready in 623 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: use --host to expose
+11:45:58 PM [vite] hmr update /src/App.tsx, /src/index.css
+11:46:01 PM [vite] hmr update /src/components/MapContainer.tsx, /src/index.css
+11:46:04 PM [vite] hmr update /src/components/SearchBar.tsx, /src/index.css
+11:48:11 PM [vite] page reload public/mask-icon.svg

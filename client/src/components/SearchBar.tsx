@@ -1,18 +1,12 @@
 import React, { useState } from 'react';
 import { Search, SlidersHorizontal } from 'lucide-react';
-import { useJsApiLoader } from '@react-google-maps/api';
 
 const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters }) => {
   const [query, setQuery] = useState('');
-  const { isLoaded } = useJsApiLoader({
-    id: 'google-map-script',
-    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '',
-    libraries: ['places']
-  });
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query || !isLoaded) return;
+    if (!query) return;
 
     const geocoder = new google.maps.Geocoder();
     geocoder.geocode({ address: query }, (results, status) => {
