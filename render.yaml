@@ -1,3 +1,4 @@
+version: 1
 databases:
   - name: park4night-db
     databaseName: park4night
@@ -11,7 +12,7 @@ services:
     plan: free
     buildCommand: npm install && cd server && npm install && npx prisma generate && npx prisma db push
     startCommand: cd server && npm start
-    pullRequestPreviewsEnabled: yes
+    previewsEnabled: true
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -29,18 +30,18 @@ services:
         fromService:
           type: static
           name: park4night-client
-          property: url
+          property: host
 
   - type: static
     name: park4night-client
     buildCommand: npm install && cd client && npm install && npm run build
     publishDir: client/dist
-    pullRequestPreviewsEnabled: yes
+    previewsEnabled: true
     envVars:
       - key: VITE_API_URL
         fromService:
           type: web
           name: park4night-server
-          property: url
+          property: host
       - key: VITE_GOOGLE_MAPS_API_KEY
         sync: false
