@@ -11,6 +11,7 @@ services:
     plan: free
     buildCommand: npm install && cd server && npm install && npx prisma generate && npx prisma db push
     startCommand: cd server && npm start
+    pullRequestPreviewsEnabled: yes
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -25,14 +26,21 @@ services:
       - key: GOOGLE_CLIENT_SECRET
         sync: false
       - key: CLIENT_URL
-        value: https://park4night-client.onrender.com
+        fromService:
+          type: static
+          name: park4night-client
+          property: url
 
   - type: static
     name: park4night-client
     buildCommand: npm install && cd client && npm install && npm run build
     publishDir: client/dist
+    pullRequestPreviewsEnabled: yes
     envVars:
       - key: VITE_API_URL
-        value: https://park4night-server.onrender.com
+        fromService:
+          type: web
+          name: park4night-server
+          property: url
       - key: VITE_GOOGLE_MAPS_API_KEY
         sync: false
