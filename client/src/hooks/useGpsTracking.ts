@@ -13,7 +13,7 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean) => {
         places.forEach(async (place) => {
           if (visitedRef.current.has(place.id)) return;
           const dist = calculateDistance(latitude, longitude, parseFloat(place.latitude), parseFloat(place.longitude));
-          if (dist < 0.1) {
+          if (dist < 0.1) { // 100 meters
             try {
               visitedRef.current.add(place.id);
               await axios.post('/api/visits', { placeId: place.id });
