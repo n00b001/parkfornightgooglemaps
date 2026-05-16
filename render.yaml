@@ -1,18 +1,18 @@
+version: 1
 databases:
   - name: park4night-db
     databaseName: park4night
     user: park4night_user
-    plan: free # Keep this to avoid the $7/mo Starter charge
+    plan: free
 
 services:
-  # 1. Backend Web Service (Node.js) 
   - type: web
     name: park4night-server
     runtime: node
-    plan: free # This is required for Node services to stay free
-    pullRequestPreviewsEnabled: true
-    buildCommand: npm install && cd server && npm install && npx prisma generate
+    plan: free
+    buildCommand: npm install && cd server && npm install && npx prisma generate && npx prisma db push
     startCommand: cd server && npm start
+    previewsEnabled: true
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -27,18 +27,21 @@ services:
       - key: GOOGLE_CLIENT_SECRET
         sync: false
       - key: CLIENT_URL
-        value: https://park4night-client.onrender.com
+        fromService:
+          type: static
+          name: park4night-client
+          property: host
 
-  # 2. Frontend Static Site (Vite/React/etc.)
-  - type: web
+  - type: static
     name: park4night-client
-    runtime: static # This makes it a Static Site
-    # REMOVED 'plan: free' from here because static sites don't use the plan field
-    pullRequestPreviewsEnabled: true
     buildCommand: npm install && cd client && npm install && npm run build
-    staticPublishPath: client/dist # Correct field for static sites
+    publishDir: client/dist
+    previewsEnabled: true
     envVars:
       - key: VITE_API_URL
-        value: https://park4night-server.onrender.com
+        fromService:
+          type: web
+          name: park4night-server
+          property: host
       - key: VITE_GOOGLE_MAPS_API_KEY
         sync: false
