@@ -24,7 +24,7 @@ if (process.env.DATABASE_URL) {
 }
 
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: (process.env.CLIENT_URL && !process.env.CLIENT_URL.startsWith('http')) ? `https://${process.env.CLIENT_URL}` : (process.env.CLIENT_URL || 'http://localhost:5173'),
   credentials: true
 }));
 app.use(express.json());

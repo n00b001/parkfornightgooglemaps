@@ -36,7 +36,8 @@ const App: React.FC = () => {
 
   const handleToggleFavorite = async (placeId: number) => {
     if (!user) {
-      window.location.href = `${import.meta.env.VITE_API_URL}/auth/google`;
+      const returnTo = window.location.origin;
+      window.location.href = `${import.meta.env.VITE_API_URL}/auth/google?returnTo=${encodeURIComponent(returnTo)}`;
       return;
     }
     if (favorites.includes(placeId)) {
@@ -47,6 +48,8 @@ const App: React.FC = () => {
       setFavorites([...favorites, placeId]);
     }
   };
+
+  const loginUrl = `${import.meta.env.VITE_API_URL}/auth/google?returnTo=${encodeURIComponent(window.location.origin)}`;
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-gray-100">
@@ -64,7 +67,7 @@ const App: React.FC = () => {
       )}
       {!user && (
         <div className="absolute top-4 right-4 z-10">
-          <a href={`${import.meta.env.VITE_API_URL}/auth/google`} className="bg-white px-4 py-2 rounded-full shadow-md font-bold text-sm">Sign In</a>
+          <a href={loginUrl} className="bg-white px-4 py-2 rounded-full shadow-md font-bold text-sm">Sign In</a>
         </div>
       )}
     </div>
