@@ -10,7 +10,7 @@ import PlaceDetails from './components/PlaceDetails';
 import { useGpsTracking } from './hooks/useGpsTracking';
 import { useJsApiLoader } from '@react-google-maps/api';
 
-const LIBRARIES: ("places" | "drawing" | "geometry" | "localContext" | "visualization")[] = ['places'];
+const LIBRARIES: ("places" | "drawing" | "geometry" | "visualization")[] = ['places'];
 
 const App: React.FC = () => {
   const { isLoaded } = useJsApiLoader({
