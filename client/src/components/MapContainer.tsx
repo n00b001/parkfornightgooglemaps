@@ -12,6 +12,16 @@ const getIcon = (type: string) => {
     ferme: '#EF4444', // Red
     nature: '#059669', // Dark Green
   };
+
+  const labels: Record<string, string> = {
+    cc: 'A',
+    p: 'P',
+    cp: 'C',
+    p_prive: 'Pr',
+    ferme: 'F',
+    nature: 'N',
+  };
+
   const color = colors[type] || '#3B82F6';
 
   return {
@@ -20,8 +30,9 @@ const getIcon = (type: string) => {
     fillOpacity: 1,
     strokeWeight: 2,
     strokeColor: '#FFFFFF',
-    scale: 1.5,
+    scale: 1.8,
     anchor: new google.maps.Point(12, 22),
+    labelOrigin: new google.maps.Point(12, 9),
   };
 };
 
@@ -34,6 +45,17 @@ const MapContainer: React.FC<any> = ({ places, onMarkerClick, center }) => {
           position={{ lat: parseFloat(place.latitude), lng: parseFloat(place.longitude) }}
           onClick={() => onMarkerClick(place)}
           icon={getIcon(place.code_type)}
+          label={{
+            text: (place.code_type === 'cc' ? 'A' :
+                   place.code_type === 'p' ? 'P' :
+                   place.code_type === 'cp' ? 'C' :
+                   place.code_type === 'p_prive' ? 'Pr' :
+                   place.code_type === 'ferme' ? 'F' :
+                   place.code_type === 'nature' ? 'N' : '?'),
+            color: 'white',
+            fontSize: '10px',
+            fontWeight: 'bold'
+          }}
         />
       ))}
     </GoogleMap>

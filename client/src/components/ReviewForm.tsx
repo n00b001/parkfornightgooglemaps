@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Star, Send } from 'lucide-react';
-import axios from 'axios';
+import axios from '../axiosConfig';
 
 const ReviewForm: React.FC<any> = ({ placeId, onSuccess }) => {
   const [content, setContent] = useState('');
