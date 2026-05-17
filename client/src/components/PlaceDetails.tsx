@@ -1,16 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { Heart, Navigation, X, MessageSquare, ExternalLink, Star } from 'lucide-react';
-import axios from 'axios';
+import axios from '../axiosConfig';
 import ReviewForm from './ReviewForm';
 
 const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
   const [reviews, setReviews] = useState<any[]>([]);
+  const [p4nReviews, setP4nReviews] = useState<any[]>([]);
 
   const fetchReviews = async () => {
     try {
-      const res = await axios.get(`/api/reviews/${place.id}`);
-      setReviews(res.data);
-    } catch (err) {}
+      const [localRes, p4nRes] = await Promise.all([
+        axios.get(`/api/reviews/${place.id}`),
+        axios.get(`/api/places/${place.id}/reviews`)
+      ]);
+      setReviews(localRes.data);
+      setP4nReviews(p4nRes.data?.commentaires || []);
+    } catch (err) {
+      console.error('Failed to fetch reviews', err);
+    }
   };
 
   useEffect(() => {
@@ -46,24 +53,73 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
         >
           <Navigation size={18} /> Directions
         </button>
-        <button onClick={onToggleFavorite} className="p-3 border rounded-xl">
-          <Heart size={20} fill={isFavorite ? 'red' : 'none'} />
+        <button
+          onClick={onToggleFavorite}
+          className="p-3 border rounded-xl hover:bg-gray-50 transition-colors"
+          title={isFavorite ? "Remove from Favorites" : "Add to Favorites"}
+        >
+          <Heart size={20} fill={isFavorite ? 'red' : 'none'} color={isFavorite ? 'red' : 'currentColor'} />
         </button>
-        <button onClick={addToGoogleMaps} className="p-3 border rounded-xl" title="Save to Google Maps">
+        <button
+          onClick={addToGoogleMaps}
+          className="p-3 border border-green-200 bg-green-50 text-green-700 rounded-xl hover:bg-green-100 transition-colors"
+          title="Open in Google Maps / Save to List"
+        >
           <ExternalLink size={20} />
         </button>
       </div>
 
       <div className="mt-6 border-t pt-4">
         <h3 className="font-bold mb-2 flex items-center gap-2"><MessageSquare size={18} /> Reviews</h3>
-        {isAuthenticated && <ReviewForm placeId={place.id} onSuccess={fetchReviews} />}
-        <div className="mt-4 space-y-3">
-          {reviews.map(r => (
-            <div key={r.id} className="text-sm border-b pb-2">
-              <div className="font-bold">{r.user?.name}</div>
-              <p>{r.content}</p>
+        {isAuthenticated && (
+          <div className="mb-4">
+            <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Write a review</h4>
+            <ReviewForm placeId={place.id} onSuccess={fetchReviews} />
+          </div>
+        )}
+
+        <div className="mt-4 space-y-4">
+          {reviews.length > 0 && (
+            <div>
+              <h4 className="text-xs font-bold text-blue-500 uppercase mb-2">Community Reviews</h4>
+              <div className="space-y-3">
+                {reviews.map(r => (
+                  <div key={r.id} className="text-sm bg-blue-50/30 p-3 rounded-xl border border-blue-100">
+                    <div className="flex justify-between mb-1">
+                      <span className="font-bold">{r.user?.name}</span>
+                      <div className="flex gap-0.5">
+                        {[...Array(5)].map((_, i) => (
+                          <Star key={i} size={12} fill={i < r.rating ? 'orange' : 'none'} stroke={i < r.rating ? 'orange' : 'gray'} />
+                        ))}
+                      </div>
+                    </div>
+                    <p className="text-gray-700">{r.content}</p>
+                  </div>
+                ))}
+              </div>
             </div>
-          ))}
+          )}
+
+          {p4nReviews.length > 0 && (
+            <div>
+              <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Park4Night Reviews</h4>
+              <div className="space-y-3">
+                {p4nReviews.map((r, idx) => (
+                  <div key={idx} className="text-sm border-b pb-2">
+                    <div className="flex justify-between mb-1">
+                      <span className="font-bold">{r.auteur}</span>
+                      <span className="text-orange-500 font-bold">{r.note}/5</span>
+                    </div>
+                    <p className="text-gray-600 italic">"{r.texte}"</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {reviews.length === 0 && p4nReviews.length === 0 && (
+            <p className="text-sm text-gray-400 italic">No reviews yet.</p>
+          )}
         </div>
       </div>
     </div>

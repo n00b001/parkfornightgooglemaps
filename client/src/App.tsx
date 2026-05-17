@@ -8,8 +8,17 @@ import SearchBar from './components/SearchBar';
 import FilterModal from './components/FilterModal';
 import PlaceDetails from './components/PlaceDetails';
 import { useGpsTracking } from './hooks/useGpsTracking';
+import { useJsApiLoader } from '@react-google-maps/api';
+
+const LIBRARIES: ("places" | "drawing" | "geometry" | "visualization")[] = ['places'];
 
 const App: React.FC = () => {
+  const { isLoaded } = useJsApiLoader({
+    id: 'google-map-script',
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '',
+    libraries: LIBRARIES
+  });
+
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [selectedPlace, setSelectedPlace] = useState<any>(null);
   const [user, setUser] = useState<any>(null);
@@ -79,7 +88,11 @@ const App: React.FC = () => {
         </div>
       )}
 
-      <MapContainer places={displayPlaces} center={mapCenter} onMarkerClick={setSelectedPlace} />
+      {isLoaded ? (
+        <MapContainer places={displayPlaces} center={mapCenter} onMarkerClick={setSelectedPlace} />
+      ) : (
+        <div className="flex items-center justify-center h-full">Loading Maps...</div>
+      )}
       <FilterModal isOpen={isFilterOpen} onClose={() => setIsFilterOpen(false)} onApply={setFilters} />
       {selectedPlace && (
         <PlaceDetails
