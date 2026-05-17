@@ -1,18 +1,7 @@
 import { openDB, IDBPDatabase } from 'idb';
 
-const DB_NAME = 'park4night-db';
+const DB_NAME = 'park4night_offline';
 const STORE_NAME = 'places';
-
-export interface Place {
-  id: number;
-  titre: string;
-  latitude: number;
-  longitude: number;
-  code_type: string;
-  adresse: string;
-  note_moyenne: number;
-  [key: string]: any;
-}
 
 let dbPromise: Promise<IDBPDatabase>;
 
@@ -29,27 +18,17 @@ const getDB = () => {
   return dbPromise;
 };
 
-export const savePlaces = async (places: Place[]) => {
+export const savePlaces = async (places: any[]) => {
   const db = await getDB();
   const tx = db.transaction(STORE_NAME, 'readwrite');
-  await Promise.all([
-    ...places.map((place) => tx.store.put(place)),
-    tx.done,
-  ]);
+  const store = tx.objectStore(STORE_NAME);
+  for (const place of places) {
+    await store.put(place);
+  }
+  await tx.done;
 };
 
-export const getAllPlaces = async (): Promise<Place[]> => {
+export const getCachedPlaces = async () => {
   const db = await getDB();
   return db.getAll(STORE_NAME);
-};
-
-export const searchPlacesOffline = async (query: string): Promise<Place[]> => {
-  const places = await getAllPlaces();
-  if (!query) return places;
-
-  const lowQuery = query.toLowerCase();
-  return places.filter(p =>
-    p.titre?.toLowerCase().includes(lowQuery) ||
-    p.adresse?.toLowerCase().includes(lowQuery)
-  );
 };

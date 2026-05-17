@@ -6,11 +6,10 @@ import SearchBar from './components/SearchBar';
 import FilterModal from './components/FilterModal';
 import PlaceDetails from './components/PlaceDetails';
 import { useGpsTracking } from './hooks/useGpsTracking';
-import { savePlaces, getAllPlaces, searchPlacesOffline } from './services/db';
-
-const API_URL = import.meta.env.VITE_API_URL || '';
-axios.defaults.baseURL = API_URL;
-axios.defaults.withCredentials = true;
+<<<<<<< HEAD
+import { savePlaces, getCachedPlaces } from './services/db';
+=======
+>>>>>>> main
 
 const App: React.FC = () => {
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -19,55 +18,76 @@ const App: React.FC = () => {
   const [mapCenter, setMapCenter] = useState({ lat: 48.8566, lng: 2.3522 });
   const [filters, setFilters] = useState<any>({});
   const [favorites, setFavorites] = useState<number[]>([]);
-  const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
-  useEffect(() => {
-    const handleOnline = () => setIsOffline(false);
-    const handleOffline = () => setIsOffline(true);
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
+<<<<<<< HEAD
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const api = axios.create({
+    baseURL: import.meta.env.VITE_API_URL || '',
+    withCredentials: true
+  });
 
   const { data: places = [], refetch } = useQuery({
-    queryKey: ['places', mapCenter, filters, isOffline],
+    queryKey: ['places', mapCenter, filters, searchTerm],
     queryFn: async () => {
-      if (isOffline) {
-        if (filters.search) {
-          return await searchPlacesOffline(filters.search);
-        }
-        return await getAllPlaces();
-      }
       try {
-        const res = await axios.get('/api/places', {
-          params: { lat: mapCenter.lat, lng: mapCenter.lng, ...filters }
+        const res = await api.get('/api/places', {
+          params: {
+            lat: mapCenter.lat,
+            lng: mapCenter.lng,
+            search: searchTerm,
+            ...filters
+          }
         });
-        await savePlaces(res.data);
+        if (res.data && Array.isArray(res.data)) {
+          savePlaces(res.data);
+        }
         return res.data;
       } catch (err) {
-        console.error('Fetch failed, falling back to offline data', err);
-        return await getAllPlaces();
+        console.warn('Fetch failed, loading from cache', err);
+        return getCachedPlaces();
       }
+=======
+  const { data: places = [], refetch } = useQuery({
+    queryKey: ['places', mapCenter, filters],
+    queryFn: async () => {
+      const res = await axios.get('/api/places', { params: { lat: mapCenter.lat, lng: mapCenter.lng, ...filters } });
+      return res.data;
+>>>>>>> main
     }
   });
 
   useGpsTracking(places, !!user);
 
   useEffect(() => {
+<<<<<<< HEAD
+    api.get('/auth/me').then(res => {
+      setUser(res.data);
+      if (res.data) {
+        api.get('/api/favorites').then(fRes => setFavorites(fRes.data.map((f: any) => f.placeId)));
+=======
     axios.get('/auth/me').then(res => {
       setUser(res.data);
       if (res.data) {
         axios.get('/api/favorites').then(fRes => setFavorites(fRes.data.map((f: any) => f.placeId)));
+>>>>>>> main
       }
     }).catch(() => setUser(null));
   }, []);
 
   const handleToggleFavorite = async (placeId: number) => {
     if (!user) {
-      window.location.href = `${API_URL}/auth/google`;
+<<<<<<< HEAD
+      window.location.href = (import.meta.env.VITE_API_URL || '') + '/auth/google';
+      return;
+    }
+    if (favorites.includes(placeId)) {
+      await api.delete(`/api/favorites/${placeId}`);
+      setFavorites(favorites.filter(id => id !== placeId));
+    } else {
+      await api.post('/api/favorites', { placeId });
+=======
+      window.location.href = '/auth/google';
       return;
     }
     if (favorites.includes(placeId)) {
@@ -75,29 +95,29 @@ const App: React.FC = () => {
       setFavorites(favorites.filter(id => id !== placeId));
     } else {
       await axios.post('/api/favorites', { placeId });
+>>>>>>> main
       setFavorites([...favorites, placeId]);
     }
   };
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-gray-100">
-      {isOffline && (
-        <div className="absolute top-0 left-0 right-0 z-50 bg-yellow-500 text-white text-center py-1 text-xs font-bold">
-          Offline Mode - Showing cached data
-        </div>
-      )}
+<<<<<<< HEAD
       <SearchBar
-        onSearch={(search: string) => {
-          setFilters({ ...filters, search });
-          refetch();
-        }}
+        onSearch={(val: string) => setSearchTerm(val)}
         onOpenFilters={() => setIsFilterOpen(true)}
       />
+      <MapContainer
+        places={places}
+        center={mapCenter}
+        onMarkerClick={setSelectedPlace}
+        onBoundsChange={(c: any) => setMapCenter(c)}
+      />
+=======
+      <SearchBar onSearch={() => refetch()} onOpenFilters={() => setIsFilterOpen(true)} />
       <MapContainer places={places} center={mapCenter} onMarkerClick={setSelectedPlace} />
-      <FilterModal isOpen={isFilterOpen} onClose={() => setIsFilterOpen(false)} onApply={(f: any) => {
-        setFilters({ ...filters, ...f });
-        setIsFilterOpen(false);
-      }} />
+>>>>>>> main
+      <FilterModal isOpen={isFilterOpen} onClose={() => setIsFilterOpen(false)} onApply={setFilters} />
       {selectedPlace && (
         <PlaceDetails
           place={selectedPlace}
@@ -109,12 +129,7 @@ const App: React.FC = () => {
       )}
       {!user && (
         <div className="absolute top-4 right-4 z-10">
-          <a href={`${API_URL}/auth/google`} className="bg-white px-4 py-2 rounded-full shadow-md font-bold text-sm">Sign In</a>
-        </div>
-      )}
-      {user && (
-        <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
-           <img src={user.avatar} alt={user.name} className="w-10 h-10 rounded-full border-2 border-white shadow-md" />
+          <a href="/auth/google" className="bg-white px-4 py-2 rounded-full shadow-md font-bold text-sm">Sign In</a>
         </div>
       )}
     </div>

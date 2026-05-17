@@ -1,4 +1,5 @@
 const park4nightService = require('../services/park4night');
+<<<<<<< HEAD
 const prisma = require('../config/db');
 
 const getPlaces = async (req, res) => {
@@ -7,120 +8,106 @@ const getPlaces = async (req, res) => {
   try {
     let places = [];
 
-    // Fetch and cache if lat/lng are provided
-    if (lat && lng) {
-      const p4nPlaces = await park4nightService.getPlaces(lat, lng);
+    // If search term is provided, we search in the local database primarily
+    if (search) {
+      places = await prisma.place.findMany({
+        where: {
+          OR: [
+            { name: { contains: search, mode: 'insensitive' } },
+            { address: { contains: search, mode: 'insensitive' } }
+          ],
+          ...(type && { type }),
+          ...(minRating && { rating: { gte: parseFloat(minRating) } })
+        },
+        orderBy: sortBy === 'rating' ? { rating: 'desc' } : { lastFetched: 'desc' }
+      });
+      return res.json(places.map(p => p.rawData || p));
+    }
 
-      // Upsert places into database
-      await Promise.all(p4nPlaces.map(p =>
-        prisma.place.upsert({
+    if (!lat || !lng) return res.status(400).json({ error: 'Lat/lng required for proximity search' });
+
+    // 1. Try to get from Park4night API
+    const apiPlaces = await park4nightService.getPlaces(lat, lng);
+
+    // 2. Cache/Upsert in DB
+    for (const p of apiPlaces) {
+      try {
+        await prisma.place.upsert({
           where: { id: parseInt(p.id) },
           update: {
-            name: p.titre || '',
+            name: p.titre,
             latitude: parseFloat(p.latitude),
             longitude: parseFloat(p.longitude),
-            type: p.code_type || '',
-            address: p.adresse || '',
+            type: p.code_type,
+            description: p.description_complet || p.description,
+            address: p.adresse,
             rating: parseFloat(p.note_moyenne) || 0,
             rawData: p,
             lastFetched: new Date()
           },
           create: {
             id: parseInt(p.id),
-            name: p.titre || '',
+            name: p.titre,
             latitude: parseFloat(p.latitude),
             longitude: parseFloat(p.longitude),
-            type: p.code_type || '',
-            address: p.adresse || '',
+            type: p.code_type,
+            description: p.description_complet || p.description,
+            address: p.adresse,
             rating: parseFloat(p.note_moyenne) || 0,
             rawData: p
           }
-        })
-      ));
+        });
+      } catch (err) {
+        console.error(`Failed to cache place ${p.id}:`, err.message);
+      }
     }
 
-    // Build query
-    const query = {
-      where: {}
-    };
-
-    if (type) {
-      query.where.type = type;
-    }
-
-    if (minRating) {
-      query.where.rating = { gte: parseFloat(minRating) };
-    }
-
-    if (search) {
-      query.where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { address: { contains: search, mode: 'insensitive' } }
-      ];
-    }
+    // 3. Return filtered and sorted results
+    places = apiPlaces;
+    if (type) places = places.filter(p => p.code_type === type);
+    if (minRating) places = places.filter(p => parseFloat(p.note_moyenne) >= parseFloat(minRating));
 
     if (sortBy === 'rating') {
-      query.orderBy = { rating: 'desc' };
+      places.sort((a, b) => parseFloat(b.note_moyenne || 0) - parseFloat(a.note_moyenne || 0));
     }
 
-    // If we have lat/lng, we might want to limit to nearby,
-    // but for now let's just return what we have or filter by proximity if needed.
-    // For simplicity, let's return all matching places.
-
-    const dbPlaces = await prisma.place.findMany(query);
-
-    // Convert back to the format expected by frontend (which seems to use P4N format from rawData)
-    const results = dbPlaces.map(p => ({
-      ...p.rawData,
-      id: p.id,
-      titre: p.name,
-      latitude: p.latitude,
-      longitude: p.longitude,
-      code_type: p.type,
-      adresse: p.address,
-      note_moyenne: p.rating
-    }));
-
-    res.json(results);
+    res.json(places);
   } catch (error) {
     console.error('Error in getPlaces:', error);
-    res.status(500).json({ error: 'Failed to fetch places' });
+    // Fallback to database if API fails
+    try {
+      const cachedPlaces = await prisma.place.findMany({
+        where: {
+          latitude: { gte: parseFloat(lat) - 0.5, lte: parseFloat(lat) + 0.5 },
+          longitude: { gte: parseFloat(lng) - 0.5, lte: parseFloat(lng) + 0.5 }
+        }
+      });
+      res.json(cachedPlaces.map(p => p.rawData));
+    } catch (dbError) {
+      res.status(500).json({ error: 'Failed to fetch places' });
+    }
+=======
+
+const getPlaces = async (req, res) => {
+  const { lat, lng, type, minRating } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: 'Lat/lng required' });
+  try {
+    let places = await park4nightService.getPlaces(lat, lng);
+    if (type) places = places.filter(p => p.code_type === type);
+    if (minRating) places = places.filter(p => parseFloat(p.note_moyenne) >= parseFloat(minRating));
+    res.json(places);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed' });
+>>>>>>> main
   }
 };
 
 const getReviews = async (req, res) => {
   try {
-    const p4nReviews = await park4nightService.getReviews(req.params.id);
-
-    // Also get local reviews
-    const localReviews = await prisma.review.findMany({
-      where: { placeId: parseInt(req.params.id) },
-      include: { user: true }
-    });
-
-    // Combine them
-    // P4N reviews are in p4nReviews.commentaires
-    const combined = [
-      ...(p4nReviews.commentaires || []).map(r => ({
-        id: `p4n-${r.id}`,
-        content: r.txt,
-        rating: parseInt(r.note),
-        user: { name: r.pseudo },
-        createdAt: r.date_crea
-      })),
-      ...localReviews.map(r => ({
-        id: r.id,
-        content: r.content,
-        rating: r.rating,
-        user: { name: r.user.name },
-        createdAt: r.createdAt
-      }))
-    ];
-
-    res.json(combined);
+    const reviews = await park4nightService.getReviews(req.params.id);
+    res.json(reviews);
   } catch (error) {
-    console.error('Error in getReviews:', error);
-    res.status(500).json({ error: 'Failed to fetch reviews' });
+    res.status(500).json({ error: 'Failed' });
   }
 };
 

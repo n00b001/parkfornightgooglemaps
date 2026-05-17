@@ -2,6 +2,15 @@ databases:
   - name: park4night-db
     databaseName: park4night
     user: park4night_user
+<<<<<<< HEAD
+
+services:
+  - type: web
+    name: park4night-server
+    runtime: node
+    plan: free
+    buildCommand: npm install && cd server && npm install && npx prisma generate && npx prisma db push
+=======
     plan: free # Keep this to avoid the $7/mo Starter charge
 
 services:
@@ -11,7 +20,8 @@ services:
     runtime: node
     plan: free # This is required for Node services to stay free
     pullRequestPreviewsEnabled: true
-    buildCommand: npm install && cd server && npm install && npx prisma generate && npx prisma db push
+    buildCommand: npm install && cd server && npm install && npx prisma generate
+>>>>>>> main
     startCommand: cd server && npm start
     envVars:
       - key: DATABASE_URL
@@ -29,13 +39,22 @@ services:
       - key: CLIENT_URL
         value: https://park4night-client.onrender.com
 
+<<<<<<< HEAD
+  - type: web
+    name: park4night-client
+    runtime: static
+    buildCommand: npm install && cd client && npm install && npm run build
+    publishDir: client/dist
+=======
   # 2. Frontend Static Site (Vite/React/etc.)
   - type: web
     name: park4night-client
     runtime: static # This makes it a Static Site
+    # REMOVED 'plan: free' from here because static sites don't use the plan field
     pullRequestPreviewsEnabled: true
     buildCommand: npm install && cd client && npm install && npm run build
-    staticPublishPath: client/dist
+    staticPublishPath: client/dist # Correct field for static sites
+>>>>>>> main
     envVars:
       - key: VITE_API_URL
         value: https://park4night-server.onrender.com
