@@ -6,7 +6,6 @@ import ReviewForm from './ReviewForm';
 const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
   const [reviews, setReviews] = useState<any[]>([]);
 
-<<<<<<< HEAD
   const api = axios.create({
     baseURL: import.meta.env.VITE_API_URL || '',
     withCredentials: true
@@ -15,11 +14,6 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   const fetchReviews = async () => {
     try {
       const res = await api.get(`/api/reviews/${place.id}`);
-=======
-  const fetchReviews = async () => {
-    try {
-      const res = await axios.get(`/api/reviews/${place.id}`);
->>>>>>> main
       setReviews(res.data);
     } catch (err) {}
   };
@@ -34,7 +28,6 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   };
 
   return (
-<<<<<<< HEAD
     <div className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-lg z-40 bg-white/95 backdrop-blur-md rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.2)] p-6 max-h-[85vh] overflow-y-auto border border-white/20 animate-in fade-in slide-in-from-bottom-4 duration-300">
       <div className="flex justify-between items-start mb-2">
         <div>
@@ -93,39 +86,6 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
           )) : (
             <div className="text-center py-8 text-gray-400 italic text-sm">No reviews yet. Be the first!</div>
           )}
-=======
-    <div className="fixed bottom-4 left-4 right-4 md:w-96 z-40 bg-white rounded-3xl shadow-2xl p-6 max-h-[80vh] overflow-y-auto">
-      <div className="flex justify-between mb-2">
-        <h2 className="text-2xl font-bold">{place.titre}</h2>
-        <button onClick={onClose}><X size={20} /></button>
-      </div>
-      <p className="text-sm text-gray-500 mb-4">{place.adresse}</p>
-      <div className="flex gap-2">
-        <button
-          onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}`)}
-          className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2"
-        >
-          <Navigation size={18} /> Directions
-        </button>
-        <button onClick={onToggleFavorite} className="p-3 border rounded-xl">
-          <Heart size={20} fill={isFavorite ? 'red' : 'none'} />
-        </button>
-        <button onClick={addToGoogleMaps} className="p-3 border rounded-xl" title="Save to Google Maps">
-          <ExternalLink size={20} />
-        </button>
-      </div>
-
-      <div className="mt-6 border-t pt-4">
-        <h3 className="font-bold mb-2 flex items-center gap-2"><MessageSquare size={18} /> Reviews</h3>
-        {isAuthenticated && <ReviewForm placeId={place.id} onSuccess={fetchReviews} />}
-        <div className="mt-4 space-y-3">
-          {reviews.map(r => (
-            <div key={r.id} className="text-sm border-b pb-2">
-              <div className="font-bold">{r.user?.name}</div>
-              <p>{r.content}</p>
-            </div>
-          ))}
->>>>>>> main
         </div>
       </div>
     </div>

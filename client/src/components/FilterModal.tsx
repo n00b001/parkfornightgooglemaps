@@ -4,10 +4,7 @@ import { X } from 'lucide-react';
 const FilterModal: React.FC<any> = ({ isOpen, onClose, onApply }) => {
   const [type, setType] = useState('');
   const [minRating, setMinRating] = useState('');
-<<<<<<< HEAD
   const [sortBy, setSortBy] = useState('');
-=======
->>>>>>> main
 
   if (!isOpen) return null;
   return (
@@ -31,7 +28,6 @@ const FilterModal: React.FC<any> = ({ isOpen, onClose, onApply }) => {
             <label className="block text-sm font-bold mb-1">Min Rating</label>
             <input type="number" min="0" max="5" step="0.5" className="w-full p-2 border rounded-lg" value={minRating} onChange={e => setMinRating(e.target.value)} />
           </div>
-<<<<<<< HEAD
           <div>
             <label className="block text-sm font-bold mb-1">Sort By</label>
             <select className="w-full p-2 border rounded-lg" value={sortBy} onChange={e => setSortBy(e.target.value)}>
@@ -42,10 +38,6 @@ const FilterModal: React.FC<any> = ({ isOpen, onClose, onApply }) => {
           </div>
         </div>
         <button onClick={() => { onApply({ type, minRating, sortBy }); onClose(); }} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">Apply</button>
-=======
-        </div>
-        <button onClick={() => onApply({ type, minRating })} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">Apply</button>
->>>>>>> main
       </div>
     </div>
   );

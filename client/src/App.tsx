@@ -6,10 +6,7 @@ import SearchBar from './components/SearchBar';
 import FilterModal from './components/FilterModal';
 import PlaceDetails from './components/PlaceDetails';
 import { useGpsTracking } from './hooks/useGpsTracking';
-<<<<<<< HEAD
 import { savePlaces, getCachedPlaces } from './services/db';
-=======
->>>>>>> main
 
 const App: React.FC = () => {
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -19,7 +16,6 @@ const App: React.FC = () => {
   const [filters, setFilters] = useState<any>({});
   const [favorites, setFavorites] = useState<number[]>([]);
 
-<<<<<<< HEAD
   const [searchTerm, setSearchTerm] = useState('');
 
   const api = axios.create({
@@ -47,37 +43,22 @@ const App: React.FC = () => {
         console.warn('Fetch failed, loading from cache', err);
         return getCachedPlaces();
       }
-=======
-  const { data: places = [], refetch } = useQuery({
-    queryKey: ['places', mapCenter, filters],
-    queryFn: async () => {
-      const res = await axios.get('/api/places', { params: { lat: mapCenter.lat, lng: mapCenter.lng, ...filters } });
-      return res.data;
->>>>>>> main
     }
   });
 
   useGpsTracking(places, !!user);
 
   useEffect(() => {
-<<<<<<< HEAD
     api.get('/auth/me').then(res => {
       setUser(res.data);
       if (res.data) {
         api.get('/api/favorites').then(fRes => setFavorites(fRes.data.map((f: any) => f.placeId)));
-=======
-    axios.get('/auth/me').then(res => {
-      setUser(res.data);
-      if (res.data) {
-        axios.get('/api/favorites').then(fRes => setFavorites(fRes.data.map((f: any) => f.placeId)));
->>>>>>> main
       }
     }).catch(() => setUser(null));
   }, []);
 
   const handleToggleFavorite = async (placeId: number) => {
     if (!user) {
-<<<<<<< HEAD
       window.location.href = (import.meta.env.VITE_API_URL || '') + '/auth/google';
       return;
     }
@@ -86,23 +67,12 @@ const App: React.FC = () => {
       setFavorites(favorites.filter(id => id !== placeId));
     } else {
       await api.post('/api/favorites', { placeId });
-=======
-      window.location.href = '/auth/google';
-      return;
-    }
-    if (favorites.includes(placeId)) {
-      await axios.delete(`/api/favorites/${placeId}`);
-      setFavorites(favorites.filter(id => id !== placeId));
-    } else {
-      await axios.post('/api/favorites', { placeId });
->>>>>>> main
       setFavorites([...favorites, placeId]);
     }
   };
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-gray-100">
-<<<<<<< HEAD
       <SearchBar
         onSearch={(val: string) => setSearchTerm(val)}
         onOpenFilters={() => setIsFilterOpen(true)}
@@ -113,10 +83,6 @@ const App: React.FC = () => {
         onMarkerClick={setSelectedPlace}
         onBoundsChange={(c: any) => setMapCenter(c)}
       />
-=======
-      <SearchBar onSearch={() => refetch()} onOpenFilters={() => setIsFilterOpen(true)} />
-      <MapContainer places={places} center={mapCenter} onMarkerClick={setSelectedPlace} />
->>>>>>> main
       <FilterModal isOpen={isFilterOpen} onClose={() => setIsFilterOpen(false)} onApply={setFilters} />
       {selectedPlace && (
         <PlaceDetails

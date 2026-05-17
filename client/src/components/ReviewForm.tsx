@@ -9,11 +9,7 @@ const ReviewForm: React.FC<any> = ({ placeId, onSuccess }) => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-<<<<<<< HEAD
       await axios.post((import.meta.env.VITE_API_URL || '') + '/api/reviews', { placeId, content, rating }, { withCredentials: true });
-=======
-      await axios.post('/api/reviews', { placeId, content, rating });
->>>>>>> main
       setContent('');
       onSuccess();
     } catch (err) {

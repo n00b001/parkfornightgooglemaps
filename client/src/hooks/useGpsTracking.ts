@@ -16,11 +16,7 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean) => {
           if (dist < 0.1) {
             try {
               visitedRef.current.add(place.id);
-<<<<<<< HEAD
               await axios.post((import.meta.env.VITE_API_URL || '') + '/api/visits', { placeId: place.id }, { withCredentials: true });
-=======
-              await axios.post('/api/visits', { placeId: place.id });
->>>>>>> main
             } catch (err) {
               visitedRef.current.delete(place.id);
             }

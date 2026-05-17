@@ -1,5 +1,4 @@
 const park4nightService = require('../services/park4night');
-<<<<<<< HEAD
 const prisma = require('../config/db');
 
 const getPlaces = async (req, res) => {
@@ -86,19 +85,6 @@ const getPlaces = async (req, res) => {
     } catch (dbError) {
       res.status(500).json({ error: 'Failed to fetch places' });
     }
-=======
-
-const getPlaces = async (req, res) => {
-  const { lat, lng, type, minRating } = req.query;
-  if (!lat || !lng) return res.status(400).json({ error: 'Lat/lng required' });
-  try {
-    let places = await park4nightService.getPlaces(lat, lng);
-    if (type) places = places.filter(p => p.code_type === type);
-    if (minRating) places = places.filter(p => parseFloat(p.note_moyenne) >= parseFloat(minRating));
-    res.json(places);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed' });
->>>>>>> main
   }
 };
 

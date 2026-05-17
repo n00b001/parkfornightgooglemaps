@@ -10,7 +10,6 @@ export default defineConfig({
       manifest: {
         name: 'Park4Night Google Maps',
         short_name: 'P4N-GM',
-<<<<<<< HEAD
         theme_color: '#3b82f6',
         icons: [
           {
@@ -24,10 +23,6 @@ export default defineConfig({
             type: 'image/png'
           }
         ]
-=======
-        theme_color: '#ffffff',
-        icons: []
->>>>>>> main
       }
     })
   ]
