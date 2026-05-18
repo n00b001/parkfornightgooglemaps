@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import axios from 'axios';
+import axios from '../axiosConfig';
 
 export const useGpsTracking = (places: any[], isAuthenticated: boolean) => {
   const visitedRef = useRef<Set<number>>(new Set());

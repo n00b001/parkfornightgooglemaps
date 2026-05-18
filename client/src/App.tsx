@@ -27,7 +27,7 @@ const App: React.FC = () => {
   const [favorites, setFavorites] = useState<number[]>([]);
   const [showOnlyFavorites, setShowOnlyFavorites] = useState(false);
 
-  const { data: places = [], refetch } = useQuery({
+  const { data: places = [], isLoading: isLoadingPlaces } = useQuery({
     queryKey: ['places', mapCenter, filters],
     queryFn: async () => {
       try {
@@ -89,7 +89,15 @@ const App: React.FC = () => {
       )}
 
       {isLoaded ? (
-        <MapContainer places={displayPlaces} center={mapCenter} onMarkerClick={setSelectedPlace} />
+        <>
+          <MapContainer places={displayPlaces} center={mapCenter} onMarkerClick={setSelectedPlace} />
+          {isLoadingPlaces && (
+            <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-10 bg-white/90 px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
+              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm font-medium">Fetching parking spots...</span>
+            </div>
+          )}
+        </>
       ) : (
         <div className="flex items-center justify-center h-full">Loading Maps...</div>
       )}
