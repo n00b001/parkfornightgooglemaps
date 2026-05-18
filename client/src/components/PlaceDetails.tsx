@@ -6,8 +6,10 @@ import ReviewForm from './ReviewForm';
 const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
   const [reviews, setReviews] = useState<any[]>([]);
   const [p4nReviews, setP4nReviews] = useState<any[]>([]);
+  const [isLoadingReviews, setIsLoadingReviews] = useState(false);
 
   const fetchReviews = async () => {
+    setIsLoadingReviews(true);
     try {
       const [localRes, p4nRes] = await Promise.all([
         axios.get(`/api/reviews/${place.id}`),
@@ -17,6 +19,8 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
       setP4nReviews(p4nRes.data?.commentaires || []);
     } catch (err) {
       console.error('Failed to fetch reviews', err);
+    } finally {
+      setIsLoadingReviews(false);
     }
   };
 
@@ -25,14 +29,14 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   }, [place]);
 
   const addToGoogleMaps = () => {
-    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.titre)}@${place.latitude},${place.longitude}`;
+    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.titre || place.name)}@${place.latitude},${place.longitude}`;
     window.open(url, '_blank');
   };
 
   return (
     <div className="fixed bottom-4 left-4 right-4 md:w-96 z-40 bg-white rounded-3xl shadow-2xl p-6 max-h-[80vh] overflow-y-auto">
       <div className="flex justify-between mb-2">
-        <h2 className="text-2xl font-bold">{place.titre}</h2>
+        <h2 className="text-2xl font-bold">{place.titre || place.name}</h2>
         <button onClick={onClose}><X size={20} /></button>
       </div>
       <div className="flex items-center gap-1 mb-1">
@@ -79,6 +83,14 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
         )}
 
         <div className="mt-4 space-y-4">
+          {isLoadingReviews ? (
+            <div className="space-y-3 animate-pulse">
+              {[1, 2].map(i => (
+                <div key={i} className="h-20 bg-gray-100 rounded-xl" />
+              ))}
+            </div>
+          ) : (
+            <>
           {reviews.length > 0 && (
             <div>
               <h4 className="text-xs font-bold text-blue-500 uppercase mb-2">Community Reviews</h4>
@@ -119,6 +131,8 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
 
           {reviews.length === 0 && p4nReviews.length === 0 && (
             <p className="text-sm text-gray-400 italic">No reviews yet.</p>
+          )}
+          </>
           )}
         </div>
       </div>
