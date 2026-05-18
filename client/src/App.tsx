@@ -9,6 +9,7 @@ import FilterModal from './components/FilterModal';
 import PlaceDetails from './components/PlaceDetails';
 import { useGpsTracking } from './hooks/useGpsTracking';
 import { useJsApiLoader } from '@react-google-maps/api';
+import { LocateFixed } from 'lucide-react';
 
 const LIBRARIES: ("places" | "drawing" | "geometry" | "visualization")[] = ['places'];
 
@@ -23,15 +24,17 @@ const App: React.FC = () => {
   const [selectedPlace, setSelectedPlace] = useState<any>(null);
   const [user, setUser] = useState<any>(null);
   const [mapCenter, setMapCenter] = useState({ lat: 48.8566, lng: 2.3522 });
+  const [lastFetchedCenter, setLastFetchedCenter] = useState({ lat: 48.8566, lng: 2.3522 });
   const [filters, setFilters] = useState<any>({});
   const [favorites, setFavorites] = useState<number[]>([]);
+  const [visited, setVisited] = useState<number[]>([]);
   const [showOnlyFavorites, setShowOnlyFavorites] = useState(false);
 
   const { data: places = [], isLoading: isLoadingPlaces } = useQuery({
-    queryKey: ['places', mapCenter, filters],
+    queryKey: ['places', lastFetchedCenter, filters],
     queryFn: async () => {
       try {
-        const res = await axios.get('/api/places', { params: { lat: mapCenter.lat, lng: mapCenter.lng, ...filters } });
+        const res = await axios.get('/api/places', { params: { lat: lastFetchedCenter.lat, lng: lastFetchedCenter.lng, ...filters } });
         await savePlaces(res.data);
         return res.data;
       } catch (err) {
@@ -48,6 +51,7 @@ const App: React.FC = () => {
       setUser(res.data);
       if (res.data) {
         axios.get('/api/favorites').then(fRes => setFavorites(fRes.data.map((f: any) => f.placeId)));
+        axios.get('/api/visits').then(vRes => setVisited(vRes.data.map((v: any) => v.placeId)));
       }
     }).catch(() => setUser(null));
   }, []);
@@ -55,6 +59,25 @@ const App: React.FC = () => {
   const displayPlaces = showOnlyFavorites
     ? places.filter((p: any) => favorites.includes(p.id))
     : places;
+
+  const handleCenterChange = (newCenter: { lat: number, lng: number }) => {
+    setMapCenter(newCenter);
+    // Only trigger fetch if moved significantly (e.g., > 10km) or first time
+    const dist = Math.sqrt(Math.pow(newCenter.lat - lastFetchedCenter.lat, 2) + Math.pow(newCenter.lng - lastFetchedCenter.lng, 2));
+    if (dist > 0.1) { // roughly 10-11km
+      setLastFetchedCenter(newCenter);
+    }
+  };
+
+  const handleMyLocation = () => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition((pos) => {
+        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setMapCenter(coords);
+        setLastFetchedCenter(coords);
+      });
+    }
+  };
 
   const handleToggleFavorite = async (placeId: number) => {
     if (!user) {
@@ -75,22 +98,37 @@ const App: React.FC = () => {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-gray-100">
-      <SearchBar onSearch={(coords: any) => setMapCenter(coords)} onOpenFilters={() => setIsFilterOpen(true)} />
+      <SearchBar onSearch={(coords: any) => { setMapCenter(coords); setLastFetchedCenter(coords); }} onOpenFilters={() => setIsFilterOpen(true)} />
 
-      {user && (
-        <div className="absolute top-20 right-4 z-10 flex flex-col gap-2">
+      <div className="absolute top-20 right-4 z-10 flex flex-col gap-2">
+        <button
+          onClick={handleMyLocation}
+          className="p-3 bg-white text-gray-600 rounded-full shadow-lg hover:bg-gray-50 transition-colors"
+          title="My Location"
+        >
+          <LocateFixed size={20} />
+        </button>
+        {user && (
           <button
             onClick={() => setShowOnlyFavorites(!showOnlyFavorites)}
-            className={`p-3 rounded-full shadow-lg transition-colors \${showOnlyFavorites ? 'bg-red-500 text-white' : 'bg-white text-gray-600'}`}
+            className={`p-3 rounded-full shadow-lg transition-colors ${showOnlyFavorites ? 'bg-red-500 text-white' : 'bg-white text-gray-600'}`}
+            title={showOnlyFavorites ? "Show All" : "Show Favorites"}
           >
             <Heart size={20} fill={showOnlyFavorites ? 'white' : 'none'} />
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {isLoaded ? (
         <>
-          <MapContainer places={displayPlaces} center={mapCenter} onMarkerClick={setSelectedPlace} />
+          <MapContainer
+            places={displayPlaces}
+            center={mapCenter}
+            onMarkerClick={setSelectedPlace}
+            onCenterChange={handleCenterChange}
+            favorites={favorites}
+            visited={visited}
+          />
           {isLoadingPlaces && (
             <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-10 bg-white/90 px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
               <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
