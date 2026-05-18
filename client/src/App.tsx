@@ -25,6 +25,7 @@ const App: React.FC = () => {
   const [mapCenter, setMapCenter] = useState({ lat: 48.8566, lng: 2.3522 });
   const [filters, setFilters] = useState<any>({});
   const [favorites, setFavorites] = useState<number[]>([]);
+  const [visits, setVisits] = useState<number[]>([]);
   const [showOnlyFavorites, setShowOnlyFavorites] = useState(false);
 
   const { data: places = [], refetch } = useQuery({
@@ -48,6 +49,7 @@ const App: React.FC = () => {
       setUser(res.data);
       if (res.data) {
         axios.get('/api/favorites').then(fRes => setFavorites(fRes.data.map((f: any) => f.placeId)));
+        axios.get('/api/visits').then(vRes => setVisits(vRes.data.map((v: any) => v.placeId)));
       }
     }).catch(() => setUser(null));
   }, []);
@@ -89,7 +91,13 @@ const App: React.FC = () => {
       )}
 
       {isLoaded ? (
-        <MapContainer places={displayPlaces} center={mapCenter} onMarkerClick={setSelectedPlace} />
+        <MapContainer
+          places={displayPlaces}
+          center={mapCenter}
+          onMarkerClick={setSelectedPlace}
+          favorites={favorites}
+          visits={visits}
+        />
       ) : (
         <div className="flex items-center justify-center h-full">Loading Maps...</div>
       )}
@@ -101,6 +109,7 @@ const App: React.FC = () => {
           onClose={() => setSelectedPlace(null)}
           onToggleFavorite={() => handleToggleFavorite(selectedPlace.id)}
           isFavorite={favorites.includes(selectedPlace.id)}
+          isVisited={visits.includes(selectedPlace.id)}
         />
       )}
       {!user && (

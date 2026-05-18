@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Heart, Navigation, X, MessageSquare, ExternalLink, Star } from 'lucide-react';
+import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, MapPin, Info, CheckCircle } from 'lucide-react';
 import axios from '../axiosConfig';
 import ReviewForm from './ReviewForm';
 
-const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
+const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated, isVisited }) => {
   const [reviews, setReviews] = useState<any[]>([]);
   const [p4nReviews, setP4nReviews] = useState<any[]>([]);
 
@@ -30,23 +30,51 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   };
 
   return (
-    <div className="fixed bottom-4 left-4 right-4 md:w-96 z-40 bg-white rounded-3xl shadow-2xl p-6 max-h-[80vh] overflow-y-auto">
-      <div className="flex justify-between mb-2">
-        <h2 className="text-2xl font-bold">{place.titre}</h2>
-        <button onClick={onClose}><X size={20} /></button>
+    <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-4 md:w-96 z-40 bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+      <div className="relative h-32 bg-gradient-to-br from-blue-500 to-indigo-600 p-6 flex items-end">
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 p-2 bg-white/20 hover:bg-white/30 rounded-full text-white transition-colors"
+        >
+          <X size={20} />
+        </button>
+        <div>
+          <h2 className="text-2xl font-bold text-white leading-tight">{place.titre || place.name}</h2>
+          {isVisited && (
+            <div className="flex items-center gap-1 text-green-300 text-xs font-bold mt-1 uppercase tracking-wider">
+              <CheckCircle size={12} /> Visited
+            </div>
+          )}
+        </div>
       </div>
-      <div className="flex items-center gap-1 mb-1">
-        <Star size={16} fill="orange" className="text-orange-500" />
-        <span className="font-bold">{place.note_moyenne || 'N/A'}</span>
-        <span className="text-gray-400 text-sm">({place.nb_comm || 0} reviews)</span>
-      </div>
-      <p className="text-sm text-gray-500 mb-4">{place.adresse}</p>
 
-      {place.description && (
-        <p className="text-sm text-gray-700 mb-4 line-clamp-3">{place.description}</p>
-      )}
+      <div className="p-6 overflow-y-auto custom-scrollbar">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-1">
+            <Star size={18} fill="#F59E0B" className="text-amber-500" />
+            <span className="font-bold text-lg">{place.note_moyenne || 'N/A'}</span>
+            <span className="text-gray-400 text-sm">({place.nb_comm || 0} reviews)</span>
+          </div>
+          <span className="px-3 py-1 bg-gray-100 rounded-full text-xs font-bold text-gray-600 uppercase tracking-tighter">
+            {place.code_type}
+          </span>
+        </div>
 
-      <div className="flex gap-2">
+        <div className="flex items-start gap-2 mb-4 text-gray-600">
+          <MapPin size={18} className="mt-0.5 shrink-0 text-blue-500" />
+          <p className="text-sm">{place.adresse}</p>
+        </div>
+
+        {place.description && (
+          <div className="mb-6 bg-gray-50 p-4 rounded-2xl border border-gray-100">
+            <h4 className="text-xs font-bold text-gray-400 uppercase mb-2 flex items-center gap-1">
+              <Info size={12} /> Description
+            </h4>
+            <p className="text-sm text-gray-700 leading-relaxed">{place.description}</p>
+          </div>
+        )}
+
+        <div className="flex gap-2 mb-8">
         <button
           onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}`)}
           className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-2xl font-bold transition-colors flex items-center justify-center gap-2 shadow-lg shadow-blue-200"
@@ -69,7 +97,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
         </button>
       </div>
 
-      <div className="mt-6 border-t pt-4">
+        <div className="border-t pt-6">
         <h3 className="font-bold mb-2 flex items-center gap-2"><MessageSquare size={18} /> Reviews</h3>
         {isAuthenticated && (
           <div className="mb-4">
@@ -121,6 +149,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
             <p className="text-sm text-gray-400 italic">No reviews yet.</p>
           )}
         </div>
+      </div>
       </div>
     </div>
   );
