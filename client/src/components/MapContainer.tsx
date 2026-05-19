@@ -3,7 +3,7 @@ import { GoogleMap, Marker } from '@react-google-maps/api';
 
 const containerStyle = { width: '100%', height: 'calc(100vh - 64px)' };
 
-const getIcon = (type: string) => {
+const getIcon = (type: string, isFavorite: boolean, isVisited: boolean) => {
   const colors: Record<string, string> = {
     cc: '#3B82F6', // Blue
     p: '#6B7280',  // Gray
@@ -24,27 +24,59 @@ const getIcon = (type: string) => {
 
   const color = colors[type] || '#3B82F6';
 
+  let strokeColor = '#FFFFFF';
+  let strokeWeight = 2;
+
+  if (isFavorite) {
+    strokeColor = '#EF4444'; // Red for favorite
+    strokeWeight = 4;
+  } else if (isVisited) {
+    strokeColor = '#10B981'; // Green for visited
+    strokeWeight = 4;
+  }
+
   return {
     path: 'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z',
     fillColor: color,
     fillOpacity: 1,
-    strokeWeight: 2,
-    strokeColor: '#FFFFFF',
+    strokeWeight: strokeWeight,
+    strokeColor: strokeColor,
     scale: 1.8,
     anchor: new google.maps.Point(12, 22),
     labelOrigin: new google.maps.Point(12, 9),
   };
 };
 
-const MapContainer: React.FC<any> = ({ places, onMarkerClick, center }) => {
+const MapContainer: React.FC<any> = ({ places, onMarkerClick, center, onCenterChange, favorites = [], visited = [] }) => {
+  const mapRef = React.useRef<google.maps.Map | null>(null);
+
+  const handleIdle = () => {
+    if (mapRef.current && onCenterChange) {
+      const center = mapRef.current.getCenter();
+      if (center) {
+        onCenterChange({ lat: center.lat(), lng: center.lng() });
+      }
+    }
+  };
+
   return (
-    <GoogleMap mapContainerStyle={containerStyle} center={center} zoom={10}>
-      {places.map((place: any) => (
+    <GoogleMap
+      mapContainerStyle={containerStyle}
+      center={center}
+      zoom={10}
+      onLoad={(map) => { mapRef.current = map; }}
+      onIdle={handleIdle}
+    >
+      {places.map((place: any) => {
+        const isFavorite = favorites.includes(place.id);
+        const isVisited = visited.includes(place.id);
+
+        return (
         <Marker
           key={place.id}
           position={{ lat: parseFloat(place.latitude), lng: parseFloat(place.longitude) }}
           onClick={() => onMarkerClick(place)}
-          icon={getIcon(place.code_type)}
+          icon={getIcon(place.code_type, isFavorite, isVisited)}
           label={{
             text: (place.code_type === 'cc' ? 'A' :
                    place.code_type === 'p' ? 'P' :
@@ -57,7 +89,7 @@ const MapContainer: React.FC<any> = ({ places, onMarkerClick, center }) => {
             fontWeight: 'bold'
           }}
         />
-      ))}
+      )})}
     </GoogleMap>
   );
 };

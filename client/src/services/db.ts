@@ -4,10 +4,14 @@ const DB_NAME = 'park4night-db';
 const STORE_NAME = 'places';
 
 export const initDB = async (): Promise<IDBPDatabase> => {
-  return openDB(DB_NAME, 1, {
-    upgrade(db) {
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+  return openDB(DB_NAME, 2, {
+    upgrade(db, oldVersion) {
+      if (oldVersion < 1) {
+        db.createObjectStore('places', { keyPath: 'id' });
+      }
+      if (oldVersion < 2) {
+        db.createObjectStore('reviews', { keyPath: 'id' });
+        db.createObjectStore('visits', { keyPath: 'id' });
       }
     },
   });
