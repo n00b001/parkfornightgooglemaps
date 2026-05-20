@@ -1,8 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import axios from '../axiosConfig';
 
-export const useGpsTracking = (places: any[], isAuthenticated: boolean) => {
+export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialVisitedIds: number[] = []) => {
   const visitedRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    initialVisitedIds.forEach(id => visitedRef.current.add(id));
+  }, [initialVisitedIds]);
 
   useEffect(() => {
     if (!navigator.geolocation || !isAuthenticated) return;

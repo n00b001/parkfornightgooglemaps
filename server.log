@@ -1,0 +1,43 @@
+
+> server@1.0.0 start
+> node src/index.js
+
+Server running on port 5000
+PrismaClientInitializationError:
+Invalid `prisma.place.findMany()` invocation in
+/app/server/src/controllers/placeController.js:15:45
+
+  12
+  13 try {
+  14   // Check for recent cached data within range
+→ 15   const recentPlaces = await prisma.place.findMany(
+Can't reach database server at `localhost:5432`
+
+Please make sure your database server is running at `localhost:5432`.
+    at $n.handleRequestError (/app/server/node_modules/@prisma/client/runtime/library.js:121:7615)
+    at $n.handleAndLogRequestError (/app/server/node_modules/@prisma/client/runtime/library.js:121:6623)
+    at $n.request (/app/server/node_modules/@prisma/client/runtime/library.js:121:6307)
+    at async l (/app/server/node_modules/@prisma/client/runtime/library.js:130:9633)
+    at async getPlaces (/app/server/src/controllers/placeController.js:15:26) {
+  clientVersion: '5.22.0',
+  errorCode: undefined
+}
+PrismaClientInitializationError:
+Invalid `prisma.place.findMany()` invocation in
+/app/server/src/controllers/placeController.js:15:45
+
+  12
+  13 try {
+  14   // Check for recent cached data within range
+→ 15   const recentPlaces = await prisma.place.findMany(
+Can't reach database server at `localhost:5432`
+
+Please make sure your database server is running at `localhost:5432`.
+    at $n.handleRequestError (/app/server/node_modules/@prisma/client/runtime/library.js:121:7615)
+    at $n.handleAndLogRequestError (/app/server/node_modules/@prisma/client/runtime/library.js:121:6623)
+    at $n.request (/app/server/node_modules/@prisma/client/runtime/library.js:121:6307)
+    at async l (/app/server/node_modules/@prisma/client/runtime/library.js:130:9633)
+    at async getPlaces (/app/server/src/controllers/placeController.js:15:26) {
+  clientVersion: '5.22.0',
+  errorCode: undefined
+}

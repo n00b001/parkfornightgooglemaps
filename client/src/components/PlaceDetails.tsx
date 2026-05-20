@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, Map, Droplets, Zap, Trash2, Wifi, Info } from 'lucide-react';
+import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, Map, Droplets, Zap, Trash2, Wifi, Info, Tent, Trees, ShowerHead, Waves, Coffee } from 'lucide-react';
 import axios from '../axiosConfig';
 import ReviewForm from './ReviewForm';
 
@@ -10,6 +10,10 @@ const AMENITIES = [
   { key: 'wifi', label: 'Wifi', icon: Wifi, color: 'text-purple-500' },
   { key: 'vidange_eaux_usees', label: 'Grey Water', icon: Info, color: 'text-gray-500' },
   { key: 'vidange_wc', label: 'Black Water', icon: Info, color: 'text-gray-700' },
+  { key: 'douche', label: 'Shower', icon: ShowerHead, color: 'text-blue-400' },
+  { key: 'baignade', label: 'Swimming', icon: Waves, color: 'text-cyan-500' },
+  { key: 'table_pique_nique', label: 'Picnic', icon: Coffee, color: 'text-orange-400' },
+  { key: 'ombre', label: 'Shade', icon: Trees, color: 'text-green-800' },
 ];
 
 const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
@@ -38,7 +42,9 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   }, [place]);
 
   const addToGoogleMaps = () => {
-    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.titre || place.name)}@${place.latitude},${place.longitude}`;
+    // Attempting to use a more direct search query that often triggers the "Save" sidebar in GMaps
+    const query = `${place.titre || place.name} ${place.adresse || ''}`.trim();
+    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}&query_place_id=${place.rawData?.google_place_id || ''}`;
     window.open(url, '_blank');
   };
 
@@ -109,18 +115,18 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
 
       <div className="mt-6">
         <h3 className="text-xs font-bold text-gray-400 uppercase mb-2">Amenities</h3>
-        <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
           {AMENITIES.map(amenity => {
-            const hasAmenity = place[amenity.key] === '1';
+              const hasAmenity = place[amenity.key] === '1' || place.rawData?.[amenity.key] === '1';
             if (!hasAmenity) return null;
             return (
-              <div key={amenity.key} className="flex flex-col items-center p-2 bg-gray-50 rounded-xl border border-gray-100">
+                <div key={amenity.key} className="flex flex-col items-center p-2 bg-gray-50 rounded-xl border border-gray-100 transition-transform hover:scale-105">
                 <amenity.icon size={20} className={amenity.color} />
-                <span className="text-[10px] mt-1 font-medium">{amenity.label}</span>
+                  <span className="text-[10px] mt-1 font-medium text-gray-600">{amenity.label}</span>
               </div>
             );
           })}
-          {!AMENITIES.some(a => place[a.key] === '1') && <p className="text-sm text-gray-400 italic col-span-3">No amenity info available.</p>}
+            {!AMENITIES.some(a => place[a.key] === '1' || place.rawData?.[a.key] === '1') && <p className="text-sm text-gray-400 italic col-span-4">No amenity info available.</p>}
         </div>
       </div>
 

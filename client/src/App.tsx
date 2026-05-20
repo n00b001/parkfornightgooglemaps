@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import axios from './axiosConfig';
 import { useQuery } from '@tanstack/react-query';
 import { savePlaces, getCachedPlaces } from './services/db';
-import { Heart } from 'lucide-react';
+import { Heart, List, Map as MapIcon } from 'lucide-react';
 import MapContainer from './components/MapContainer';
+import ListView from './components/ListView';
 import SearchBar from './components/SearchBar';
 import FilterModal from './components/FilterModal';
 import PlaceDetails from './components/PlaceDetails';
@@ -29,6 +30,7 @@ const App: React.FC = () => {
   const [favorites, setFavorites] = useState<number[]>([]);
   const [visited, setVisited] = useState<number[]>([]);
   const [showOnlyFavorites, setShowOnlyFavorites] = useState(false);
+  const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
 
   const { data: places = [], isLoading: isLoadingPlaces } = useQuery({
     queryKey: ['places', lastFetchedCenter, filters],
@@ -44,7 +46,7 @@ const App: React.FC = () => {
     }
   });
 
-  useGpsTracking(places, !!user);
+  useGpsTracking(places, !!user, visited);
 
   useEffect(() => {
     axios.get('/auth/me').then(res => {
@@ -102,6 +104,13 @@ const App: React.FC = () => {
 
       <div className="absolute top-20 right-4 z-10 flex flex-col gap-2">
         <button
+          onClick={() => setViewMode(viewMode === 'map' ? 'list' : 'map')}
+          className="p-3 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 transition-colors"
+          title={viewMode === 'map' ? "Show List" : "Show Map"}
+        >
+          {viewMode === 'map' ? <List size={20} /> : <MapIcon size={20} />}
+        </button>
+        <button
           onClick={handleMyLocation}
           className="p-3 bg-white text-gray-600 rounded-full shadow-lg hover:bg-gray-50 transition-colors"
           title="My Location"
@@ -121,18 +130,28 @@ const App: React.FC = () => {
 
       {isLoaded ? (
         <>
-          <MapContainer
-            places={displayPlaces}
-            center={mapCenter}
-            onMarkerClick={setSelectedPlace}
-            onCenterChange={handleCenterChange}
-            favorites={favorites}
-            visited={visited}
-          />
+          {viewMode === 'map' ? (
+            <MapContainer
+              places={displayPlaces}
+              center={mapCenter}
+              onMarkerClick={setSelectedPlace}
+              onCenterChange={handleCenterChange}
+              favorites={favorites}
+              visited={visited}
+            />
+          ) : (
+            <ListView
+              places={displayPlaces}
+              onPlaceClick={setSelectedPlace}
+              favorites={favorites}
+            />
+          )}
           {isLoadingPlaces && (
-            <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-10 bg-white/90 px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
-              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm font-medium">Fetching parking spots...</span>
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/10 backdrop-blur-[2px]">
+              <div className="bg-white px-6 py-4 rounded-3xl shadow-2xl flex flex-col items-center gap-3">
+                <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                <span className="font-bold text-gray-700">Finding best spots...</span>
+              </div>
             </div>
           )}
         </>

@@ -27,12 +27,16 @@ const getIcon = (type: string, isFavorite: boolean, isVisited: boolean) => {
   let strokeColor = '#FFFFFF';
   let strokeWeight = 2;
 
+  let scale = 1.8;
+
   if (isFavorite) {
     strokeColor = '#EF4444'; // Red for favorite
     strokeWeight = 4;
+    scale = 2.2;
   } else if (isVisited) {
     strokeColor = '#10B981'; // Green for visited
     strokeWeight = 4;
+    scale = 2.0;
   }
 
   return {
@@ -41,7 +45,7 @@ const getIcon = (type: string, isFavorite: boolean, isVisited: boolean) => {
     fillOpacity: 1,
     strokeWeight: strokeWeight,
     strokeColor: strokeColor,
-    scale: 1.8,
+    scale: scale,
     anchor: new google.maps.Point(12, 22),
     labelOrigin: new google.maps.Point(12, 9),
   };
