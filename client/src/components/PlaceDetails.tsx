@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, Map, Droplets, Zap, Trash2, Wifi, Info } from 'lucide-react';
+import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, Map, Droplets, Zap, Trash2, Wifi, Info, Bath, Waves } from 'lucide-react';
 import axios from '../axiosConfig';
 import ReviewForm from './ReviewForm';
 
@@ -10,6 +10,8 @@ const AMENITIES = [
   { key: 'wifi', label: 'Wifi', icon: Wifi, color: 'text-purple-500' },
   { key: 'vidange_eaux_usees', label: 'Grey Water', icon: Info, color: 'text-gray-500' },
   { key: 'vidange_wc', label: 'Black Water', icon: Info, color: 'text-gray-700' },
+  { key: 'douche', label: 'Shower', icon: Bath, color: 'text-blue-400' },
+  { key: 'baignade', label: 'Waves', icon: Waves, color: 'text-cyan-500' },
 ];
 
 const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
@@ -109,18 +111,18 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
 
       <div className="mt-6">
         <h3 className="text-xs font-bold text-gray-400 uppercase mb-2">Amenities</h3>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-4 gap-2">
           {AMENITIES.map(amenity => {
             const hasAmenity = place[amenity.key] === '1';
             if (!hasAmenity) return null;
             return (
               <div key={amenity.key} className="flex flex-col items-center p-2 bg-gray-50 rounded-xl border border-gray-100">
                 <amenity.icon size={20} className={amenity.color} />
-                <span className="text-[10px] mt-1 font-medium">{amenity.label}</span>
+                <span className="text-[10px] mt-1 font-medium text-center">{amenity.label}</span>
               </div>
             );
           })}
-          {!AMENITIES.some(a => place[a.key] === '1') && <p className="text-sm text-gray-400 italic col-span-3">No amenity info available.</p>}
+          {!AMENITIES.some(a => place[a.key] === '1') && <p className="text-sm text-gray-400 italic col-span-4">No amenity info available.</p>}
         </div>
       </div>
 
