@@ -2,14 +2,14 @@ import React, { useState, useEffect } from 'react';
 import axios from './axiosConfig';
 import { useQuery } from '@tanstack/react-query';
 import { savePlaces, getCachedPlaces } from './services/db';
-import { Heart } from 'lucide-react';
+import { Heart, LayoutList, Map as MapIcon, LocateFixed } from 'lucide-react';
 import MapContainer from './components/MapContainer';
+import ListView from './components/ListView';
 import SearchBar from './components/SearchBar';
 import FilterModal from './components/FilterModal';
 import PlaceDetails from './components/PlaceDetails';
 import { useGpsTracking } from './hooks/useGpsTracking';
 import { useJsApiLoader } from '@react-google-maps/api';
-import { LocateFixed } from 'lucide-react';
 
 const LIBRARIES: ("places" | "drawing" | "geometry" | "visualization")[] = ['places'];
 
@@ -29,6 +29,7 @@ const App: React.FC = () => {
   const [favorites, setFavorites] = useState<number[]>([]);
   const [visited, setVisited] = useState<number[]>([]);
   const [showOnlyFavorites, setShowOnlyFavorites] = useState(false);
+  const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
 
   const { data: places = [], isLoading: isLoadingPlaces } = useQuery({
     queryKey: ['places', lastFetchedCenter, filters],
@@ -121,23 +122,52 @@ const App: React.FC = () => {
 
       {isLoaded ? (
         <>
-          <MapContainer
-            places={displayPlaces}
-            center={mapCenter}
-            onMarkerClick={setSelectedPlace}
-            onCenterChange={handleCenterChange}
-            favorites={favorites}
-            visited={visited}
-          />
+          {viewMode === 'map' ? (
+            <MapContainer
+              places={displayPlaces}
+              center={mapCenter}
+              onMarkerClick={setSelectedPlace}
+              onCenterChange={handleCenterChange}
+              favorites={favorites}
+              visited={visited}
+            />
+          ) : (
+            <ListView
+              places={displayPlaces}
+              onPlaceClick={setSelectedPlace}
+              favorites={favorites}
+              onToggleFavorite={handleToggleFavorite}
+            />
+          )}
+
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20">
+            <button
+              onClick={() => setViewMode(viewMode === 'map' ? 'list' : 'map')}
+              className="bg-gray-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-2 font-bold hover:bg-black transition-colors"
+            >
+              {viewMode === 'map' ? (
+                <><LayoutList size={20} /> List View</>
+              ) : (
+                <><MapIcon size={20} /> Map View</>
+              )}
+            </button>
+          </div>
+
           {isLoadingPlaces && (
-            <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-10 bg-white/90 px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
-              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm font-medium">Fetching parking spots...</span>
+            <div className="absolute inset-0 z-[60] bg-white/30 backdrop-blur-md flex flex-col items-center justify-center transition-all duration-300">
+              <div className="relative">
+                <div className="w-16 h-16 border-4 border-blue-500/20 rounded-full" />
+                <div className="absolute top-0 left-0 w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+              </div>
+              <p className="mt-4 text-gray-900 font-bold text-lg animate-pulse">Finding the best spots...</p>
             </div>
           )}
         </>
       ) : (
-        <div className="flex items-center justify-center h-full">Loading Maps...</div>
+        <div className="fixed inset-0 bg-white flex flex-col items-center justify-center">
+          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+          <p className="mt-4 text-gray-600 font-medium">Loading Park4Night...</p>
+        </div>
       )}
       <FilterModal isOpen={isFilterOpen} onClose={() => setIsFilterOpen(false)} onApply={setFilters} />
       {selectedPlace && (
