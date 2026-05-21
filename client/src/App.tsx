@@ -30,6 +30,18 @@ const App: React.FC = () => {
   const [visited, setVisited] = useState<number[]>([]);
   const [showOnlyFavorites, setShowOnlyFavorites] = useState(false);
   const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   const { data: places = [], isLoading: isLoadingPlaces } = useQuery({
     queryKey: ['places', lastFetchedCenter, filters],
@@ -45,7 +57,7 @@ const App: React.FC = () => {
     }
   });
 
-  useGpsTracking(places, !!user);
+  useGpsTracking(places, !!user, visited);
 
   useEffect(() => {
     axios.get('/auth/me').then(res => {
@@ -98,77 +110,102 @@ const App: React.FC = () => {
   const loginUrl = `${import.meta.env.VITE_API_URL}/auth/google?returnTo=${encodeURIComponent(window.location.origin)}`;
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-gray-100">
-      <SearchBar onSearch={(coords: any) => { setMapCenter(coords); setLastFetchedCenter(coords); }} onOpenFilters={() => setIsFilterOpen(true)} />
-
-      <div className="absolute top-20 right-4 z-10 flex flex-col gap-2">
-        <button
-          onClick={handleMyLocation}
-          className="p-3 bg-white text-gray-600 rounded-full shadow-lg hover:bg-gray-50 transition-colors"
-          title="My Location"
-        >
-          <LocateFixed size={20} />
-        </button>
-        {user && (
-          <button
-            onClick={() => setShowOnlyFavorites(!showOnlyFavorites)}
-            className={`p-3 rounded-full shadow-lg transition-colors ${showOnlyFavorites ? 'bg-red-500 text-white' : 'bg-white text-gray-600'}`}
-            title={showOnlyFavorites ? "Show All" : "Show Favorites"}
-          >
-            <Heart size={20} fill={showOnlyFavorites ? 'white' : 'none'} />
-          </button>
-        )}
-      </div>
-
-      {isLoaded ? (
-        <>
-          {viewMode === 'map' ? (
-            <MapContainer
-              places={displayPlaces}
-              center={mapCenter}
-              onMarkerClick={setSelectedPlace}
-              onCenterChange={handleCenterChange}
-              favorites={favorites}
-              visited={visited}
-            />
-          ) : (
-            <ListView
-              places={displayPlaces}
-              onPlaceClick={setSelectedPlace}
-              favorites={favorites}
-              onToggleFavorite={handleToggleFavorite}
-            />
-          )}
-
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20">
-            <button
-              onClick={() => setViewMode(viewMode === 'map' ? 'list' : 'map')}
-              className="bg-gray-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-2 font-bold hover:bg-black transition-colors"
-            >
-              {viewMode === 'map' ? (
-                <><LayoutList size={20} /> List View</>
-              ) : (
-                <><MapIcon size={20} /> Map View</>
-              )}
-            </button>
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-gray-100">
+      <header className="h-16 bg-white border-b flex items-center px-4 justify-between z-30 gap-4">
+        <div className="flex items-center gap-2">
+          <div className="bg-blue-600 p-2 rounded-lg">
+            <MapIcon className="text-white" size={20} />
           </div>
+          <h1 className="font-bold text-lg hidden sm:block">Park4Night</h1>
+        </div>
 
-          {isLoadingPlaces && (
-            <div className="absolute inset-0 z-[60] bg-white/30 backdrop-blur-md flex flex-col items-center justify-center transition-all duration-300">
-              <div className="relative">
-                <div className="w-16 h-16 border-4 border-blue-500/20 rounded-full" />
-                <div className="absolute top-0 left-0 w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-              </div>
-              <p className="mt-4 text-gray-900 font-bold text-lg animate-pulse">Finding the best spots...</p>
+        <SearchBar onSearch={(coords: any) => { setMapCenter(coords); setLastFetchedCenter(coords); }} onOpenFilters={() => setIsFilterOpen(true)} />
+
+        <div className="flex items-center gap-2">
+          {!isOnline && (
+            <div className="px-3 py-1 bg-amber-100 text-amber-700 text-xs font-bold rounded-full animate-pulse">
+              Offline
             </div>
           )}
-        </>
-      ) : (
-        <div className="fixed inset-0 bg-white flex flex-col items-center justify-center">
-          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-          <p className="mt-4 text-gray-600 font-medium">Loading Park4Night...</p>
+          {user ? (
+            <div className="flex items-center gap-2">
+              <img src={user.avatar} alt={user.name} className="w-8 h-8 rounded-full border" />
+              <button
+                onClick={() => setShowOnlyFavorites(!showOnlyFavorites)}
+                className={`p-2 rounded-lg transition-colors ${showOnlyFavorites ? 'bg-red-50 text-red-500' : 'bg-gray-100 text-gray-600'}`}
+                title={showOnlyFavorites ? "Show All" : "Show Favorites"}
+              >
+                <Heart size={20} fill={showOnlyFavorites ? 'currentColor' : 'none'} />
+              </button>
+            </div>
+          ) : (
+            <a href={loginUrl} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-blue-700 transition-colors">Sign In</a>
+          )}
         </div>
-      )}
+      </header>
+
+      <main className="flex-1 relative overflow-hidden">
+        <div className="absolute top-4 right-4 z-10 flex flex-col gap-2">
+          <button
+            onClick={handleMyLocation}
+            className="p-3 bg-white text-gray-600 rounded-full shadow-lg hover:bg-gray-50 transition-colors border"
+            title="My Location"
+          >
+            <LocateFixed size={20} />
+          </button>
+        </div>
+
+        {isLoaded ? (
+          <>
+            {viewMode === 'map' ? (
+              <MapContainer
+                places={displayPlaces}
+                center={mapCenter}
+                onMarkerClick={setSelectedPlace}
+                onCenterChange={handleCenterChange}
+                favorites={favorites}
+                visited={visited}
+              />
+            ) : (
+              <ListView
+                places={displayPlaces}
+                onPlaceClick={setSelectedPlace}
+                favorites={favorites}
+                onToggleFavorite={handleToggleFavorite}
+              />
+            )}
+
+            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20">
+              <button
+                onClick={() => setViewMode(viewMode === 'map' ? 'list' : 'map')}
+                className="bg-gray-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-2 font-bold hover:bg-black transition-colors"
+              >
+                {viewMode === 'map' ? (
+                  <><LayoutList size={20} /> List View</>
+                ) : (
+                  <><MapIcon size={20} /> Map View</>
+                )}
+              </button>
+            </div>
+
+            {isLoadingPlaces && (
+              <div className="absolute inset-0 z-[60] bg-white/30 backdrop-blur-md flex flex-col items-center justify-center transition-all duration-300">
+                <div className="relative">
+                  <div className="w-16 h-16 border-4 border-blue-500/20 rounded-full" />
+                  <div className="absolute top-0 left-0 w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                </div>
+                <p className="mt-4 text-gray-900 font-bold text-lg animate-pulse">Finding the best spots...</p>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="absolute inset-0 bg-white flex flex-col items-center justify-center">
+            <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+            <p className="mt-4 text-gray-600 font-medium">Loading Park4Night...</p>
+          </div>
+        )}
+      </main>
+
       <FilterModal isOpen={isFilterOpen} onClose={() => setIsFilterOpen(false)} onApply={setFilters} />
       {selectedPlace && (
         <PlaceDetails
@@ -178,11 +215,6 @@ const App: React.FC = () => {
           onToggleFavorite={() => handleToggleFavorite(selectedPlace.id)}
           isFavorite={favorites.includes(selectedPlace.id)}
         />
-      )}
-      {!user && (
-        <div className="absolute top-4 right-4 z-10">
-          <a href={loginUrl} className="bg-white px-4 py-2 rounded-full shadow-md font-bold text-sm">Sign In</a>
-        </div>
       )}
     </div>
   );
