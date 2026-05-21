@@ -2,14 +2,15 @@ import React, { useState, useEffect } from 'react';
 import axios from './axiosConfig';
 import { useQuery } from '@tanstack/react-query';
 import { savePlaces, getCachedPlaces } from './services/db';
-import { Heart } from 'lucide-react';
+import { Heart, List, Map as MapIcon, LocateFixed, User as UserIcon } from 'lucide-react';
 import MapContainer from './components/MapContainer';
 import SearchBar from './components/SearchBar';
 import FilterModal from './components/FilterModal';
 import PlaceDetails from './components/PlaceDetails';
+import ListView from './components/ListView';
 import { useGpsTracking } from './hooks/useGpsTracking';
 import { useJsApiLoader } from '@react-google-maps/api';
-import { LocateFixed } from 'lucide-react';
+import { Place, User, Filters } from './types';
 
 const LIBRARIES: ("places" | "drawing" | "geometry" | "visualization")[] = ['places'];
 
@@ -20,12 +21,13 @@ const App: React.FC = () => {
     libraries: LIBRARIES
   });
 
+  const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
-  const [selectedPlace, setSelectedPlace] = useState<any>(null);
-  const [user, setUser] = useState<any>(null);
+  const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [mapCenter, setMapCenter] = useState({ lat: 48.8566, lng: 2.3522 });
   const [lastFetchedCenter, setLastFetchedCenter] = useState({ lat: 48.8566, lng: 2.3522 });
-  const [filters, setFilters] = useState<any>({});
+  const [filters, setFilters] = useState<Filters>({});
   const [favorites, setFavorites] = useState<number[]>([]);
   const [visited, setVisited] = useState<number[]>([]);
   const [showOnlyFavorites, setShowOnlyFavorites] = useState(false);
@@ -44,7 +46,7 @@ const App: React.FC = () => {
     }
   });
 
-  useGpsTracking(places, !!user);
+  useGpsTracking(places, !!user, visited);
 
   useEffect(() => {
     axios.get('/auth/me').then(res => {
@@ -62,9 +64,8 @@ const App: React.FC = () => {
 
   const handleCenterChange = (newCenter: { lat: number, lng: number }) => {
     setMapCenter(newCenter);
-    // Only trigger fetch if moved significantly (e.g., > 10km) or first time
     const dist = Math.sqrt(Math.pow(newCenter.lat - lastFetchedCenter.lat, 2) + Math.pow(newCenter.lng - lastFetchedCenter.lng, 2));
-    if (dist > 0.1) { // roughly 10-11km
+    if (dist > 0.1) {
       setLastFetchedCenter(newCenter);
     }
   };
@@ -98,20 +99,57 @@ const App: React.FC = () => {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-gray-100">
-      <SearchBar onSearch={(coords: any) => { setMapCenter(coords); setLastFetchedCenter(coords); }} onOpenFilters={() => setIsFilterOpen(true)} />
+      {isLoadingPlaces && (
+        <div className="absolute inset-0 z-[100] flex items-center justify-center bg-white/40 backdrop-blur-sm transition-all duration-500">
+          <div className="flex flex-col items-center gap-4 bg-white p-8 rounded-3xl shadow-2xl border border-gray-100">
+            <div className="relative w-16 h-16">
+              <div className="absolute inset-0 border-4 border-blue-100 rounded-full"></div>
+              <div className="absolute inset-0 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+            </div>
+            <div className="text-center">
+              <h3 className="text-lg font-bold text-gray-900">Finding Spots</h3>
+              <p className="text-sm text-gray-500">Exploring nearby parking...</p>
+            </div>
+          </div>
+        </div>
+      )}
 
-      <div className="absolute top-20 right-4 z-10 flex flex-col gap-2">
+      {/* Top Header */}
+      <div className="absolute top-0 inset-x-0 z-20 p-4 flex gap-2">
+        <div className="flex-1">
+          <SearchBar onSearch={(coords: any) => { setMapCenter(coords); setLastFetchedCenter(coords); }} onOpenFilters={() => setIsFilterOpen(true)} />
+        </div>
+        {!user ? (
+          <a href={loginUrl} className="bg-white p-3 rounded-full shadow-lg hover:bg-gray-50 transition-colors border border-gray-100 flex items-center justify-center">
+            <UserIcon size={20} className="text-gray-600" />
+          </a>
+        ) : (
+          <button className="bg-white p-1 rounded-full shadow-lg border-2 border-blue-500 overflow-hidden w-11 h-11">
+             <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" />
+          </button>
+        )}
+      </div>
+
+      {/* Floating Action Buttons */}
+      <div className="absolute top-20 right-4 z-10 flex flex-col gap-3">
         <button
           onClick={handleMyLocation}
-          className="p-3 bg-white text-gray-600 rounded-full shadow-lg hover:bg-gray-50 transition-colors"
+          className="p-3 bg-white text-gray-600 rounded-full shadow-lg hover:bg-gray-50 transition-colors border border-gray-50"
           title="My Location"
         >
           <LocateFixed size={20} />
         </button>
+        <button
+          onClick={() => setViewMode(viewMode === 'map' ? 'list' : 'map')}
+          className="p-3 bg-white text-gray-600 rounded-full shadow-lg hover:bg-gray-50 transition-colors border border-gray-50"
+          title={viewMode === 'map' ? 'List View' : 'Map View'}
+        >
+          {viewMode === 'map' ? <List size={20} /> : <MapIcon size={20} />}
+        </button>
         {user && (
           <button
             onClick={() => setShowOnlyFavorites(!showOnlyFavorites)}
-            className={`p-3 rounded-full shadow-lg transition-colors ${showOnlyFavorites ? 'bg-red-500 text-white' : 'bg-white text-gray-600'}`}
+            className={`p-3 rounded-full shadow-lg transition-all border border-gray-50 ${showOnlyFavorites ? 'bg-red-500 text-white border-red-400' : 'bg-white text-gray-600'}`}
             title={showOnlyFavorites ? "Show All" : "Show Favorites"}
           >
             <Heart size={20} fill={showOnlyFavorites ? 'white' : 'none'} />
@@ -121,25 +159,35 @@ const App: React.FC = () => {
 
       {isLoaded ? (
         <>
-          <MapContainer
-            places={displayPlaces}
-            center={mapCenter}
-            onMarkerClick={setSelectedPlace}
-            onCenterChange={handleCenterChange}
-            favorites={favorites}
-            visited={visited}
-          />
-          {isLoadingPlaces && (
-            <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-10 bg-white/90 px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
-              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm font-medium">Fetching parking spots...</span>
-            </div>
-          )}
+          <div className={`h-full w-full transition-opacity duration-300 ${viewMode === 'map' ? 'opacity-100' : 'opacity-0 pointer-events-none absolute'}`}>
+            <MapContainer
+              places={displayPlaces}
+              center={mapCenter}
+              onMarkerClick={setSelectedPlace}
+              onCenterChange={handleCenterChange}
+              favorites={favorites}
+              visited={visited}
+            />
+          </div>
+          <div className={`h-full w-full transition-opacity duration-300 ${viewMode === 'list' ? 'opacity-100' : 'opacity-0 pointer-events-none absolute'}`}>
+            <ListView
+              places={displayPlaces}
+              onPlaceClick={setSelectedPlace}
+              favorites={favorites}
+            />
+          </div>
         </>
       ) : (
-        <div className="flex items-center justify-center h-full">Loading Maps...</div>
+        <div className="flex items-center justify-center h-full bg-gray-50">
+           <div className="text-center">
+             <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+             <p className="text-gray-500 font-medium">Initializing Maps...</p>
+           </div>
+        </div>
       )}
+
       <FilterModal isOpen={isFilterOpen} onClose={() => setIsFilterOpen(false)} onApply={setFilters} />
+
       {selectedPlace && (
         <PlaceDetails
           place={selectedPlace}
@@ -148,11 +196,6 @@ const App: React.FC = () => {
           onToggleFavorite={() => handleToggleFavorite(selectedPlace.id)}
           isFavorite={favorites.includes(selectedPlace.id)}
         />
-      )}
-      {!user && (
-        <div className="absolute top-4 right-4 z-10">
-          <a href={loginUrl} className="bg-white px-4 py-2 rounded-full shadow-md font-bold text-sm">Sign In</a>
-        </div>
       )}
     </div>
   );

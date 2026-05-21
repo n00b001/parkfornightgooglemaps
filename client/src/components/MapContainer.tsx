@@ -1,7 +1,8 @@
 import React from 'react';
 import { GoogleMap, Marker } from '@react-google-maps/api';
+import { Place } from '../types';
 
-const containerStyle = { width: '100%', height: 'calc(100vh - 64px)' };
+const containerStyle = { width: '100%', height: '100%' };
 
 const getIcon = (type: string, isFavorite: boolean, isVisited: boolean) => {
   const colors: Record<string, string> = {
@@ -9,30 +10,24 @@ const getIcon = (type: string, isFavorite: boolean, isVisited: boolean) => {
     p: '#6B7280',  // Gray
     cp: '#10B981', // Green
     p_prive: '#F59E0B', // Amber
-    ferme: '#EF4444', // Red
+    ferme: '#8B5CF6', // Purple (changed from Red)
     nature: '#059669', // Dark Green
-  };
-
-  const labels: Record<string, string> = {
-    cc: 'A',
-    p: 'P',
-    cp: 'C',
-    p_prive: 'Pr',
-    ferme: 'F',
-    nature: 'N',
   };
 
   const color = colors[type] || '#3B82F6';
 
   let strokeColor = '#FFFFFF';
   let strokeWeight = 2;
+  let scale = 1.8;
 
   if (isFavorite) {
     strokeColor = '#EF4444'; // Red for favorite
     strokeWeight = 4;
+    scale = 2.2;
   } else if (isVisited) {
     strokeColor = '#10B981'; // Green for visited
     strokeWeight = 4;
+    scale = 2.0;
   }
 
   return {
@@ -41,13 +36,22 @@ const getIcon = (type: string, isFavorite: boolean, isVisited: boolean) => {
     fillOpacity: 1,
     strokeWeight: strokeWeight,
     strokeColor: strokeColor,
-    scale: 1.8,
+    scale: scale,
     anchor: new google.maps.Point(12, 22),
     labelOrigin: new google.maps.Point(12, 9),
   };
 };
 
-const MapContainer: React.FC<any> = ({ places, onMarkerClick, center, onCenterChange, favorites = [], visited = [] }) => {
+interface MapContainerProps {
+  places: Place[];
+  onMarkerClick: (place: Place) => void;
+  center: { lat: number; lng: number };
+  onCenterChange: (center: { lat: number; lng: number }) => void;
+  favorites: number[];
+  visited: number[];
+}
+
+const MapContainer: React.FC<MapContainerProps> = ({ places, onMarkerClick, center, onCenterChange, favorites = [], visited = [] }) => {
   const mapRef = React.useRef<google.maps.Map | null>(null);
 
   const handleIdle = () => {
@@ -63,9 +67,21 @@ const MapContainer: React.FC<any> = ({ places, onMarkerClick, center, onCenterCh
     <GoogleMap
       mapContainerStyle={containerStyle}
       center={center}
-      zoom={10}
+      zoom={12}
       onLoad={(map) => { mapRef.current = map; }}
       onIdle={handleIdle}
+      options={{
+        clickableIcons: false,
+        disableDefaultUI: true,
+        zoomControl: true,
+        styles: [
+          {
+            featureType: "poi",
+            elementType: "labels",
+            stylers: [{ visibility: "off" }]
+          }
+        ]
+      }}
     >
       {places.map((place: any) => {
         const isFavorite = favorites.includes(place.id);

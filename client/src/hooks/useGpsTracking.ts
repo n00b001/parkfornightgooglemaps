@@ -1,8 +1,15 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import axios from '../axiosConfig';
+import { Place } from '../types';
 
-export const useGpsTracking = (places: any[], isAuthenticated: boolean) => {
+export const useGpsTracking = (places: Place[], isAuthenticated: boolean, initialVisitedIds: number[] = []) => {
   const visitedRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    if (initialVisitedIds.length > 0) {
+      initialVisitedIds.forEach(id => visitedRef.current.add(id));
+    }
+  }, [initialVisitedIds]);
 
   useEffect(() => {
     if (!navigator.geolocation || !isAuthenticated) return;
@@ -12,7 +19,7 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean) => {
         const { latitude, longitude } = position.coords;
         places.forEach(async (place) => {
           if (visitedRef.current.has(place.id)) return;
-          const dist = calculateDistance(latitude, longitude, parseFloat(place.latitude), parseFloat(place.longitude));
+          const dist = calculateDistance(latitude, longitude, parseFloat(place.latitude as any), parseFloat(place.longitude as any));
           if (dist < 0.1) { // 100 meters
             try {
               visitedRef.current.add(place.id);
