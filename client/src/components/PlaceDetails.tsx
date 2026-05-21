@@ -40,7 +40,10 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   }, [place]);
 
   const addToGoogleMaps = () => {
-    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.titre || place.name)}@${place.latitude},${place.longitude}`;
+    // Attempt to find the place on Google Maps using search with specific coordinates
+    // This often triggers the "Save" and "Sidebar" UI for the specific place if Google can match it
+    const query = encodeURIComponent(`${place.titre || place.name} ${place.adresse || ''}`);
+    const url = `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${place.google_place_id || ''}`;
     window.open(url, '_blank');
   };
 

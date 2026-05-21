@@ -18,17 +18,17 @@ const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters }) => {
   };
 
   return (
-    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 w-full max-w-md px-4">
-      <form onSubmit={handleSearch} className="flex items-center bg-white rounded-full shadow-lg overflow-hidden border border-gray-100">
-        <div className="pl-4 text-gray-400"><Search size={20} /></div>
+    <div className="flex-1 max-w-md">
+      <form onSubmit={handleSearch} className="flex items-center bg-gray-100 rounded-full overflow-hidden border border-gray-200">
+        <div className="pl-4 text-gray-400"><Search size={18} /></div>
         <input
-          className="w-full py-4 px-3 outline-none text-sm"
+          className="w-full py-2 px-3 outline-none text-sm bg-transparent"
           placeholder="Search for a location..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         <button type="button" onClick={onOpenFilters} className="pr-4 text-gray-500 hover:text-blue-600 transition-colors">
-          <SlidersHorizontal size={20} />
+          <SlidersHorizontal size={18} />
         </button>
       </form>
     </div>
