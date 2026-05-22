@@ -1,7 +1,7 @@
 import React from 'react';
-import { GoogleMap, Marker } from '@react-google-maps/api';
+import { GoogleMap, Marker, MarkerClusterer } from '@react-google-maps/api';
 
-const containerStyle = { width: '100%', height: 'calc(100vh - 64px)' };
+const containerStyle = { width: '100%', height: '100%' };
 
 const getIcon = (type: string, isFavorite: boolean, isVisited: boolean) => {
   const colors: Record<string, string> = {
@@ -69,30 +69,46 @@ const MapContainer: React.FC<any> = ({ places, onMarkerClick, center, onCenterCh
       zoom={10}
       onLoad={(map) => { mapRef.current = map; }}
       onIdle={handleIdle}
+      options={{
+        fullscreenControl: false,
+        streetViewControl: false,
+        mapTypeControl: false,
+        zoomControlOptions: { position: google.maps.ControlPosition.RIGHT_CENTER }
+      }}
     >
-      {places.map((place: any) => {
-        const isFavorite = favorites.includes(place.id);
-        const isVisited = visited.includes(place.id);
+      <MarkerClusterer options={{
+        imagePath: 'https://developers.google.com/maps/documentation/javascript/examples/markerclusterer/m',
+      }}>
+        {(clusterer) => (
+          <>
+            {places.map((place: any) => {
+              const isFavorite = favorites.includes(place.id);
+              const isVisited = visited.includes(place.id);
 
-        return (
-        <Marker
-          key={place.id}
-          position={{ lat: parseFloat(place.latitude), lng: parseFloat(place.longitude) }}
-          onClick={() => onMarkerClick(place)}
-          icon={getIcon(place.code_type, isFavorite, isVisited)}
-          label={{
-            text: (place.code_type === 'cc' ? 'A' :
-                   place.code_type === 'p' ? 'P' :
-                   place.code_type === 'cp' ? 'C' :
-                   place.code_type === 'p_prive' ? 'Pr' :
-                   place.code_type === 'ferme' ? 'F' :
-                   place.code_type === 'nature' ? 'N' : '?'),
-            color: 'white',
-            fontSize: '10px',
-            fontWeight: 'bold'
-          }}
-        />
-      )})}
+              return (
+                <Marker
+                  key={place.id}
+                  position={{ lat: parseFloat(place.latitude), lng: parseFloat(place.longitude) }}
+                  onClick={() => onMarkerClick(place)}
+                  icon={getIcon(place.type || place.code_type, isFavorite, isVisited)}
+                  clusterer={clusterer}
+                  label={{
+                    text: (place.code_type === 'cc' ? 'A' :
+                           place.code_type === 'p' ? 'P' :
+                           place.code_type === 'cp' ? 'C' :
+                           place.code_type === 'p_prive' ? 'Pr' :
+                           place.code_type === 'ferme' ? 'F' :
+                           place.code_type === 'nature' ? 'N' : '?'),
+                    color: 'white',
+                    fontSize: '10px',
+                    fontWeight: 'bold'
+                  }}
+                />
+              )
+            })}
+          </>
+        )}
+      </MarkerClusterer>
     </GoogleMap>
   );
 };
