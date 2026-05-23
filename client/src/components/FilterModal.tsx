@@ -1,10 +1,26 @@
 import React, { useState } from 'react';
-import { X } from 'lucide-react';
+import { X, Droplets, Zap, Trash2, Wifi, Bath, Waves } from 'lucide-react';
+
+const AMENITIES_OPTIONS = [
+  { key: 'point_eau', label: 'Water', icon: Droplets },
+  { key: 'electricite', label: 'Electricity', icon: Zap },
+  { key: 'poubelle', label: 'Trash', icon: Trash2 },
+  { key: 'wifi', label: 'Wifi', icon: Wifi },
+  { key: 'douche', label: 'Shower', icon: Bath },
+  { key: 'baignade', label: 'Water Activity', icon: Waves },
+];
 
 const FilterModal: React.FC<any> = ({ isOpen, onClose, onApply }) => {
   const [type, setType] = useState('');
   const [minRating, setMinRating] = useState('');
   const [sortBy, setSortBy] = useState('rating');
+  const [amenities, setAmenities] = useState<string[]>([]);
+
+  const toggleAmenity = (key: string) => {
+    setAmenities(prev =>
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+    );
+  };
 
   if (!isOpen) return null;
   return (
@@ -38,8 +54,35 @@ const FilterModal: React.FC<any> = ({ isOpen, onClose, onApply }) => {
               <option value="distance">Distance (Nearest First)</option>
             </select>
           </div>
+          <div>
+            <label className="block text-sm font-bold mb-2">Amenities</label>
+            <div className="grid grid-cols-2 gap-2">
+              {AMENITIES_OPTIONS.map(opt => (
+                <button
+                  key={opt.key}
+                  onClick={() => toggleAmenity(opt.key)}
+                  className={`flex items-center gap-2 p-2 rounded-lg border text-sm transition-colors ${
+                    amenities.includes(opt.key)
+                      ? 'bg-blue-50 border-blue-200 text-blue-700'
+                      : 'bg-white border-gray-100 text-gray-600'
+                  }`}
+                >
+                  <opt.icon size={16} />
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
-        <button onClick={() => onApply({ type, minRating, sortBy })} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">Apply</button>
+        <button
+          onClick={() => {
+            onApply({ type, minRating, sortBy, amenities });
+            onClose();
+          }}
+          className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-blue-200"
+        >
+          Apply Filters
+        </button>
       </div>
     </div>
   );

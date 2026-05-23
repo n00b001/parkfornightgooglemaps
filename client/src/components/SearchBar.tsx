@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Search, SlidersHorizontal } from 'lucide-react';
 
-const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters }) => {
+const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters, onQueryChange }) => {
   const [query, setQuery] = useState('');
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -25,7 +25,10 @@ const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters }) => {
           className="w-full py-2 px-3 outline-none text-sm bg-transparent"
           placeholder="Search for a location..."
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            onQueryChange(e.target.value);
+          }}
         />
         <button type="button" onClick={onOpenFilters} className="pr-4 text-gray-500 hover:text-blue-600 transition-colors">
           <SlidersHorizontal size={18} />

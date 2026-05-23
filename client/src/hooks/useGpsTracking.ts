@@ -1,8 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import axios from '../axiosConfig';
+import { savePendingVisit } from '../services/db';
 
 export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialVisitedIds: number[] = []) => {
   const visitedRef = useRef<Set<number>>(new Set(initialVisitedIds));
+  const placesRef = useRef<any[]>(places);
+
+  useEffect(() => {
+    placesRef.current = places;
+  }, [places]);
 
   useEffect(() => {
     if (initialVisitedIds.length > 0) {
@@ -16,24 +22,25 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialV
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
         const { latitude, longitude } = position.coords;
-        places.forEach(async (place) => {
+        placesRef.current.forEach(async (place) => {
           if (visitedRef.current.has(place.id)) return;
           const dist = calculateDistance(latitude, longitude, parseFloat(place.latitude), parseFloat(place.longitude));
           if (dist < 0.1) { // 100 meters
+            visitedRef.current.add(place.id);
             try {
-              visitedRef.current.add(place.id);
               await axios.post('/api/visits', { placeId: place.id });
             } catch (err) {
-              visitedRef.current.delete(place.id);
+              console.warn('Failed to record visit online, saving to pending', err);
+              await savePendingVisit(place.id);
             }
           }
         });
       },
       null,
-      { enableHighAccuracy: true }
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
     );
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [places, isAuthenticated]);
+  }, [isAuthenticated]);
 };
 
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number) {

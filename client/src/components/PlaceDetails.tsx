@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, Map, Droplets, Zap, Trash2, Wifi, Info, Bath, Waves } from 'lucide-react';
 import axios from '../axiosConfig';
 import ReviewForm from './ReviewForm';
+import { saveReviews, getCachedReviews } from '../services/db';
 
 const AMENITIES = [
   { key: 'point_eau', label: 'Water', icon: Droplets, color: 'text-blue-500' },
@@ -26,10 +27,18 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
         axios.get(`/api/reviews/${place.id}`),
         axios.get(`/api/places/${place.id}/reviews`)
       ]);
-      setReviews(localRes.data);
-      setP4nReviews(p4nRes.data?.commentaires || []);
+      const local = localRes.data;
+      const p4n = p4nRes.data?.commentaires || [];
+      setReviews(local);
+      setP4nReviews(p4n);
+      await saveReviews(place.id, { local, p4n });
     } catch (err) {
-      console.error('Failed to fetch reviews', err);
+      console.error('Failed to fetch reviews, trying cache', err);
+      const cached = await getCachedReviews(place.id);
+      if (cached) {
+        setReviews(cached.local || []);
+        setP4nReviews(cached.p4n || []);
+      }
     } finally {
       setIsLoadingReviews(false);
     }
@@ -40,10 +49,12 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   }, [place]);
 
   const addToGoogleMaps = () => {
-    // Attempt to find the place on Google Maps using search with specific coordinates
-    // This often triggers the "Save" and "Sidebar" UI for the specific place if Google can match it
+    const googlePlaceId = place.google_place_id || place.rawData?.google_place_id;
     const query = encodeURIComponent(`${place.titre || place.name} ${place.adresse || ''}`);
-    const url = `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${place.google_place_id || ''}`;
+    // If we have a google_place_id, we can use it to trigger the sidebar/save options more reliably
+    const url = googlePlaceId
+      ? `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${googlePlaceId}`
+      : `https://www.google.com/maps/search/?api=1&query=${query}`;
     window.open(url, '_blank');
   };
 
