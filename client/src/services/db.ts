@@ -1,17 +1,31 @@
 import { openDB, IDBPDatabase } from 'idb';
 
 const DB_NAME = 'park4night-db';
-const STORE_NAME = 'places';
+const STORES = {
+  PLACES: 'places',
+  REVIEWS: 'reviews',
+  VISITS: 'visits',
+  PENDING_VISITS: 'pending-visits'
+};
 
 export const initDB = async (): Promise<IDBPDatabase> => {
-  return openDB(DB_NAME, 2, {
+  return openDB(DB_NAME, 3, {
     upgrade(db, oldVersion) {
       if (oldVersion < 1) {
-        db.createObjectStore('places', { keyPath: 'id' });
+        db.createObjectStore(STORES.PLACES, { keyPath: 'id' });
       }
       if (oldVersion < 2) {
-        db.createObjectStore('reviews', { keyPath: 'id' });
-        db.createObjectStore('visits', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains(STORES.REVIEWS)) {
+          db.createObjectStore(STORES.REVIEWS, { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains(STORES.VISITS)) {
+          db.createObjectStore(STORES.VISITS, { keyPath: 'id' });
+        }
+      }
+      if (oldVersion < 3) {
+        if (!db.objectStoreNames.contains(STORES.PENDING_VISITS)) {
+          db.createObjectStore(STORES.PENDING_VISITS, { keyPath: 'id', autoIncrement: true });
+        }
       }
     },
   });
@@ -19,7 +33,7 @@ export const initDB = async (): Promise<IDBPDatabase> => {
 
 export const savePlaces = async (places: any[]) => {
   const db = await initDB();
-  const tx = db.transaction(STORE_NAME, 'readwrite');
+  const tx = db.transaction(STORES.PLACES, 'readwrite');
   for (const place of places) {
     await tx.store.put(place);
   }
@@ -28,5 +42,20 @@ export const savePlaces = async (places: any[]) => {
 
 export const getCachedPlaces = async (): Promise<any[]> => {
   const db = await initDB();
-  return db.getAll(STORE_NAME);
+  return db.getAll(STORES.PLACES);
+};
+
+export const savePendingVisit = async (placeId: number) => {
+  const db = await initDB();
+  await db.add(STORES.PENDING_VISITS, { placeId, timestamp: new Date().toISOString() });
+};
+
+export const getPendingVisits = async () => {
+  const db = await initDB();
+  return db.getAll(STORES.PENDING_VISITS);
+};
+
+export const deletePendingVisit = async (id: number) => {
+  const db = await initDB();
+  await db.delete(STORES.PENDING_VISITS, id);
 };

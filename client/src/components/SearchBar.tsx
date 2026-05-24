@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Search, SlidersHorizontal } from 'lucide-react';
 
-const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters }) => {
+const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters, onQueryChange }) => {
   const [query, setQuery] = useState('');
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -17,15 +17,21 @@ const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters }) => {
     });
   };
 
+  const handleQueryChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setQuery(val);
+    if (onQueryChange) onQueryChange(val);
+  };
+
   return (
     <div className="flex-1 max-w-md">
-      <form onSubmit={handleSearch} className="flex items-center bg-gray-100 rounded-full overflow-hidden border border-gray-200">
+      <form onSubmit={handleSearch} className="flex items-center bg-gray-100 rounded-full overflow-hidden border border-gray-200 focus-within:ring-2 focus-within:ring-blue-500 focus-within:bg-white transition-all">
         <div className="pl-4 text-gray-400"><Search size={18} /></div>
         <input
-          className="w-full py-2 px-3 outline-none text-sm bg-transparent"
-          placeholder="Search for a location..."
+          className="w-full py-2.5 px-3 outline-none text-sm bg-transparent"
+          placeholder="Search places or address..."
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={handleQueryChange}
         />
         <button type="button" onClick={onOpenFilters} className="pr-4 text-gray-500 hover:text-blue-600 transition-colors">
           <SlidersHorizontal size={18} />
