@@ -5,7 +5,6 @@ const session = require('express-session');
 const pgSession = require('connect-pg-simple')(session);
 const { Pool } = require('pg');
 const passport = require('./config/passport');
-const prisma = require('./config/db');
 
 const authRoutes = require('./routes/auth');
 const placeRoutes = require('./routes/places');
@@ -45,14 +44,19 @@ if (pgPool) {
     saveUninitialized: false,
     cookie: {
       maxAge: 30 * 24 * 60 * 60 * 1000,
-      secure: process.env.NODE_ENV === 'production'
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
     }
   }));
 } else {
   app.use(session({
     secret: 'temp_secret',
     resave: false,
-    saveUninitialized: false
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+    }
   }));
 }
 

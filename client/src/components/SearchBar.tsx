@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
 import { Search, SlidersHorizontal } from 'lucide-react';
 
-const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters }) => {
+interface SearchBarProps {
+  onSearch: (coords: { lat: number; lng: number }) => void;
+  onOpenFilters: () => void;
+}
+
+const SearchBar: React.FC<SearchBarProps> = ({ onSearch, onOpenFilters }) => {
   const [query, setQuery] = useState('');
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -19,7 +24,7 @@ const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters }) => {
 
   return (
     <div className="flex-1 max-w-md">
-      <form onSubmit={handleSearch} className="flex items-center bg-gray-100 rounded-full overflow-hidden border border-gray-200">
+      <form onSubmit={handleSearch} className="flex items-center bg-gray-100 rounded-full overflow-hidden border border-gray-200 focus-within:border-blue-400 focus-within:bg-white transition-all">
         <div className="pl-4 text-gray-400"><Search size={18} /></div>
         <input
           className="w-full py-2 px-3 outline-none text-sm bg-transparent"

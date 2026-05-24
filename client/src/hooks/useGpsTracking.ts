@@ -1,8 +1,15 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import axios from '../axiosConfig';
+import { savePendingVisit } from '../services/db';
+import { Place } from '../types';
 
-export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialVisitedIds: number[] = []) => {
+export const useGpsTracking = (places: Place[], isAuthenticated: boolean, initialVisitedIds: number[] = []) => {
   const visitedRef = useRef<Set<number>>(new Set(initialVisitedIds));
+  const placesRef = useRef<Place[]>(places);
+
+  useEffect(() => {
+    placesRef.current = places;
+  }, [places]);
 
   useEffect(() => {
     if (initialVisitedIds.length > 0) {
@@ -16,15 +23,19 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialV
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
         const { latitude, longitude } = position.coords;
-        places.forEach(async (place) => {
+        placesRef.current.forEach(async (place) => {
           if (visitedRef.current.has(place.id)) return;
-          const dist = calculateDistance(latitude, longitude, parseFloat(place.latitude), parseFloat(place.longitude));
+          const dist = calculateDistance(latitude, longitude, parseFloat(place.latitude.toString()), parseFloat(place.longitude.toString()));
           if (dist < 0.1) { // 100 meters
             try {
               visitedRef.current.add(place.id);
-              await axios.post('/api/visits', { placeId: place.id });
+              if (navigator.onLine) {
+                await axios.post('/api/visits', { placeId: place.id });
+              } else {
+                await savePendingVisit(place.id);
+              }
             } catch (err) {
-              visitedRef.current.delete(place.id);
+              await savePendingVisit(place.id);
             }
           }
         });
@@ -33,7 +44,7 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialV
       { enableHighAccuracy: true }
     );
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [places, isAuthenticated]);
+  }, [isAuthenticated]);
 };
 
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number) {

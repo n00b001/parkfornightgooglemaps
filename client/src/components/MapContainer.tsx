@@ -13,15 +13,6 @@ const getIcon = (type: string, isFavorite: boolean, isVisited: boolean) => {
     nature: '#059669', // Dark Green
   };
 
-  const labels: Record<string, string> = {
-    cc: 'A',
-    p: 'P',
-    cp: 'C',
-    p_prive: 'Pr',
-    ferme: 'F',
-    nature: 'N',
-  };
-
   const color = colors[type] || '#3B82F6';
 
   let strokeColor = '#FFFFFF';
@@ -90,7 +81,7 @@ const MapContainer: React.FC<any> = ({ places, onMarkerClick, center, onCenterCh
                   key={place.id}
                   position={{ lat: parseFloat(place.latitude), lng: parseFloat(place.longitude) }}
                   onClick={() => onMarkerClick(place)}
-                  icon={getIcon(place.type || place.code_type, isFavorite, isVisited)}
+                  icon={getIcon(place.code_type || place.type, isFavorite, isVisited)}
                   clusterer={clusterer}
                   label={{
                     text: (place.code_type === 'cc' ? 'A' :
