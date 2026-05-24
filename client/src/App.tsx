@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from './axiosConfig';
 import { useQuery } from '@tanstack/react-query';
-import { savePlaces, getCachedPlaces } from './services/db';
-import { Heart, LayoutList, Map as MapIcon, LocateFixed } from 'lucide-react';
+import { savePlaces, getCachedPlaces, getPendingVisits, removePendingVisit } from './services/db';
+import { Heart, LayoutList, Map as MapIcon, LocateFixed, LogOut } from 'lucide-react';
 import MapContainer from './components/MapContainer';
 import ListView from './components/ListView';
 import SearchBar from './components/SearchBar';
@@ -33,7 +33,20 @@ const App: React.FC = () => {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
+    const handleOnline = async () => {
+      setIsOnline(true);
+      // Sync pending visits
+      const pending = await getPendingVisits();
+      for (const visit of pending) {
+        try {
+          await axios.post('/api/visits', { placeId: visit.placeId });
+          await removePendingVisit(visit.placeId);
+          setVisited(prev => [...prev, visit.placeId]);
+        } catch (err) {
+          console.error('Failed to sync visit', err);
+        }
+      }
+    };
     const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -43,11 +56,11 @@ const App: React.FC = () => {
     };
   }, []);
 
-  const { data: places = [], isLoading: isLoadingPlaces } = useQuery({
-    queryKey: ['places', lastFetchedCenter, filters],
+  const { data: rawPlaces = [], isLoading: isLoadingPlaces } = useQuery({
+    queryKey: ['places', lastFetchedCenter],
     queryFn: async () => {
       try {
-        const res = await axios.get('/api/places', { params: { lat: lastFetchedCenter.lat, lng: lastFetchedCenter.lng, ...filters } });
+        const res = await axios.get('/api/places', { params: { lat: lastFetchedCenter.lat, lng: lastFetchedCenter.lng } });
         await savePlaces(res.data);
         return res.data;
       } catch (err) {
@@ -57,7 +70,57 @@ const App: React.FC = () => {
     }
   });
 
-  useGpsTracking(places, !!user, visited);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const displayPlaces = React.useMemo(() => {
+    let filtered = [...rawPlaces];
+
+    // Filter by favorites toggle
+    if (showOnlyFavorites) {
+      filtered = filtered.filter((p: any) => favorites.includes(p.id));
+    }
+
+    // Filter by type
+    if (filters.type) {
+      filtered = filtered.filter((p: any) => p.code_type === filters.type);
+    }
+
+    // Filter by min rating
+    if (filters.minRating) {
+      filtered = filtered.filter((p: any) => (parseFloat(p.note_moyenne) || 0) >= parseFloat(filters.minRating));
+    }
+
+    // Filter by amenities
+    if (filters.amenities && filters.amenities.length > 0) {
+      filtered = filtered.filter((p: any) =>
+        filters.amenities.every((amenity: string) => p[amenity] === '1')
+      );
+    }
+
+    // Filter by search query
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      filtered = filtered.filter((p: any) =>
+        (p.titre || '').toLowerCase().includes(q) ||
+        (p.adresse || '').toLowerCase().includes(q)
+      );
+    }
+
+    // Sort
+    if (filters.sortBy === 'rating') {
+      filtered.sort((a, b) => (parseFloat(b.note_moyenne) || 0) - (parseFloat(a.note_moyenne) || 0));
+    } else if (filters.sortBy === 'distance') {
+      filtered.sort((a, b) => {
+        const distA = Math.sqrt(Math.pow(parseFloat(a.latitude) - mapCenter.lat, 2) + Math.pow(parseFloat(a.longitude) - mapCenter.lng, 2));
+        const distB = Math.sqrt(Math.pow(parseFloat(b.latitude) - mapCenter.lat, 2) + Math.pow(parseFloat(b.longitude) - mapCenter.lng, 2));
+        return distA - distB;
+      });
+    }
+
+    return filtered;
+  }, [rawPlaces, showOnlyFavorites, favorites, filters, searchQuery, mapCenter]);
+
+  useGpsTracking(rawPlaces, !!user, visited);
 
   useEffect(() => {
     axios.get('/auth/me').then(res => {
@@ -68,10 +131,6 @@ const App: React.FC = () => {
       }
     }).catch(() => setUser(null));
   }, []);
-
-  const displayPlaces = showOnlyFavorites
-    ? places.filter((p: any) => favorites.includes(p.id))
-    : places;
 
   const handleCenterChange = (newCenter: { lat: number, lng: number }) => {
     setMapCenter(newCenter);
@@ -107,6 +166,17 @@ const App: React.FC = () => {
     }
   };
 
+  const handleLogout = async () => {
+    try {
+      await axios.get('/auth/logout');
+      setUser(null);
+      setFavorites([]);
+      setVisited([]);
+    } catch (err) {
+      console.error('Logout failed', err);
+    }
+  };
+
   const loginUrl = `${import.meta.env.VITE_API_URL}/auth/google?returnTo=${encodeURIComponent(window.location.origin)}`;
 
   return (
@@ -119,7 +189,11 @@ const App: React.FC = () => {
           <h1 className="font-bold text-lg hidden sm:block">Park4Night</h1>
         </div>
 
-        <SearchBar onSearch={(coords: any) => { setMapCenter(coords); setLastFetchedCenter(coords); }} onOpenFilters={() => setIsFilterOpen(true)} />
+        <SearchBar
+          onSearch={(coords: any) => { setMapCenter(coords); setLastFetchedCenter(coords); }}
+          onOpenFilters={() => setIsFilterOpen(true)}
+          onQueryChange={setSearchQuery}
+        />
 
         <div className="flex items-center gap-2">
           {!isOnline && (
@@ -136,6 +210,13 @@ const App: React.FC = () => {
                 title={showOnlyFavorites ? "Show All" : "Show Favorites"}
               >
                 <Heart size={20} fill={showOnlyFavorites ? 'currentColor' : 'none'} />
+              </button>
+              <button
+                onClick={handleLogout}
+                className="p-2 text-gray-600 hover:text-red-600 transition-colors"
+                title="Sign Out"
+              >
+                <LogOut size={20} />
               </button>
             </div>
           ) : (
