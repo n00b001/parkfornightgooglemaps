@@ -33,4 +33,13 @@ router.get('/google/callback',
 
 router.get('/me', (req, res) => res.json(req.user || null));
 
+router.get('/logout', (req, res) => {
+  req.logout((err) => {
+    if (err) return res.status(500).json({ error: 'Failed to logout' });
+    req.session.destroy();
+    res.clearCookie('connect.sid');
+    res.json({ success: true });
+  });
+});
+
 module.exports = router;
