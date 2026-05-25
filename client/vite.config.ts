@@ -13,6 +13,9 @@ export default defineConfig({
         short_name: 'P4N-GM',
         description: 'Park4Night with Deep Google Maps Integration',
         theme_color: '#3B82F6',
+        background_color: '#ffffff',
+        display: 'standalone',
+        start_url: '/',
         icons: [
           {
             src: 'pwa-192x192.png',

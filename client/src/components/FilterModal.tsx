@@ -1,15 +1,19 @@
 import React, { useState } from 'react';
-import { X, Droplets, Zap, Trash2, Wifi, Bath, Waves } from 'lucide-react';
+import { X, Droplets, Zap, Trash2, Wifi, Bath, Waves, Dog, Utensils, Shirt, Info, Compass, Map } from 'lucide-react';
 
 const AMENITIES_OPTIONS = [
   { key: 'point_eau', label: 'Water', icon: Droplets },
   { key: 'electricite', label: 'Electricity', icon: Zap },
   { key: 'poubelle', label: 'Trash', icon: Trash2 },
   { key: 'wifi', label: 'Wifi', icon: Wifi },
-  { key: 'vidange_eaux_usees', label: 'Grey Water', icon: Droplets },
-  { key: 'vidange_wc', label: 'Black Water', icon: Droplets },
+  { key: 'vidange_eaux_usees', label: 'Grey Water', icon: Info },
+  { key: 'vidange_wc', label: 'Black Water', icon: Compass },
   { key: 'douche', label: 'Shower', icon: Bath },
   { key: 'baignade', label: 'Water Activity', icon: Waves },
+  { key: 'animaux', label: 'Pets', icon: Dog },
+  { key: 'aire_pique_nique', label: 'Picnic', icon: Utensils },
+  { key: 'laverie', label: 'Laundry', icon: Shirt },
+  { key: 'wc_public', label: 'Public WC', icon: Map },
 ];
 
 const FilterModal: React.FC<any> = ({ isOpen, onClose, onApply }) => {

@@ -1,5 +1,23 @@
 import React from 'react';
-import { Star, MapPin, Heart } from 'lucide-react';
+import { Star, MapPin, Heart, Navigation } from 'lucide-react';
+
+const TYPE_NAMES: Record<string, string> = {
+  cc: 'Motorhome Area',
+  p: 'Parking',
+  cp: 'Campsite',
+  p_prive: 'Private Parking',
+  ferme: 'Farm',
+  nature: 'Nature Spot',
+};
+
+const TYPE_COLORS: Record<string, string> = {
+  cc: 'bg-blue-100 text-blue-700',
+  p: 'bg-gray-100 text-gray-700',
+  cp: 'bg-green-100 text-green-700',
+  p_prive: 'bg-amber-100 text-amber-700',
+  ferme: 'bg-red-100 text-red-700',
+  nature: 'bg-emerald-100 text-emerald-700',
+};
 
 interface ListViewProps {
   places: any[];
@@ -48,12 +66,29 @@ const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, on
                       />
                     </button>
                   </div>
-                  <div className="flex items-center gap-1 mt-1">
-                    <Star size={14} fill="orange" className="text-orange-500" />
-                    <span className="text-sm font-bold">{place.note_moyenne || '0'}</span>
-                    <span className="text-xs text-gray-400">({place.nb_comm || 0})</span>
+                  <div className="flex items-center gap-3 mt-1">
+                    <div className="flex items-center gap-1">
+                      <Star size={14} fill="orange" className="text-orange-500" />
+                      <span className="text-sm font-bold">{place.note_moyenne || '0'}</span>
+                      <span className="text-xs text-gray-400">({place.nb_comm || 0})</span>
+                    </div>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${TYPE_COLORS[place.code_type || ''] || 'bg-gray-100 text-gray-600'}`}>
+                      {TYPE_NAMES[place.code_type || ''] || 'Spot'}
+                    </span>
                   </div>
                   <p className="text-xs text-gray-500 mt-2 line-clamp-1 italic">{place.adresse}</p>
+                </div>
+                <div className="flex justify-end">
+                   <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      window.open(`https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}`);
+                    }}
+                    className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors"
+                    title="Directions"
+                  >
+                    <Navigation size={16} />
+                  </button>
                 </div>
               </div>
             </div>
