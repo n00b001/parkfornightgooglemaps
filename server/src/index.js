@@ -38,7 +38,7 @@ if (pgPool) {
     store: new pgSession({
       pool: pgPool,
       tableName: 'Session',
-      createTableIfMissing: false
+      createTableIfMissing: true
     }),
     secret: process.env.SESSION_SECRET || 'park4night_secret',
     resave: false,
@@ -60,6 +60,13 @@ if (pgPool) {
 app.use(passport.initialize());
 app.use(passport.session());
 
+// Handle passport errors (e.g., verifier throws)
+if (typeof passport.on === 'function') {
+  passport.on('authenticateFailure', (info) => {
+    console.error('Passport authentication failure:', info);
+  });
+}
+
 app.use('/auth', authRoutes);
 app.use('/api/places', placeRoutes);
 app.use('/api/favorites', favoriteRoutes);
@@ -67,6 +74,12 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/visits', visitRoutes);
 
 app.get('/health', (req, res) => res.send('OK'));
+
+// Global error handling middleware
+app.use((err, req, res, _next) => {
+  console.error('Unhandled error:', err.message, err.stack);
+  res.status(500).json({ error: 'Internal Server Error', message: err.message });
+});
 
 if (require.main === module) {
   app.listen(PORT, () => {
