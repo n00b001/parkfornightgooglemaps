@@ -1,7 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import axios from './axiosConfig';
 import { useQuery } from '@tanstack/react-query';
-import { savePlaces, getCachedPlaces, getPendingVisits, removePendingVisit } from './services/db';
+import {
+  savePlaces,
+  getCachedPlaces,
+  getPendingVisits,
+  removePendingVisit,
+  getPendingFavorites,
+  removePendingFavorite,
+  getPendingReviews,
+  removePendingReview,
+  savePendingFavorite
+} from './services/db';
 import { Heart, LayoutList, Map as MapIcon, LocateFixed, LogOut } from 'lucide-react';
 import MapContainer from './components/MapContainer';
 import ListView from './components/ListView';
@@ -36,14 +46,44 @@ const App: React.FC = () => {
     const handleOnline = async () => {
       setIsOnline(true);
       // Sync pending visits
-      const pending = await getPendingVisits();
-      for (const visit of pending) {
+      const pendingVisits = await getPendingVisits();
+      for (const visit of pendingVisits) {
         try {
           await axios.post('/api/visits', { placeId: visit.placeId });
           await removePendingVisit(visit.placeId);
           setVisited(prev => [...prev, visit.placeId]);
         } catch (err) {
           console.error('Failed to sync visit', err);
+        }
+      }
+
+      // Sync pending favorites
+      const pendingFavs = await getPendingFavorites();
+      for (const fav of pendingFavs) {
+        try {
+          if (fav.action === 'add') {
+            await axios.post('/api/favorites', { placeId: fav.placeId });
+          } else {
+            await axios.delete(`/api/favorites/${fav.placeId}`);
+          }
+          await removePendingFavorite(fav.placeId);
+        } catch (err) {
+          console.error('Failed to sync favorite', err);
+        }
+      }
+
+      // Sync pending reviews
+      const pendingReviews = await getPendingReviews();
+      for (const review of pendingReviews) {
+        try {
+          await axios.post('/api/reviews', {
+            placeId: review.placeId,
+            content: review.content,
+            rating: review.rating
+          });
+          await removePendingReview(review.id);
+        } catch (err) {
+          console.error('Failed to sync review', err);
         }
       }
     };
@@ -157,12 +197,27 @@ const App: React.FC = () => {
       window.location.href = `${import.meta.env.VITE_API_URL}/auth/google?returnTo=${encodeURIComponent(returnTo)}`;
       return;
     }
-    if (favorites.includes(placeId)) {
-      await axios.delete(`/api/favorites/${placeId}`);
+
+    const isCurrentlyFavorite = favorites.includes(placeId);
+
+    if (isCurrentlyFavorite) {
       setFavorites(favorites.filter(id => id !== placeId));
+      try {
+        await axios.delete(`/api/favorites/${placeId}`);
+      } catch (err) {
+        if (!navigator.onLine) {
+          await savePendingFavorite(placeId, 'remove');
+        }
+      }
     } else {
-      await axios.post('/api/favorites', { placeId });
       setFavorites([...favorites, placeId]);
+      try {
+        await axios.post('/api/favorites', { placeId });
+      } catch (err) {
+        if (!navigator.onLine) {
+          await savePendingFavorite(placeId, 'add');
+        }
+      }
     }
   };
 

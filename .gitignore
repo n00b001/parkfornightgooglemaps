@@ -7,10 +7,13 @@ node_modules/
 /coverage
 
 # Production
-/build
-/dist
+dist/
+build/
+client/dist/
+server/dist/
 
 # Misc
+*.log
 .DS_Store
 .env
 .env.local

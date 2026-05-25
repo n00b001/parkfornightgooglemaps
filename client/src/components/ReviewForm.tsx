@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Star, Send } from 'lucide-react';
 import axios from '../axiosConfig';
+import { savePendingReview } from '../services/db';
 
 const ReviewForm: React.FC<any> = ({ placeId, onSuccess }) => {
   const [content, setContent] = useState('');
@@ -8,12 +9,20 @@ const ReviewForm: React.FC<any> = ({ placeId, onSuccess }) => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const reviewData = { placeId, content, rating };
     try {
-      await axios.post('/api/reviews', { placeId, content, rating });
+      await axios.post('/api/reviews', reviewData);
       setContent('');
       onSuccess();
     } catch (err) {
-      console.error(err);
+      if (!navigator.onLine) {
+        await savePendingReview(reviewData);
+        setContent('');
+        alert('You are offline. Your review has been saved and will be uploaded when you are back online.');
+        onSuccess();
+      } else {
+        console.error(err);
+      }
     }
   };
 

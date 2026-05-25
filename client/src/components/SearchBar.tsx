@@ -6,7 +6,7 @@ const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters, onQueryChange }) =>
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query) return;
+    if (!query || !window.google) return;
 
     const geocoder = new google.maps.Geocoder();
     geocoder.geocode({ address: query }, (results, status) => {
