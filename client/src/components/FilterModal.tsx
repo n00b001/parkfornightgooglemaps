@@ -6,6 +6,8 @@ const AMENITIES_OPTIONS = [
   { key: 'electricite', label: 'Electricity', icon: Zap },
   { key: 'poubelle', label: 'Trash', icon: Trash2 },
   { key: 'wifi', label: 'Wifi', icon: Wifi },
+  { key: 'vidange_eaux_usees', label: 'Grey Water', icon: Droplets },
+  { key: 'vidange_wc', label: 'Black Water', icon: Droplets },
   { key: 'douche', label: 'Shower', icon: Bath },
   { key: 'baignade', label: 'Water Activity', icon: Waves },
 ];

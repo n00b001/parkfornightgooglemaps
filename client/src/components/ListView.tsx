@@ -10,7 +10,7 @@ interface ListViewProps {
 
 const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, onToggleFavorite }) => {
   return (
-    <div className="h-[calc(100vh-64px)] overflow-y-auto bg-gray-50 pb-20 pt-20">
+    <div className="h-[calc(100vh-64px)] overflow-y-auto bg-gray-50 pb-28 pt-4">
       <div className="max-w-2xl mx-auto p-4 space-y-4">
         {places.map((place) => {
           const isFavorite = favorites.includes(place.id);
