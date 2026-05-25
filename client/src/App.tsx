@@ -324,13 +324,11 @@ const App: React.FC = () => {
               </button>
             </div>
 
+            {/* Subtle loading indicator - does not block user interaction */}
             {isLoadingPlaces && (
-              <div className="absolute inset-0 z-[60] bg-white/30 backdrop-blur-md flex flex-col items-center justify-center transition-all duration-300">
-                <div className="relative">
-                  <div className="w-16 h-16 border-4 border-blue-500/20 rounded-full" />
-                  <div className="absolute top-0 left-0 w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                </div>
-                <p className="mt-4 text-gray-900 font-bold text-lg animate-pulse">Finding the best spots...</p>
+              <div className="absolute top-4 left-4 z-10 flex items-center gap-2 bg-white/90 backdrop-blur-sm px-3 py-2 rounded-full shadow-sm border">
+                <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                <span className="text-xs font-medium text-gray-600">Loading spots...</span>
               </div>
             )}
           </>
