@@ -1,10 +1,12 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import axios from '../axiosConfig';
 import { savePendingVisit } from '../services/db';
 
 export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialVisitedIds: number[] = [], onVisitRecorded?: (placeId: number) => void) => {
   const visitedRef = useRef<Set<number>>(new Set(initialVisitedIds));
   const placesRef = useRef<any[]>(places);
+  const onVisitRecordedRef = useRef(onVisitRecorded);
+  onVisitRecordedRef.current = onVisitRecorded;
 
   useEffect(() => {
     placesRef.current = places;
@@ -27,7 +29,7 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialV
           const dist = calculateDistance(latitude, longitude, parseFloat(place.latitude), parseFloat(place.longitude));
           if (dist < 0.1) { // 100 meters
             visitedRef.current.add(place.id);
-            if (onVisitRecorded) onVisitRecorded(place.id);
+            if (onVisitRecordedRef.current) onVisitRecordedRef.current(place.id);
             try {
               await axios.post('/api/visits', { placeId: place.id });
             } catch (err) {
@@ -41,7 +43,7 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialV
       { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
     );
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [isAuthenticated]);
+  }, [isAuthenticated]); // onVisitRecorded accessed via ref to avoid re-subscribing on every render
 };
 
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
