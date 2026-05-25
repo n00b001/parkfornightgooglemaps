@@ -38,7 +38,8 @@ if (pgPool) {
   app.use(session({
     store: new pgSession({
       pool: pgPool,
-      tableName: 'Session'
+      tableName: 'Session',
+      createTableIfMissing: false
     }),
     secret: process.env.SESSION_SECRET || 'park4night_secret',
     resave: false,

@@ -19,6 +19,31 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   const [reviews, setReviews] = useState<any[]>([]);
   const [p4nReviews, setP4nReviews] = useState<any[]>([]);
   const [isLoadingReviews, setIsLoadingReviews] = useState(false);
+  const [googleDetails, setGoogleDetails] = useState<any>(null);
+
+  const fetchGoogleDetails = () => {
+    if (!window.google || !window.google.maps || !window.google.maps.places) return;
+
+    const service = new google.maps.places.PlacesService(document.createElement('div'));
+    const request = {
+      location: new google.maps.LatLng(parseFloat(place.latitude), parseFloat(place.longitude)),
+      radius: 50,
+      keyword: place.titre || place.name
+    };
+
+    service.nearbySearch(request, (results, status) => {
+      if (status === google.maps.places.PlacesServiceStatus.OK && results && results[0]) {
+        const placeId = results[0].place_id;
+        if (placeId) {
+          service.getDetails({ placeId, fields: ['rating', 'user_ratings_total', 'reviews', 'url', 'place_id'] }, (details, detailStatus) => {
+            if (detailStatus === google.maps.places.PlacesServiceStatus.OK) {
+              setGoogleDetails(details);
+            }
+          });
+        }
+      }
+    });
+  };
 
   const fetchReviews = async () => {
     setIsLoadingReviews(true);
@@ -45,13 +70,15 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   };
 
   useEffect(() => {
-    if (place) fetchReviews();
+    if (place) {
+      fetchReviews();
+      fetchGoogleDetails();
+    }
   }, [place]);
 
   const addToGoogleMaps = () => {
-    const googlePlaceId = place.google_place_id || place.rawData?.google_place_id;
+    const googlePlaceId = googleDetails?.place_id || place.google_place_id || place.rawData?.google_place_id;
     const query = encodeURIComponent(`${place.titre || place.name} ${place.adresse || ''}`);
-    // If we have a google_place_id, we can use it to trigger the sidebar/save options more reliably
     const url = googlePlaceId
       ? `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${googlePlaceId}`
       : `https://www.google.com/maps/search/?api=1&query=${query}`;
@@ -79,10 +106,19 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
         <h2 className="text-2xl font-bold">{place.titre || place.name}</h2>
         <button onClick={onClose}><X size={20} /></button>
       </div>
-      <div className="flex items-center gap-1 mb-1">
-        <Star size={16} fill="orange" className="text-orange-500" />
-        <span className="font-bold">{place.note_moyenne || 'N/A'}</span>
-        <span className="text-gray-400 text-sm">({place.nb_comm || 0} reviews)</span>
+      <div className="flex items-center gap-4 mb-1">
+        <div className="flex items-center gap-1">
+          <Star size={16} fill="orange" className="text-orange-500" />
+          <span className="font-bold">{place.note_moyenne || 'N/A'}</span>
+          <span className="text-gray-400 text-xs">({place.nb_comm || 0} p4n)</span>
+        </div>
+        {googleDetails && (
+          <div className="flex items-center gap-1 border-l pl-4">
+            <Star size={16} fill="#4285F4" className="text-blue-500" />
+            <span className="font-bold">{googleDetails.rating}</span>
+            <span className="text-gray-400 text-xs">({googleDetails.user_ratings_total} Google)</span>
+          </div>
+        )}
       </div>
       <p className="text-sm text-gray-500 mb-4">{place.adresse}</p>
 
@@ -196,7 +232,24 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
             </div>
           )}
 
-          {reviews.length === 0 && p4nReviews.length === 0 && (
+          {googleDetails?.reviews && googleDetails.reviews.length > 0 && (
+            <div>
+              <h4 className="text-xs font-bold text-blue-600 uppercase mb-2">Google Reviews</h4>
+              <div className="space-y-3">
+                {googleDetails.reviews.slice(0, 3).map((r: any, idx: number) => (
+                  <div key={idx} className="text-sm bg-gray-50 p-3 rounded-xl border border-gray-100">
+                    <div className="flex justify-between mb-1">
+                      <span className="font-bold">{r.author_name}</span>
+                      <span className="text-blue-600 font-bold">{r.rating}/5</span>
+                    </div>
+                    <p className="text-gray-600 italic">"{r.text.substring(0, 150)}{r.text.length > 150 ? '...' : ''}"</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {reviews.length === 0 && p4nReviews.length === 0 && !googleDetails?.reviews?.length && (
             <p className="text-sm text-gray-400 italic">No reviews yet.</p>
           )}
           </>
