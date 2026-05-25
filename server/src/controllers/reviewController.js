@@ -8,7 +8,7 @@ const addReview = async (req, res) => {
       data: { userId: req.user.id, placeId: parseInt(placeId), content, rating: parseInt(rating) }
     });
     res.json(review);
-  } catch (error) {
+  } catch (_error) {
     res.status(500).json({ error: 'Failed' });
   }
 };
@@ -21,7 +21,7 @@ const getPlaceReviews = async (req, res) => {
       orderBy: { createdAt: 'desc' }
     });
     res.json(reviews);
-  } catch (error) {
+  } catch (_error) {
     res.status(500).json({ error: 'Failed' });
   }
 };
