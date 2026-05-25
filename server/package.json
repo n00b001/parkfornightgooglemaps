@@ -7,7 +7,8 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "build": "npx prisma generate",
-    "test": "jest tests/health.test.js"
+    "test": "jest tests/",
+    "lint": "eslint src/"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
@@ -19,12 +20,14 @@
     "express-session": "^1.17.3",
     "passport": "^0.6.0",
     "passport-google-oauth20": "^2.0.0",
-    "prisma": "^5.22.0",
-    "pg": "^8.11.0"
+    "pg": "^8.11.0",
+    "prisma": "^5.22.0"
   },
   "devDependencies": {
-    "nodemon": "^2.0.22",
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
     "jest": "^29.5.0",
+    "nodemon": "^3.1.14",
     "supertest": "^6.3.3"
   }
 }

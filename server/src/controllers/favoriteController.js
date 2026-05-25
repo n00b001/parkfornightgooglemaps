@@ -8,7 +8,7 @@ const getFavorites = async (req, res) => {
       include: { place: true }
     });
     res.json(favorites);
-  } catch (error) {
+  } catch (_error) {
     res.status(500).json({ error: 'Failed' });
   }
 };
@@ -23,7 +23,7 @@ const addFavorite = async (req, res) => {
       create: { userId: req.user.id, placeId: parseInt(placeId) }
     });
     res.json(favorite);
-  } catch (error) {
+  } catch (_error) {
     res.status(500).json({ error: 'Failed' });
   }
 };
@@ -35,7 +35,7 @@ const removeFavorite = async (req, res) => {
       where: { userId_placeId: { userId: req.user.id, placeId: parseInt(req.params.id) } }
     });
     res.json({ success: true });
-  } catch (error) {
+  } catch (_error) {
     res.status(500).json({ error: 'Failed' });
   }
 };

@@ -1,0 +1,80 @@
+import js from "@eslint/js";
+import tseslint from "@typescript-eslint/eslint-plugin";
+import tseslintParser from "@typescript-eslint/parser";
+import reactHooks from "eslint-plugin-react-hooks";
+
+export default [
+  js.configs.recommended,
+  {
+    files: ["**/*.ts", "**/*.tsx"],
+    languageOptions: {
+      parser: tseslintParser,
+      parserOptions: {
+        ecmaVersion: "latest",
+        sourceType: "module",
+        ecmaFeatures: {
+          jsx: true,
+        },
+      },
+      globals: {
+        window: "readonly",
+        document: "readonly",
+        navigator: "readonly",
+        console: "readonly",
+        alert: "readonly",
+        google: "readonly",
+        process: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
+        setInterval: "readonly",
+        clearInterval: "readonly",
+        requestAnimationFrame: "readonly",
+        fetch: "readonly",
+        localStorage: "readonly",
+        sessionStorage: "readonly",
+        performance: "readonly",
+        location: "readonly",
+        history: "readonly",
+        screen: "readonly",
+        crypto: "readonly",
+        URL: "readonly",
+        URLSearchParams: "readonly",
+        Blob: "readonly",
+        File: "readonly",
+        FileReader: "readonly",
+        ArrayBuffer: "readonly",
+        Uint8Array: "readonly",
+        TextDecoder: "readonly",
+        TextEncoder: "readonly",
+        atob: "readonly",
+        btoa: "readonly",
+        Promise: "readonly",
+        queueMicrotask: "readonly",
+        structuredClone: "readonly",
+        Event: "readonly",
+        EventTarget: "readonly",
+        CustomEvent: "readonly",
+        AbortController: "readonly",
+        AbortSignal: "readonly",
+        DOMException: "readonly",
+        Headers: "readonly",
+        Request: "readonly",
+        Response: "readonly",
+      },
+    },
+    plugins: {
+      "@typescript-eslint": tseslint,
+      "react-hooks": reactHooks,
+    },
+    rules: {
+      ...tseslint.configs.recommended.rules,
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      "react-hooks/rules-of-hooks": "error",
+      "react-hooks/exhaustive-deps": "warn",
+    },
+  },
+  {
+    ignores: ["node_modules/", "dist/", "build/", "!.*"],
+  },
+];

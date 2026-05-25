@@ -39,3 +39,12 @@ lerna-debug.log*
 
 # Optional REPL history
 .node_repl_history
+
+# OMC state
+.omc/
+
+# Logs
+logs/
+
+# PI Lens
+.pi-lens/
