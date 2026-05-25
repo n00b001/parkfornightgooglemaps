@@ -161,7 +161,7 @@ describe('placeController', () => {
 
       await placeController.getReviews(req, res);
       expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Failed' });
+      expect(res.json).toHaveBeenCalledWith({ error: 'Failed to fetch reviews', details: 'API error' });
     });
   });
 });
