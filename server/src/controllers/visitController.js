@@ -10,7 +10,7 @@ const recordVisit = async (req, res) => {
       create: { userId: req.user.id, placeId: parseInt(placeId) }
     });
     res.json(visit);
-  } catch (error) {
+  } catch (_error) {
     res.status(500).json({ error: 'Failed' });
   }
 };
@@ -23,7 +23,7 @@ const getVisits = async (req, res) => {
       include: { place: true }
     });
     res.json(visits);
-  } catch (error) {
+  } catch (_error) {
     res.status(500).json({ error: 'Failed' });
   }
 };
