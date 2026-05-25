@@ -117,7 +117,7 @@ const MapContainer: React.FC<any> = ({ places, onMarkerClick, center, onCenterCh
     >
       {mapReady && (
         <MarkerClusterer options={{
-          imagePath: 'https://developers.google.com/maps/documentation/javascript/examples/markerclusterer/m',
+          imagePath: '/m',
         }}>
           {(clusterer) => (
             <>
