@@ -1,8 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, Map, Droplets, Zap, Trash2, Wifi, Info, Bath, Waves } from 'lucide-react';
+import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, Map, Droplets, Zap, Trash2, Wifi, Info, Bath, Waves, Eye } from 'lucide-react';
 import axios from '../axiosConfig';
 import ReviewForm from './ReviewForm';
 import { saveReviews, getCachedReviews } from '../services/db';
+
+const getStreetViewUrl = (lat: number, lng: number) => {
+  const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+  if (!apiKey) return null;
+  return `https://maps.googleapis.com/maps/api/streetview?size=800x400&location=${lat},${lng}&fov=100&heading=215&pitch=0&key=${apiKey}`;
+};
 
 const AMENITIES = [
   { key: 'point_eau', label: 'Water', icon: Droplets, color: 'text-blue-500' },
@@ -20,6 +26,29 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   const [p4nReviews, setP4nReviews] = useState<any[]>([]);
   const [isLoadingReviews, setIsLoadingReviews] = useState(false);
   const [googleDetails, setGoogleDetails] = useState<any>(null);
+  const [streetViewAvailable, setStreetViewAvailable] = useState(false);
+  const [streetViewError, setStreetViewError] = useState(false);
+
+  const checkStreetViewAvailability = () => {
+    if (!window.google || !window.google.maps) return;
+
+    const svService = new google.maps.StreetViewService();
+    const location = new google.maps.LatLng(
+      parseFloat(place.latitude),
+      parseFloat(place.longitude)
+    );
+
+    svService.getPanorama(
+      { location, radius: 500 },
+      (data, status) => {
+        if (status === google.maps.StreetViewStatus.OK && data) {
+          setStreetViewAvailable(true);
+        } else {
+          setStreetViewAvailable(false);
+        }
+      }
+    );
+  };
 
   const fetchGoogleDetails = () => {
     if (!window.google || !window.google.maps || !window.google.maps.places) return;
@@ -73,6 +102,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
     if (place) {
       fetchReviews();
       fetchGoogleDetails();
+      checkStreetViewAvailability();
     }
   }, [place]);
 
@@ -99,6 +129,24 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
           {photos.map((p: any, idx: number) => (
             <img key={idx} src={p.lien_mini} alt={`Spot ${idx}`} className="h-full object-cover snap-center min-w-[80%]" />
           ))}
+        </div>
+      )}
+
+      {/* Street View Embed */}
+      {streetViewAvailable && getStreetViewUrl(parseFloat(place.latitude), parseFloat(place.longitude)) && (
+        <div className="relative h-40 bg-gray-900">
+          <img
+            src={getStreetViewUrl(parseFloat(place.latitude), parseFloat(place.longitude))!}
+            alt="Street View preview"
+            className="w-full h-full object-cover"
+            onError={() => setStreetViewError(true)}
+          />
+          {!streetViewError && (
+            <div className="absolute bottom-2 left-2 bg-black/60 text-white text-xs px-2 py-1 rounded-lg flex items-center gap-1">
+              <Eye size={12} />
+              <span>Street View</span>
+            </div>
+          )}
         </div>
       )}
       <div className="p-6 overflow-y-auto flex-1">
