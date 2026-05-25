@@ -58,10 +58,16 @@ npm run lint
 - `SESSION_SECRET` — Session encryption secret
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth
 - `CLIENT_URL` — Frontend URL for CORS
+- `SERVER_URL` — Server origin for OAuth callback URL (auto-set by Render)
 
 ### Client (Vite env)
 - `VITE_API_URL` — Backend API URL (auto-set by Render)
 - `VITE_GOOGLE_MAPS_API_KEY` — Google Maps JavaScript API key (MUST be a real key with billing, NOT the demo key)
+
+## Google Cloud Console Configuration
+The OAuth 2.0 client must have:
+- **Authorized redirect URIs**: `https://park4night-server.onrender.com/auth/google/callback`
+- **Authorized JavaScript origins**: `https://park4night-client.onrender.com`
 
 ## Known Issues & Gotchas
 - **Google Maps demo key**: The Google Maps demo key has a tiny daily quota. Always use a real API key with billing enabled. When quota is exceeded, `map.getBounds()` returns undefined causing TypeErrors. **NEVER commit API keys or secrets to git** — GitGuardian will fail CI.
