@@ -92,7 +92,7 @@ const getReviews = async (req, res) => {
   try {
     const reviews = await park4nightService.getReviews(req.params.id);
     res.json(reviews);
-  } catch (error) {
+  } catch (_error) {
     res.status(500).json({ error: 'Failed' });
   }
 };

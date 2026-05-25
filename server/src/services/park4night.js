@@ -1,5 +1,4 @@
 const axios = require('axios');
-const prisma = require('../config/db');
 
 const PARK4NIGHT_BASE_URL = 'https://guest.park4night.com/services/V4.1';
 
@@ -27,14 +26,10 @@ const getPlaces = async (latitude, longitude) => {
 };
 
 const getReviews = async (placeId) => {
-  try {
-    const response = await axios.get(`${PARK4NIGHT_BASE_URL}/commGet.php`, {
-      params: { lieu_id: placeId }
-    });
-    return response.data;
-  } catch (error) {
-    throw error;
-  }
+  const response = await axios.get(`${PARK4NIGHT_BASE_URL}/commGet.php`, {
+    params: { lieu_id: placeId }
+  });
+  return response.data;
 };
 
 module.exports = { getPlaces, getReviews };
