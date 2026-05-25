@@ -162,6 +162,22 @@ const App: React.FC = () => {
 
   useGpsTracking(rawPlaces, !!user, visited);
 
+  // Default map center to user's location on mount
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          setMapCenter(coords);
+          setLastFetchedCenter(coords);
+        },
+        () => {
+          // Geolocation denied or unavailable — keep Paris default
+        }
+      );
+    }
+  }, []);
+
   useEffect(() => {
     axios.get('/auth/me').then(res => {
       setUser(res.data);
