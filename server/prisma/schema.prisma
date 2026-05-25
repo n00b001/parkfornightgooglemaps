@@ -21,19 +21,32 @@ model User {
 }
 
 model Place {
-  id          Int        @id
-  name        String
-  latitude    Float
-  longitude   Float
-  type        String
-  description String?
-  address     String?
-  rating      Float?
-  favorites   Favorite[]
-  reviews     Review[]
-  visits      Visit[]
-  rawData     Json?
-  lastFetched DateTime   @default(now())
+  id              Int        @id
+  name            String
+  latitude        Float
+  longitude       Float
+  type            String
+  description     String?
+  address         String?
+  rating          Float?
+  reviewCount     Int        @default(0)
+  photoCount      Int        @default(0)
+  services        Json?      // [{code, label}]
+  activities      Json?      // [{code, label}]
+  photos          Json?      // [{id, url_large, url_thumb}]
+  pricing         Json?      // {parking, services}
+  access          Json?      // {public, height_limit, parking_places}
+  contact         Json?      // {phone, email, website}
+  descriptions    Json?      // {fr, en, de, es, it, nl}
+  isPublic        Boolean    @default(true)
+  onlineBooking   Boolean    @default(false)
+  favorites       Favorite[]
+  reviews         Review[]
+  visits          Visit[]
+  rawData         Json?
+  lastFetched     DateTime   @default(now())
+
+  @@index([latitude, longitude])
 }
 
 model Favorite {
