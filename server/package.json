@@ -13,6 +13,8 @@
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "axios": "^1.4.0",
+    "cld": "^2.10.1",
+    "cloudscraper": "^4.6.0",
     "connect-pg-simple": "^9.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
@@ -21,7 +23,8 @@
     "passport": "^0.6.0",
     "passport-google-oauth20": "^2.0.0",
     "pg": "^8.11.0",
-    "prisma": "^5.22.0"
+    "prisma": "^5.22.0",
+    "request": "^2.88.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

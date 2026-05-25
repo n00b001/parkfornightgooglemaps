@@ -1,0 +1,25 @@
+[project]
+name = "park4night-scraper"
+version = "1.0.0"
+description = "Park4Night location data scraper"
+requires-python = ">=3.12"
+dependencies = ["requests>=2.31.0", "rich>=13.0.0"]
+
+[project.scripts]
+scrape = "scraper:main"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["api", "checkpoint", "config"]
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[dependency-groups]
+dev = ["ty>=0.0.39"]

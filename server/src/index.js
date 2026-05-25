@@ -6,6 +6,10 @@ const pgSession = require('connect-pg-simple')(session);
 const { Pool } = require('pg');
 const passport = require('./config/passport');
 
+// Load local scraped data on startup
+const localData = require('./services/localData');
+localData.loadData();
+
 const authRoutes = require('./routes/auth');
 const placeRoutes = require('./routes/places');
 const favoriteRoutes = require('./routes/favorites');
