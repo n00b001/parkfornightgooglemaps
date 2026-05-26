@@ -74,13 +74,14 @@ if (typeof passport.on === 'function') {
 }
 
 // Serve downloaded images statically
-const imagesDir = path.join(__dirname, "..", "..", "..", "scripts", "data", "images");
-if (fs.existsSync(imagesDir)) {
-	app.use("/images", express.static(imagesDir));
-	console.log(`Serving images from: ${imagesDir}`);
-} else {
-	console.warn(`Images directory not found: ${imagesDir}`);
+const imagesDir = path.resolve(__dirname, "..", "..", "scripts", "data", "images");
+if (!fs.existsSync(imagesDir)) {
+	console.error(`FATAL: Images directory not found: ${imagesDir}`);
+	console.error("Run the scraper to download images before starting the server.");
+	process.exit(1);
 }
+app.use("/images", express.static(imagesDir));
+console.log(`Serving images from: ${imagesDir}`);
 
 app.use('/auth', authRoutes);
 app.use('/api/places', placeRoutes);
