@@ -4,14 +4,16 @@ Park4Night Scraper
 
 Scrapes all places and reviews from Park4Night using the guest API.
 Supports multiprocessing, checkpoint/resume, and comprehensive data extraction.
+Downloads place photos (thumbnails + large) and vehicle type icons locally.
 
 Usage:
-    python scraper.py scrape          # Run full scrape (places + reviews)
-    python scraper.py scrape-places   # Scrape places only
-    python scraper.py scrape-reviews  # Scrape reviews only
-    python scraper.py status          # Show current progress
-    python scraper.py reset           # Reset checkpoint (start fresh)
-    python scraper.py export          # Export data to final JSON files
+    python scraper.py scrape              # Run full scrape (places + reviews + images)
+    python scraper.py scrape-places       # Scrape places only (with images)
+    python scraper.py scrape-reviews      # Scrape reviews only
+    python scraper.py download-images     # Download images for already-scraped places
+    python scraper.py status              # Show current progress
+    python scraper.py reset               # Reset checkpoint (start fresh)
+    python scraper.py export              # Export data to final JSON files
 """
 
 import argparse
@@ -43,12 +45,14 @@ from checkpoint import Checkpoint  # pyright: ignore[reportMissingImports]
 from config import (
     ACTIVITY_CODES,
     DATA_DIR,
+    IMAGE_WORKERS,
     PLACE_TYPE_CODES,
     PLACES_FILE,
     REVIEWS_FILE,
     SERVICE_CODES,
     WORKERS,
 )
+from images import create_image_downloader  # pyright: ignore[reportMissingImports]
 
 # Rich console writes directly to the terminal (not captured by stdout redirect)
 console = Console()
@@ -101,10 +105,30 @@ def _str(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
 
-def normalize_place(place: dict) -> dict:
+def download_place_photos(
+    place_id: int, photos: list[dict], downloader=None
+) -> list[dict]:
+    """
+    Download photos for a place and return normalized photo dicts with relative paths.
+
+    Each photo dict gets:
+      - id, numero (metadata)
+      - url_thumb, url_large (original CDN URLs as fallback)
+      - path_thumb, path_large (relative paths to local files, if downloaded)
+    """
+    if downloader is None:
+        downloader = create_image_downloader()
+    return downloader.download_place_photos(place_id, photos)
+
+
+def normalize_place(place: dict, downloader=None) -> dict:
     """
     Normalize a place from the guest API into a clean, consistent format.
     Extracts all available fields including services, activities, photos, etc.
+
+    Args:
+        place: Raw place dict from the API
+        downloader: Optional ImageDownloader instance (creates new one if not provided)
     """
     place_id = int(place.get("id") or 0)
 
@@ -132,17 +156,8 @@ def normalize_place(place: dict) -> dict:
     type_code = place.get("code", "")
     place_type = PLACE_TYPE_CODES.get(type_code, type_code)
 
-    # Photos
-    photos = []
-    for photo in place.get("photos", []):
-        photos.append(
-            {
-                "id": photo.get("id"),
-                "url_large": photo.get("link_large"),
-                "url_thumb": photo.get("link_thumb"),
-                "numero": photo.get("numero"),
-            }
-        )
+    # Photos (downloaded locally with relative paths)
+    photos = download_place_photos(place_id, place.get("photos", []), downloader)
 
     # Contact details
     contact = {
@@ -265,6 +280,7 @@ def scrape_places_worker(args: tuple) -> tuple[str, int, int]:
 
     try:
         api = create_api_client()
+        downloader = create_image_downloader()
         places = api.get_places_guest(lat, lng)
 
         if not places:
@@ -274,7 +290,7 @@ def scrape_places_worker(args: tuple) -> tuple[str, int, int]:
         new_count = 0
         for place in places:
             try:
-                normalized = normalize_place(place)
+                normalized = normalize_place(place, downloader)
                 with open(PLACES_FILE, "a", encoding="utf-8") as f:
                     f.write(json.dumps(normalized) + "\n")
                 new_count += 1
@@ -528,6 +544,143 @@ def export_data() -> None:
     print(f"Exported {len(reviews)} reviews to {reviews_file}")
 
 
+def download_images_worker(args: tuple) -> tuple[int, int, int]:
+    """
+    Worker function for downloading images for already-scraped places.
+    Args: (place_id, worker_id)
+    Returns: (place_id, photos_downloaded, total_photos)
+    """
+    place_id, worker_id = args
+
+    try:
+        downloader = create_image_downloader()
+        # Read place data from places file
+        place_data = None
+        if os.path.exists(PLACES_FILE):
+            with open(PLACES_FILE, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        place = json.loads(line)
+                        if place.get("id") == place_id:
+                            place_data = place
+                            break
+                    except json.JSONDecodeError:
+                        continue
+
+        if not place_data:
+            logger.warning(f"[Worker {worker_id}] Place {place_id} not found in places file")
+            return place_id, 0, 0
+
+        photos = place_data.get("photos", [])
+        if not photos:
+            return place_id, 0, 0
+
+        # Check if photos already have local paths (already downloaded)
+        all_downloaded = all(
+            "path_thumb" in photo and "path_large" in photo for photo in photos
+        )
+        if all_downloaded:
+            logger.info(f"[Worker {worker_id}] Place {place_id}: Images already downloaded")
+            return place_id, 0, len(photos)
+
+        # Download photos
+        new_photos = downloader.download_place_photos(place_id, photos)
+
+        # Update place data with new photo paths
+        place_data["photos"] = new_photos
+        with open(PLACES_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(place_data) + "\n")
+
+        downloaded_count = sum(
+            1 for photo in new_photos if "path_thumb" in photo or "path_large" in photo
+        )
+        logger.info(
+            f"[Worker {worker_id}] Place {place_id}: "
+            f"Downloaded {downloaded_count}/{len(photos)} photos"
+        )
+        return place_id, downloaded_count, len(photos)
+    except Exception as e:
+        logger.error(f"[Worker {worker_id}] Place {place_id}: Worker crashed: {e}")
+        return place_id, 0, 0
+
+
+def download_images(checkpoint: Checkpoint, place_id_filter: int | None = None) -> None:
+    """
+    Download images for all already-scraped places.
+    Can be run independently of place scraping.
+    """
+    # Load all unique place IDs from places file
+    place_ids = []
+    if os.path.exists(PLACES_FILE):
+        with open(PLACES_FILE, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    place = json.loads(line)
+                    pid = place.get("id")
+                    if pid and (place_id_filter is None or pid == place_id_filter):
+                        place_ids.append(pid)
+                except json.JSONDecodeError:
+                    continue
+
+    # Deduplicate (keep last occurrence - latest data)
+    seen = set()
+    unique_ids = []
+    for pid in reversed(place_ids):
+        if pid not in seen:
+            seen.add(pid)
+            unique_ids.append(pid)
+    place_ids = list(reversed(unique_ids))
+
+    if not place_ids:
+        console.print("[bold yellow]No places found to download images for.[/bold yellow]")
+        return
+
+    console.print(
+        f"\n[bold blue]Starting image download:[/bold blue] "
+        f"{len(place_ids)} places"
+    )
+
+    worker_args = [(pid, i % IMAGE_WORKERS) for i, pid in enumerate(place_ids)]
+
+    total_downloaded = 0
+    total_photos = 0
+    completed = 0
+    total_to_process = len(place_ids)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("•"),
+        TextColumn("[cyan]{task.fields[photos]} photos[/cyan]"),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Downloading images", total=total_to_process, photos=0)
+
+        with ProcessPoolExecutor(max_workers=IMAGE_WORKERS) as executor:
+            futures = {
+                executor.submit(download_images_worker, args): args
+                for args in worker_args
+            }
+
+            for future in as_completed(futures):
+                place_id, downloaded, photo_count = future.result()
+                total_downloaded += downloaded
+                total_photos += photo_count
+                completed += 1
+                progress.update(
+                    task, completed=completed, photos=total_downloaded
+                )
+
+    console.print(
+        f"[bold green]✓ Image download complete:[/bold green] "
+        f"{total_downloaded} photos from {completed} places ({total_photos} total photos)"
+    )
+
+
 def _handle_signal(signum: int, frame: Any) -> None:
     """Handle SIGINT/SIGTERM by saving checkpoint and exiting gracefully."""
     global _checkpoint
@@ -555,6 +708,8 @@ def main() -> None:
             "scrape",
             "scrape-places",
             "scrape-reviews",
+            "download-images",
+            "download-icons",
             "status",
             "reset",
             "export",
@@ -566,6 +721,12 @@ def main() -> None:
         type=int,
         default=WORKERS,
         help=f"Number of parallel workers (default: {WORKERS})",
+    )
+    parser.add_argument(
+        "--place-id",
+        type=int,
+        default=None,
+        help="Filter to a specific place ID (for download-images)",
     )
 
     args = parser.parse_args()
@@ -594,6 +755,16 @@ def main() -> None:
                 os.remove(fname)
                 logger.info(f"Removed {fname}")
         print("Checkpoint and data files reset. Ready for fresh scrape.")
+
+    elif args.command == "download-images":
+        download_images(_checkpoint, args.place_id)
+
+    elif args.command == "download-icons":
+        downloader = create_image_downloader()
+        icons = downloader.download_vehicle_icons()
+        console.print(
+            f"[bold green]✓ Downloaded {len(icons)} vehicle type icons[/bold green]"
+        )
 
     elif args.command == "export":
         export_data()

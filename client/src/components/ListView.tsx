@@ -1,5 +1,6 @@
 import React from 'react';
 import { Star, MapPin, Heart, Navigation } from 'lucide-react';
+import { getPhotoThumbUrl } from '../services/images';
 
 // English type keys (must match server TYPE_CODE_MAP values)
 const TYPE_NAMES: Record<string, string> = {
@@ -47,7 +48,7 @@ const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, on
         </div>
         {places.map((place) => {
           const isFavorite = favorites.includes(place.id);
-          const photo = place.photos?.[0]?.thumbUrl || place.photos?.[0]?.url_thumb;
+          const photo = getPhotoThumbUrl(place.photos?.[0]);
           return (
             <div
               key={place.id}

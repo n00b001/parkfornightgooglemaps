@@ -3,6 +3,7 @@ import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, Map, Droplets,
 import axios from '../axiosConfig';
 import ReviewForm from './ReviewForm';
 import { saveReviews, getCachedReviews } from '../services/db';
+import { getPhotoThumbUrl, getVehicleIconUrl, DEFAULT_AVATAR } from '../services/images';
 
 const getStreetViewUrl = (lat: number, lng: number) => {
   const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
@@ -180,9 +181,18 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
     <div className="fixed bottom-4 left-4 right-4 md:w-[450px] z-40 bg-white rounded-3xl shadow-2xl overflow-hidden max-h-[85vh] flex flex-col">
       {photos.length > 0 && (
         <div className="h-48 overflow-x-auto flex gap-1 snap-x bg-gray-100">
-          {photos.map((p: any, idx: number) => (
-            <img key={idx} src={p.thumbUrl || p.lien_mini} alt={`Spot ${idx}`} className="h-full object-cover snap-center min-w-[80%]" />
-          ))}
+          {photos.map((p: any, idx: number) => {
+            const thumbUrl = getPhotoThumbUrl(p);
+            return (
+              <img
+                key={idx}
+                src={thumbUrl || ''}
+                alt={`Spot ${idx}`}
+                className="h-full object-cover snap-center min-w-[80%]"
+                loading="lazy"
+              />
+            );
+          })}
         </div>
       )}
 
@@ -334,18 +344,29 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
             <div>
               <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Park4Night Reviews</h4>
               <div className="space-y-3">
-                {p4nReviews.map((r, idx) => (
-                  <div key={idx} className="text-sm border-b pb-2">
-                    <div className="flex justify-between mb-1">
-                      <span className="font-bold">{r.author}</span>
-                      <span className="text-orange-500 font-bold">{r.rating}/5</span>
+                {p4nReviews.map((r, idx) => {
+                  const avatarUrl = getVehicleIconUrl(r.vehicleType);
+                  return (
+                    <div key={idx} className="text-sm border-b pb-2">
+                      <div className="flex items-center gap-2 mb-1">
+                        <img
+                          src={avatarUrl || DEFAULT_AVATAR}
+                          alt=""
+                          className="w-6 h-6 rounded-full object-contain bg-gray-50"
+                          onError={(e: any) => {
+                            e.target.src = DEFAULT_AVATAR;
+                          }}
+                        />
+                        <span className="font-bold">{r.author}</span>
+                        <span className="text-orange-500 font-bold ml-auto">{r.rating}/5</span>
+                      </div>
+                      <p className="text-gray-600 italic">"{r.content}"</p>
+                      {r.needsTranslation && (
+                        <span className="text-[10px] text-gray-400 italic">(original language)</span>
+                      )}
                     </div>
-                    <p className="text-gray-600 italic">"{r.content}"</p>
-                    {r.needsTranslation && (
-                      <span className="text-[10px] text-gray-400 italic">(original language)</span>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

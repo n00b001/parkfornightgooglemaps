@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const session = require('express-session');
@@ -69,6 +71,15 @@ if (typeof passport.on === 'function') {
   passport.on('authenticateFailure', (info) => {
     console.error('Passport authentication failure:', info);
   });
+}
+
+// Serve downloaded images statically
+const imagesDir = path.join(__dirname, "..", "..", "..", "scripts", "data", "images");
+if (fs.existsSync(imagesDir)) {
+	app.use("/images", express.static(imagesDir));
+	console.log(`Serving images from: ${imagesDir}`);
+} else {
+	console.warn(`Images directory not found: ${imagesDir}`);
 }
 
 app.use('/auth', authRoutes);

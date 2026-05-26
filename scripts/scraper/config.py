@@ -43,6 +43,17 @@ REVIEWS_FILE = os.path.join(DATA_DIR, "reviews.jsonl")
 CHECKPOINT_FILE = os.path.join(DATA_DIR, "checkpoint.json")
 LOG_FILE = os.path.join(DATA_DIR, "scraper.log")
 
+# ── Image Download Configuration ───────────────────────────────────
+IMAGES_DIR = os.path.join(DATA_DIR, "images")
+PLACE_IMAGES_DIR = os.path.join(IMAGES_DIR, "places")
+ICON_IMAGES_DIR = os.path.join(IMAGES_DIR, "icons")
+IMAGE_REQUEST_DELAY = 0.5  # seconds between image downloads
+IMAGE_REQUEST_TIMEOUT = 30  # seconds per image download
+IMAGE_MAX_RETRIES = 3  # retries on failure
+IMAGE_RETRY_DELAY = 2  # seconds between retries
+IMAGE_WORKERS = 2  # parallel image download workers (lower to avoid CDN blocking)
+IMAGE_MIN_SIZE = 1024  # minimum file size in bytes (skip tiny/broken images)
+
 # ── Multiprocessing ────────────────────────────────────────────────
 WORKERS = 4  # number of parallel workers
 BATCH_SIZE = 50  # places per batch for review fetching
