@@ -9,43 +9,106 @@ let reviewsByPlace = null;
 let loaded = false;
 
 /**
- * Map Park4Night type codes to client-expected code_type values.
+ * Map Park4Night type codes to English type values.
  */
 const TYPE_CODE_MAP = {
-	APN: "cc", // Aire de camping-car → cc
-	P: "p", // Parking area → p
-	PN: "nature", // Parking naturel → nature
-	PJ: "cp", // Aire de jeu → cp (camping place)
-	C: "cp", // Camping → cp
-	ACC_G: "cc", // Aire gratuite → cc
-	DS: "p", // Dépannage → p
-	AR: "p", // Aire de repos → p
-	PSS: "p", // Parking sur site → p
-	ASS: "p", // Aire service → p
-	ACC_PR: "p_prive", // Accès privé → p_prive
-	ACC_P: "p", // Accès payant → p
-	F: "ferme", // Fermé → ferme
-	OR: "p", // Aire de repos officielle → p
-	EP: "p", // Espace de parking → p
+	APN: "rvPark", // Aire de camping-car → rvPark
+	P: "parking", // Parking area → parking
+	PN: "naturalParking", // Parking naturel → naturalParking
+	PJ: "campsite", // Aire de jeu → campsite
+	C: "campsite", // Camping → campsite
+	ACC_G: "freeRvPark", // Aire gratuite → freeRvPark
+	DS: "parking", // Dépannage → parking
+	AR: "restArea", // Aire de repos → restArea
+	PSS: "onSiteParking", // Parking sur site → onSiteParking
+	ASS: "serviceArea", // Aire service → serviceArea
+	ACC_PR: "private", // Accès privé → private
+	ACC_P: "paid", // Accès payant → paid
+	F: "closed", // Fermé → closed
+	OR: "restArea", // Aire de repos officielle → restArea
+	EP: "parking", // Espace de parking → parking
 };
 
 /**
- * Map Park4Night service codes to client amenity keys.
+ * Map Park4Night service codes to English amenity keys.
  */
 const SERVICE_AMENITY_MAP = {
-	point_eau: "point_eau",
-	eau: "point_eau",
-	electricite: "electricite",
-	électricité: "electricite",
-	poubelle: "poubelle",
+	point_eau: "waterPoint",
+	eau: "waterPoint",
+	electricite: "electricity",
+	"électricité": "electricity",
+	poubelle: "trashCan",
 	wifi: "wifi",
-	vidange_eaux_usees: "vidange_eaux_usees",
-	vidance_eaux_grises: "vidange_eaux_usees",
-	vidange_wc: "vidange_wc",
-	vidange_chasse: "vidange_wc",
-	douche: "douche",
-	baignade: "baignade",
+	vidange_eaux_usees: "wasteWaterDrain",
+	vidance_eaux_grises: "wasteWaterDrain",
+	vidange_wc: "toiletDrain",
+	vidange_chasse: "toiletDrain",
+	douche: "shower",
+	baignade: "swimming",
+	animaux: "pets",
+	aire_pique_nique: "picnicArea",
+	laverie: "laundry",
+	wc_public: "publicToilet",
 };
+
+/**
+ * Map Park4Night vehicle type codes to English.
+ */
+const VEHICLE_TYPE_MAP = {
+	NC: "caravan", // Caravane
+	GV: "motorhome", // Grand véhicule / Camping-car
+	UL: "ultralight", // Ultraléger
+	V: "vehicle", // Véhicule standard
+	M: "motorcycle", // Moto
+	T: "tent", // Tente
+};
+
+/**
+ * Simple language detection heuristic.
+ * Returns true if the text appears to be English.
+ */
+function isEnglish(text) {
+	if (!text || typeof text !== "string") return true;
+	// Check for common non-English patterns (accented chars, specific words)
+	const nonEnglishPatterns = [
+		/[àâäéèêëïîôùûüÿçœæ]/i, // French accented characters
+		/\b(les|des|une|dans|pour|avec|sur|sous|entre|vers|chez|sans|parmi)\b/i,
+		/\b(est|sont|était|étaient|a|ont|avait|avaient|sera|seront)\b/i,
+		/\b(très|même|tout|tous|toute|toutes|bien|mal|plus|moins|très)\b/i,
+		/\b(ou|et|mais|donc|car|cependant|toutefois|pourtant)\b/i,
+		/\b(dans|sur|sous|devant|derrière|à|de|du|des|au|aux)\b/i,
+	];;
+	return !nonEnglishPatterns.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Normalize a review object to use English field names.
+ * Non-English text is stored in originalContent for reference.
+ * TODO: Integrate with a translation API (Google Translate, DeepL) to produce
+ * translated content. Until then, non-English reviews keep their original text
+ * as the primary content with a flag indicating translation is needed.
+ */
+function normalizeReview(review) {
+	if (!review) return review;
+
+	const rawText = review.text || review.texte || review.content || "";
+	const english = isEnglish(rawText);
+	const vehicleType = VEHICLE_TYPE_MAP[review.vehicle_type] || review.vehicle_type || "unknown";
+
+	return {
+		id: review.id,
+		placeId: review.place_id,
+		author: review.author || review.auteur || "anonymous",
+		authorId: review.author_id,
+		content: rawText, // Primary content (original language if not translated)
+		originalContent: english ? null : rawText, // Non-English original preserved
+		translatedContent: english ? null : null, // TODO: populate with API translation
+		rating: review.rating ?? review.note,
+		vehicleType,
+		createdAt: review.created_at || review.createdAt,
+		needsTranslation: !english,
+	};
+}
 
 /**
  * Load scraped data from JSON files into memory.
@@ -116,23 +179,24 @@ function loadData() {
 }
 
 /**
- * Normalize a place object to match client-expected field names.
+ * Normalize a place object to use English field names and values.
+ * Original non-English text is preserved alongside for reference.
  */
 function normalizePlace(place) {
 	if (!place) return place;
 
 	// Build address string from address object
 	const addr = place.address || {};
-	const adresse = [addr.street, addr.city, addr.zipcode, addr.country]
+	const addressStr = [addr.street, addr.city, addr.zipcode, addr.country]
 		.filter(Boolean)
 		.join(", ");
 
-	// Map type code
+	// Map type code to English
 	const rawTypeCode =
 		typeof place.type === "object" ? place.type.code : place.type;
-	const code_type = TYPE_CODE_MAP[rawTypeCode] || "p";
+	const type = TYPE_CODE_MAP[rawTypeCode] || "parking";
 
-	// Map services array to amenity boolean fields
+	// Map services array to English amenity boolean fields
 	const amenities = {};
 	if (Array.isArray(place.services)) {
 		for (const service of place.services) {
@@ -144,26 +208,27 @@ function normalizePlace(place) {
 		}
 	}
 
-	// Map photos
+	// Map photos with English field names
 	const photos = Array.isArray(place.photos)
 		? place.photos.map((p) => ({
 				...p,
-				lien_mini: p.url_thumb || p.lien_mini,
-				lien_grand: p.url_large || p.lien_grand,
+				thumbUrl: p.url_thumb || p.lien_mini || p.thumbUrl,
+				largeUrl: p.url_large || p.lien_grand || p.largeUrl,
 			}))
 		: [];
 
 	return {
 		...place,
-		// Client-expected field aliases
-		titre: place.title || place.titre,
-		adresse: adresse || place.adresse,
-		type: code_type, // overwrite object with mapped string for client compat
-		code_type,
-		note_moyenne:
-			place.rating != null ? String(place.rating) : place.note_moyenne,
-		nb_comm: place.review_count ?? place.nb_comm ?? 0,
-		// Amenity boolean fields
+		// English field names (primary)
+		title: place.title || place.titre || place.name,
+		address: addressStr || place.address,
+		type,
+		rating: place.rating ?? place.note_moyenne,
+		reviewCount: place.review_count ?? place.nb_comm ?? 0,
+		// Original non-English text preserved for reference
+		originalTitle: place.titre || place.originalTitle,
+		originalAddress: place.adresse || place.originalAddress,
+		// Amenity boolean fields (English keys)
 		...amenities,
 		// Normalized photos
 		photos,
@@ -241,12 +306,13 @@ function getPlaceById(id) {
 }
 
 /**
- * Get reviews for a place.
+ * Get reviews for a place (normalized to English field names).
  */
 function getPlaceReviews(placeId) {
 	if (!loaded) loadData();
 	const numId = typeof placeId === "string" ? parseInt(placeId, 10) : placeId;
-	return reviewsByPlace?.get(numId) || [];
+	const rawReviews = reviewsByPlace?.get(numId) || [];
+	return rawReviews.map(normalizeReview);
 }
 
 /**

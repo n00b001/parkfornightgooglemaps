@@ -2,18 +2,18 @@ import React, { useState } from 'react';
 import { X, Droplets, Zap, Trash2, Wifi, Bath, Waves, Dog, Utensils, Shirt, Info, Compass, Map } from 'lucide-react';
 
 const AMENITIES_OPTIONS = [
-  { key: 'point_eau', label: 'Water', icon: Droplets },
-  { key: 'electricite', label: 'Electricity', icon: Zap },
-  { key: 'poubelle', label: 'Trash', icon: Trash2 },
+  { key: 'waterPoint', label: 'Water', icon: Droplets },
+  { key: 'electricity', label: 'Electricity', icon: Zap },
+  { key: 'trashCan', label: 'Trash', icon: Trash2 },
   { key: 'wifi', label: 'Wifi', icon: Wifi },
-  { key: 'vidange_eaux_usees', label: 'Grey Water', icon: Info },
-  { key: 'vidange_wc', label: 'Black Water', icon: Compass },
-  { key: 'douche', label: 'Shower', icon: Bath },
-  { key: 'baignade', label: 'Water Activity', icon: Waves },
-  { key: 'animaux', label: 'Pets', icon: Dog },
-  { key: 'aire_pique_nique', label: 'Picnic', icon: Utensils },
-  { key: 'laverie', label: 'Laundry', icon: Shirt },
-  { key: 'wc_public', label: 'Public WC', icon: Map },
+  { key: 'wasteWaterDrain', label: 'Grey Water', icon: Info },
+  { key: 'toiletDrain', label: 'Black Water', icon: Compass },
+  { key: 'shower', label: 'Shower', icon: Bath },
+  { key: 'swimming', label: 'Water Activity', icon: Waves },
+  { key: 'pets', label: 'Pets', icon: Dog },
+  { key: 'picnicArea', label: 'Picnic', icon: Utensils },
+  { key: 'laundry', label: 'Laundry', icon: Shirt },
+  { key: 'publicToilet', label: 'Public WC', icon: Map },
 ];
 
 const FilterModal: React.FC<any> = ({ isOpen, onClose, onApply }) => {
@@ -41,12 +41,12 @@ const FilterModal: React.FC<any> = ({ isOpen, onClose, onApply }) => {
             <label className="block text-sm font-bold mb-1">Type</label>
             <select className="w-full p-2 border rounded-lg" value={type} onChange={e => setType(e.target.value)}>
               <option value="">All Types</option>
-              <option value="cc">Motorhome Area</option>
-              <option value="p">Parking</option>
-              <option value="cp">Campsite</option>
-              <option value="p_prive">Private Parking</option>
-              <option value="ferme">Farm</option>
-              <option value="nature">Nature Spot</option>
+              <option value="rvPark">RV Park</option>
+              <option value="parking">Parking</option>
+              <option value="campsite">Campsite</option>
+              <option value="private">Private</option>
+              <option value="closed">Closed</option>
+              <option value="naturalParking">Natural Parking</option>
             </select>
           </div>
           <div>
