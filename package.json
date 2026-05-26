@@ -23,6 +23,6 @@
   ],
   "author": "n00b001",
   "dependencies": {
-    "concurrently": "^8.2.0"
+    "concurrently": "^8.2.2"
   }
 }
