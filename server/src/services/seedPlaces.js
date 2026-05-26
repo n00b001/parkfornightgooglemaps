@@ -22,10 +22,12 @@ async function seed() {
 	}
 
 	// Quick check: is this a Git LFS pointer?
-	const firstBytes = fs.readFileSync(placesFile, {
-		encoding: "utf-8",
-		flag: "r",
-	}).slice(0, 100);
+	const firstBytes = fs
+		.readFileSync(placesFile, {
+			encoding: "utf-8",
+			flag: "r",
+		})
+		.slice(0, 100);
 	if (firstBytes.startsWith("version https://git-lfs")) {
 		console.warn(
 			"places_export.json is a Git LFS pointer — run `git lfs pull` before seeding.",
@@ -53,6 +55,16 @@ async function seed() {
 	const BATCH = 500;
 	for (let i = 0; i < places.length; i += BATCH) {
 		const batch = places.slice(i, i + BATCH);
+		// Helper: build address string from object or use as-is
+		function buildAddress(addr) {
+			if (typeof addr === "object" && addr !== null) {
+				return [addr.street, addr.city, addr.zipcode, addr.country]
+					.filter(Boolean)
+					.join(", ");
+			}
+			return addr || null;
+		}
+
 		const upserts = batch.map((p) =>
 			prisma.place.upsert({
 				where: { id: p.id },
@@ -62,21 +74,17 @@ async function seed() {
 					longitude: p.longitude,
 					type: p.type?.code || p.type || "",
 					description: p.description,
-					address:
-						typeof p.address === "object"
-							? [
-									p.address.street,
-									p.address.city,
-									p.address.zipcode,
-									p.address.country,
-								]
-									.filter(Boolean)
-									.join(", ")
-							: p.address,
+					address: buildAddress(p.address),
 					rating: p.rating,
 					reviewCount: p.review_count || 0,
 					photoCount: p.photo_count || 0,
+					services: p.services || null,
+					activities: p.activities || null,
 					photos: p.photos || [],
+					pricing: p.pricing || null,
+					access: p.access || null,
+					contact: p.contact || null,
+					descriptions: p.descriptions || null,
 					rawData: p,
 					lastFetched: new Date(),
 				},
@@ -87,21 +95,17 @@ async function seed() {
 					longitude: p.longitude,
 					type: p.type?.code || p.type || "",
 					description: p.description,
-					address:
-						typeof p.address === "object"
-							? [
-									p.address.street,
-									p.address.city,
-									p.address.zipcode,
-									p.address.country,
-								]
-									.filter(Boolean)
-									.join(", ")
-							: p.address,
+					address: buildAddress(p.address),
 					rating: p.rating,
 					reviewCount: p.review_count || 0,
 					photoCount: p.photo_count || 0,
+					services: p.services || null,
+					activities: p.activities || null,
 					photos: p.photos || [],
+					pricing: p.pricing || null,
+					access: p.access || null,
+					contact: p.contact || null,
+					descriptions: p.descriptions || null,
 					rawData: p,
 					lastFetched: new Date(),
 				},
@@ -109,7 +113,9 @@ async function seed() {
 		);
 
 		await Promise.allSettled(upserts);
-		console.log(`  Seeded ${Math.min(i + BATCH, places.length)}/${places.length}`);
+		console.log(
+			`  Seeded ${Math.min(i + BATCH, places.length)}/${places.length}`,
+		);
 	}
 
 	console.log("Seeding complete.");
