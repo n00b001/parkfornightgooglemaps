@@ -61,3 +61,4 @@ scripts/data/*.log
 !scripts/data/images/icons/
 .playwright-cli/
 __pycache__/
+firebase-credentials.json

@@ -1,7 +1,7 @@
 /**
  * Image URL utilities for Park4Night app.
  *
- * ALL images come from local paths served by the API server.
+ * All images are served from Firestore via the API server.
  * NO CDN fallback — this project supercedes Park4Night entirely.
  */
 
@@ -9,7 +9,8 @@ const API_URL = import.meta.env.VITE_API_URL || "";
 
 /**
  * Photo object from the Place.photos array.
- * Must have local paths (path_thumb, path_large) set by the scraper.
+ * Contains local paths (path_thumb, path_large) set by the scraper.
+ * These are converted to Firestore URLs at runtime.
  */
 export interface Photo {
 	id?: string;
@@ -19,47 +20,64 @@ export interface Photo {
 }
 
 /**
- * Get the thumbnail URL for a photo.
+ * Parse a local image path into Firestore route params.
+ * e.g., "images/places/514700/1582655_thumb.jpg" -> { placeId: "514700", filename: "1582655_thumb.jpg" }
+ */
+function parseImagePath(
+	localPath: string,
+): { placeId: string; filename: string } | null {
+	const match = localPath.match(/images\/places\/(\d+)\/(.+)$/);
+	if (!match) return null;
+	return { placeId: match[1], filename: match[2] };
+}
+
+/**
+ * Get the thumbnail URL for a photo (served from Firestore).
  * Returns undefined if no local path exists — this is a fatal error.
  */
 export function getPhotoThumbUrl(photo: Photo | undefined): string | undefined {
 	if (!photo || !photo.path_thumb) return undefined;
-	return `${API_URL}/${photo.path_thumb}`;
+	const parsed = parseImagePath(photo.path_thumb);
+	if (!parsed) return undefined;
+	return `${API_URL}/images/${parsed.placeId}/${parsed.filename}`;
 }
 
 /**
- * Get the large URL for a photo.
+ * Get the large URL for a photo (served from Firestore).
  * Returns undefined if no local path exists — this is a fatal error.
  */
 export function getPhotoLargeUrl(photo: Photo | undefined): string | undefined {
 	if (!photo || !photo.path_large) return undefined;
-	return `${API_URL}/${photo.path_large}`;
+	const parsed = parseImagePath(photo.path_large);
+	if (!parsed) return undefined;
+	return `${API_URL}/images/${parsed.placeId}/${parsed.filename}`;
 }
 
 /**
  * Vehicle type icon mapping.
- * Maps Park4Night vehicle type codes to local icon paths.
+ * Maps Park4Night vehicle type codes to Firestore-served icon URLs.
  */
 const VEHICLE_ICONS: Record<string, string> = {
-	NC: "images/icons/vehicule_nc.png",
-	GV: "images/icons/vehicule_gv.png",
-	UL: "images/icons/vehicule_ul.png",
-	V: "images/icons/vehicule_v.png",
-	M: "images/icons/vehicule_m.png",
-	T: "images/icons/vehicule_t.png",
-	P: "images/icons/vehicule_p.png",
-	I: "images/icons/vehicule_i.png",
+	NC: "vehicule_nc.png",
+	GV: "vehicule_gv.png",
+	UL: "vehicule_ul.png",
+	V: "vehicule_v.png",
+	M: "vehicule_m.png",
+	T: "vehicule_t.png",
+	P: "vehicule_p.png",
+	I: "vehicule_i.png",
 };
 
 /**
  * Get the avatar URL for a review author based on their vehicle type.
+ * Served from Firestore via /images/icons/:filename
  * Returns undefined if no icon exists — this is a fatal error.
  */
 export function getVehicleIconUrl(
 	vehicleType: string | undefined,
 ): string | undefined {
 	if (!vehicleType) return undefined;
-	const localPath = VEHICLE_ICONS[vehicleType];
-	if (!localPath) return undefined;
-	return `${API_URL}/${localPath}`;
+	const filename = VEHICLE_ICONS[vehicleType];
+	if (!filename) return undefined;
+	return `${API_URL}/images/icons/${filename}`;
 }

@@ -1,6 +1,4 @@
 require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const session = require('express-session');
@@ -73,15 +71,16 @@ if (typeof passport.on === 'function') {
   });
 }
 
-// Serve downloaded images statically
-const imagesDir = path.resolve(__dirname, "..", "..", "scripts", "data", "images");
-if (!fs.existsSync(imagesDir)) {
-	console.error(`FATAL: Images directory not found: ${imagesDir}`);
-	console.error("Run the scraper to download images before starting the server.");
+// Serve images from Firestore
+const imageRoutes = require('./routes/images');
+try {
+	require('./config/firebase').initFirebase();
+	console.log("Images served from Firestore");
+} catch (err) {
+	console.error("FATAL: Failed to initialize Firebase for images:", err.message);
 	process.exit(1);
 }
-app.use("/images", express.static(imagesDir));
-console.log(`Serving images from: ${imagesDir}`);
+app.use("/images", imageRoutes);
 
 app.use('/auth', authRoutes);
 app.use('/api/places', placeRoutes);
