@@ -22,6 +22,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
@@ -65,31 +66,21 @@ _checkpoint: Checkpoint | None = None
 def setup_logging() -> None:
     """Configure logging with dual output: console + log files.
 
-    stdout  → scraper.log
-    stderr  → scraper_error.log
-    logger  → both console (rich) and scraper.log
+    All output goes to terminal AND is logged to scraper.log with timestamps.
     """
     os.makedirs(DATA_DIR, exist_ok=True)
     log_file = os.path.join(DATA_DIR, "scraper.log")
-    error_log_file = os.path.join(DATA_DIR, "scraper_error.log")
 
-    # Redirect stdout → scraper.log
-    stdout_log = open(log_file, "a", encoding="utf-8")
-    sys.stdout = stdout_log
-
-    # Redirect stderr → scraper_error.log
-    stderr_log = open(error_log_file, "a", encoding="utf-8")
-    sys.stderr = stderr_log
-
-    # Console handler with rich formatting (writes to terminal, not stdout)
+    # Console handler with rich formatting and timestamps
     console_handler = RichHandler(
         console=console,
         show_time=True,
         show_level=False,
         markup=False,
     )
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
 
-    # File handler for detailed logging
+    # File handler for detailed logging with timestamps
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 
@@ -577,6 +568,10 @@ def download_images_worker(args: tuple) -> tuple[int, int, int]:
         all_downloaded = all("path_thumb" in photo and "path_large" in photo for photo in photos)
         if all_downloaded:
             logger.info(f"[Worker {worker_id}] Place {place_id}: Images already downloaded")
+            # Still append to update scraped_at for export deduplication
+            place_data["scraped_at"] = datetime.now().isoformat()
+            with open(PLACES_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(place_data) + "\n")
             return place_id, 0, len(photos)
 
         # Download photos
@@ -584,6 +579,7 @@ def download_images_worker(args: tuple) -> tuple[int, int, int]:
 
         # Update place data with new photo paths
         place_data["photos"] = new_photos
+        place_data["scraped_at"] = datetime.now().isoformat()
         with open(PLACES_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(place_data) + "\n")
 
@@ -632,6 +628,7 @@ def download_images(checkpoint: Checkpoint, place_id_filter: int | None = None) 
         return
 
     console.print(f"\n[bold blue]Starting image download:[/bold blue] {len(place_ids)} places")
+    logger.info(f"Starting image download for {len(place_ids)} places")
 
     worker_args = [(pid, i % IMAGE_WORKERS) for i, pid in enumerate(place_ids)]
 
@@ -639,6 +636,8 @@ def download_images(checkpoint: Checkpoint, place_id_filter: int | None = None) 
     total_photos = 0
     completed = 0
     total_to_process = len(place_ids)
+    start_time = time.time()
+    last_log_at = start_time
 
     with Progress(
         SpinnerColumn(),
@@ -662,6 +661,17 @@ def download_images(checkpoint: Checkpoint, place_id_filter: int | None = None) 
                 total_photos += photo_count
                 completed += 1
                 progress.update(task, completed=completed, photos=total_downloaded)
+
+                # Log progress every 5 seconds
+                now = time.time()
+                if now - last_log_at > 5:
+                    elapsed = now - start_time
+                    rate = total_downloaded / elapsed if elapsed > 0 else 0
+                    logger.info(
+                        f"Progress: {completed}/{total_to_process} places, "
+                        f"{total_downloaded} photos downloaded ({rate:.1f}/sec)"
+                    )
+                    last_log_at = now
 
     console.print(
         f"[bold green]✓ Image download complete:[/bold green] "

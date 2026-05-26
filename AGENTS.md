@@ -70,3 +70,8 @@ This project is designed to **supercede** Park4Night. The original Park4Night CD
 - Served via Express static at `/images/` on the API server
 - Client constructs URLs as `${API_URL}/<relative-path>` — no CDN fallback, no default avatars, no `onError` handlers pointing elsewhere
 - If images directory is missing, the server must **fail to start** (not log a warning and continue)
+
+### PR Merge Rule — NEVER merge broken code
+- **NEVER merge a PR that breaks the app.** If the feature requires data (scraped places, reviews, images) to function, that data MUST exist before merging.
+- Code that introduces new functionality requiring local assets (images, data files) is incomplete until those assets are actually downloaded and committed.
+- Always verify the app works end-to-end with the actual data before considering a PR ready.

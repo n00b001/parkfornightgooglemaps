@@ -108,8 +108,15 @@ class ImageDownloader:
                 logger.debug(f"Skipping small file: {url} ({content_length} bytes)")
                 return False
 
-            # Save file
-            save_path.parent.mkdir(parents=True, exist_ok=True)
+            # Save file (retry mkdir for race conditions with multiple workers)
+            for attempt in range(5):
+                try:
+                    save_path.parent.mkdir(parents=True, exist_ok=True)
+                    break
+                except FileNotFoundError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.1 * (attempt + 1))
             with open(save_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
