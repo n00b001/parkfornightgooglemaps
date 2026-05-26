@@ -1,6 +1,5 @@
 const fs = require("fs");
 const path = require("path");
-const prisma = require("../config/db");
 
 // Path to scraped data files
 const DATA_DIR = path.join(__dirname, "..", "..", "..", "scripts", "data");
@@ -13,46 +12,46 @@ let loaded = false;
  * Map Park4Night type codes to client-expected code_type values.
  */
 const TYPE_CODE_MAP = {
-	APN: "cc",      // Aire de camping-car → cc
-	P: "p",         // Parking area → p
-	PN: "nature",   // Parking naturel → nature
-	PJ: "cp",       // Aire de jeu → cp (camping place)
-	C: "cp",        // Camping → cp
-	ACC_G: "cc",    // Aire gratuite → cc
-	DS: "p",        // Dépannage → p
-	AR: "p",        // Aire de repos → p
-	PSS: "p",       // Parking sur site → p
-	ASS: "p",       // Aire service → p
+	APN: "cc", // Aire de camping-car → cc
+	P: "p", // Parking area → p
+	PN: "nature", // Parking naturel → nature
+	PJ: "cp", // Aire de jeu → cp (camping place)
+	C: "cp", // Camping → cp
+	ACC_G: "cc", // Aire gratuite → cc
+	DS: "p", // Dépannage → p
+	AR: "p", // Aire de repos → p
+	PSS: "p", // Parking sur site → p
+	ASS: "p", // Aire service → p
 	ACC_PR: "p_prive", // Accès privé → p_prive
-	ACC_P: "p",     // Accès payant → p
-	F: "ferme",     // Fermé → ferme
-	OR: "p",        // Aire de repos officielle → p
-	EP: "p",        // Espace de parking → p
+	ACC_P: "p", // Accès payant → p
+	F: "ferme", // Fermé → ferme
+	OR: "p", // Aire de repos officielle → p
+	EP: "p", // Espace de parking → p
 };
 
 /**
  * Map Park4Night service codes to client amenity keys.
  */
 const SERVICE_AMENITY_MAP = {
-	"point_eau": "point_eau",
-	"eau": "point_eau",
-	"electricite": "electricite",
-	"électricité": "electricite",
-	"poubelle": "poubelle",
-	"wifi": "wifi",
-	"vidange_eaux_usees": "vidange_eaux_usees",
-	"vidance_eaux_grises": "vidange_eaux_usees",
-	"vidange_wc": "vidange_wc",
-	"vidange_chasse": "vidange_wc",
-	"douche": "douche",
-	"baignade": "baignade",
+	point_eau: "point_eau",
+	eau: "point_eau",
+	electricite: "electricite",
+	électricité: "electricite",
+	poubelle: "poubelle",
+	wifi: "wifi",
+	vidange_eaux_usees: "vidange_eaux_usees",
+	vidance_eaux_grises: "vidange_eaux_usees",
+	vidange_wc: "vidange_wc",
+	vidange_chasse: "vidange_wc",
+	douche: "douche",
+	baignade: "baignade",
 };
 
 /**
- * Load scraped data from JSON files and seed database.
- * Called once on startup.
+ * Load scraped data from JSON files into memory.
+ * Called once on startup (synchronous, non-blocking).
  */
-async function loadData() {
+function loadData() {
 	if (loaded) return;
 
 	console.log("Loading local scraped data...");
@@ -64,44 +63,6 @@ async function loadData() {
 			const raw = fs.readFileSync(placesFile, "utf-8");
 			places = JSON.parse(raw);
 			console.log(`Loaded ${places.length} places from local data`);
-
-			// Seed database (skip in test mode to avoid slow Prisma upserts)
-			if (process.env.NODE_ENV !== "test") {
-				try {
-					console.log("Seeding database...");
-					const upsertPromises = places.map((p) => {
-						const data = {
-							id: p.id,
-							name: p.name || p.title || "",
-							latitude: p.latitude,
-							longitude: p.longitude,
-							type: p.type?.code || p.type || "",
-							description: p.description,
-							address: typeof p.address === "object"
-								? [p.address.street, p.address.city, p.address.zipcode, p.address.country]
-										.filter(Boolean)
-										.join(", ")
-								: p.address,
-							rating: p.rating,
-							reviewCount: p.review_count || 0,
-							photoCount: p.photo_count || 0,
-							photos: p.photos || [],
-							rawData: p,
-							lastFetched: new Date(),
-						};
-						return prisma.place.upsert({
-							where: { id: p.id },
-							update: data,
-							create: data,
-						});
-					});
-
-					await Promise.allSettled(upsertPromises);
-					console.log("Seeding complete.");
-				} catch (err) {
-					console.error("Failed to seed places:", err.message);
-				}
-			}
 		} catch (error) {
 			console.warn(
 				`Failed to parse places file (may be Git LFS pointer): ${error.message}`,
