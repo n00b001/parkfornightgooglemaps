@@ -21,23 +21,26 @@ async function seed() {
 		return;
 	}
 
-	let raw;
-	try {
-		raw = fs.readFileSync(placesFile, "utf-8");
-	} catch (err) {
-		console.error("Failed to read places file:", err.message);
-		process.exit(1);
+	// Quick check: is this a Git LFS pointer?
+	const firstBytes = fs.readFileSync(placesFile, {
+		encoding: "utf-8",
+		flag: "r",
+	}).slice(0, 100);
+	if (firstBytes.startsWith("version https://git-lfs")) {
+		console.warn(
+			"places_export.json is a Git LFS pointer — run `git lfs pull` before seeding.",
+		);
+		console.log("Skipping seed.");
+		return;
 	}
 
 	let places;
 	try {
+		const raw = fs.readFileSync(placesFile, "utf-8");
 		places = JSON.parse(raw);
 	} catch (err) {
-		console.warn(
-			`places_export.json is not valid JSON (may be Git LFS pointer): ${err.message}`,
-		);
-		console.log("Skipping seed.");
-		return;
+		console.error("Failed to parse places file:", err.message);
+		process.exit(1);
 	}
 
 	if (!Array.isArray(places) || !places.length) {

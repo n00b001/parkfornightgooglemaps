@@ -50,9 +50,18 @@ const SERVICE_AMENITY_MAP = {
 /**
  * Load scraped data from JSON files into memory.
  * Called once on startup (synchronous, non-blocking).
+ * Skipped in production — data comes from Prisma DB seeded during build.
  */
 function loadData() {
 	if (loaded) return;
+
+	// In production, data is served from Prisma DB (seeded during build).
+	// Loading 272MB JSON into RAM would OOM on Render free tier.
+	if (process.env.NODE_ENV === "production") {
+		console.log("Production mode: skipping local data load (using Prisma DB)");
+		loaded = true;
+		return;
+	}
 
 	console.log("Loading local scraped data...");
 
