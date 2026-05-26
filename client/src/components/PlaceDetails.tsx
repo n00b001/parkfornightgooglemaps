@@ -57,7 +57,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
     const request = {
       location: new google.maps.LatLng(parseFloat(place.latitude), parseFloat(place.longitude)),
       radius: 50,
-      keyword: place.titre || place.name
+      keyword: place.name || place.titre
     };
 
     service.nearbySearch(request, (results, status) => {
@@ -108,7 +108,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
 
   const addToGoogleMaps = () => {
     const googlePlaceId = googleDetails?.place_id || place.google_place_id || place.rawData?.google_place_id;
-    const query = encodeURIComponent(`${place.titre || place.name} ${place.adresse || ''}`);
+    const query = encodeURIComponent(`${place.name || place.titre} ${place.address || place.adresse || ''}`);
     const url = googlePlaceId
       ? `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${googlePlaceId}`
       : `https://www.google.com/maps/search/?api=1&query=${query}`;
@@ -151,14 +151,14 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
       )}
       <div className="p-6 overflow-y-auto flex-1">
       <div className="flex justify-between mb-2">
-        <h2 className="text-2xl font-bold">{place.titre || place.name}</h2>
+        <h2 className="text-2xl font-bold">{place.name || place.titre}</h2>
         <button onClick={onClose}><X size={20} /></button>
       </div>
       <div className="flex items-center gap-4 mb-1">
         <div className="flex items-center gap-1">
           <Star size={16} fill="orange" className="text-orange-500" />
-          <span className="font-bold">{place.note_moyenne || 'N/A'}</span>
-          <span className="text-gray-400 text-xs">({place.nb_comm || 0} p4n)</span>
+          <span className="font-bold">{place.rating ?? place.note_moyenne ?? 'N/A'}</span>
+          <span className="text-gray-400 text-xs">({place.reviewCount ?? place.nb_comm ?? 0} p4n)</span>
         </div>
         {googleDetails && (
           <div className="flex items-center gap-1 border-l pl-4">
@@ -168,7 +168,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
           </div>
         )}
       </div>
-      <p className="text-sm text-gray-500 mb-4">{place.adresse}</p>
+      <p className="text-sm text-gray-500 mb-4">{place.address || place.adresse}</p>
 
       {place.description && (
         <p className="text-sm text-gray-700 mb-4 line-clamp-3">{place.description}</p>
@@ -209,18 +209,19 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
 
       <div className="mt-6">
         <h3 className="text-xs font-bold text-gray-400 uppercase mb-2">Amenities</h3>
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-4 gap-3">
           {AMENITIES.map(amenity => {
-            const hasAmenity = place[amenity.key] === '1';
+            // Check in top level (Prisma) or rawData (Live/Local)
+            const hasAmenity = place[amenity.key] === '1' || place.rawData?.[amenity.key] === '1';
             if (!hasAmenity) return null;
             return (
-              <div key={amenity.key} className="flex flex-col items-center p-2 bg-gray-50 rounded-xl border border-gray-100">
-                <amenity.icon size={20} className={amenity.color} />
-                <span className="text-[10px] mt-1 font-medium text-center">{amenity.label}</span>
+              <div key={amenity.key} className="flex flex-col items-center p-3 bg-white rounded-2xl border border-gray-100 shadow-sm hover:border-blue-200 transition-colors">
+                <amenity.icon size={20} className={`${amenity.color} mb-1`} />
+                <span className="text-[10px] font-bold text-gray-600 text-center leading-tight">{amenity.label}</span>
               </div>
             );
           })}
-          {!AMENITIES.some(a => place[a.key] === '1') && <p className="text-sm text-gray-400 italic col-span-4">No amenity info available.</p>}
+          {!AMENITIES.some(a => place[a.key] === '1' || place.rawData?.[a.key] === '1') && <p className="text-sm text-gray-400 italic col-span-4">No amenity info available.</p>}
         </div>
       </div>
 
