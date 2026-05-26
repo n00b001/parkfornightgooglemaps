@@ -41,12 +41,18 @@ const upsertPlaces = async (places) => {
 	return results;
 };
 
+const MAX_PLACES_LIMIT = 200;
+
 const getPlaces = async (req, res) => {
-	const { lat: qLat, lng: qLng, type, minRating, sortBy } = req.query;
+	const { lat: qLat, lng: qLng, type, minRating, sortBy, limit } = req.query;
 	if (!qLat || !qLng) return res.status(400).json({ error: "Lat/lng required" });
 
 	const lat = parseFloat(qLat);
 	const lng = parseFloat(qLng);
+	const maxLimit = Math.min(
+		limit ? parseInt(limit, 10) : MAX_PLACES_LIMIT,
+		MAX_PLACES_LIMIT,
+	);
 
 	try {
 		// Build Prisma query
@@ -68,10 +74,11 @@ const getPlaces = async (req, res) => {
 			orderBy.rating = "desc";
 		}
 
-		// 1. Try Prisma Database
+		// 1. Try Prisma Database (with limit)
 		let places = await prisma.place.findMany({
 			where,
 			orderBy: Object.keys(orderBy).length > 0 ? orderBy : undefined,
+			take: maxLimit,
 		});
 
 		// 2. If no results or few results, try live API
@@ -79,8 +86,11 @@ const getPlaces = async (req, res) => {
 			try {
 				const livePlaces = await park4night.getPlaces(lat, lng);
 				if (livePlaces && livePlaces.length > 0) {
-					console.log(`Serving ${livePlaces.length} places from Live API`);
-					places = await upsertPlaces(livePlaces);
+					const limitedLivePlaces = livePlaces.slice(0, maxLimit);
+					console.log(
+						`Serving ${limitedLivePlaces.length} places from Live API`,
+					);
+					places = await upsertPlaces(limitedLivePlaces);
 					return res.json(places);
 				}
 			} catch (apiErr) {
@@ -97,6 +107,7 @@ const getPlaces = async (req, res) => {
 				minRating,
 				sortBy,
 			});
+			places = places.slice(0, maxLimit);
 			console.log(`Serving ${places.length} places from local data`);
 		} else {
 			console.log(`Serving ${places.length} places from Prisma DB`);

@@ -100,7 +100,7 @@ const App: React.FC = () => {
     queryKey: ['places', lastFetchedCenter],
     queryFn: async () => {
       try {
-        const res = await axios.get('/api/places', { params: { lat: lastFetchedCenter.lat, lng: lastFetchedCenter.lng } });
+        const res = await axios.get('/api/places', { params: { lat: lastFetchedCenter.lat, lng: lastFetchedCenter.lng, limit: 150 } });
         await savePlaces(res.data);
         return res.data;
       } catch (err) {
