@@ -10,37 +10,49 @@ const getStreetViewUrl = (lat: number, lng: number) => {
   return `https://maps.googleapis.com/maps/api/streetview?size=800x400&location=${lat},${lng}&fov=100&heading=215&pitch=0&key=${apiKey}`;
 };
 
+// English type keys (must match server TYPE_CODE_MAP values)
 const TYPE_NAMES: Record<string, string> = {
-  cc: 'Motorhome Area',
-  p: 'Parking',
-  cp: 'Campsite',
-  p_prive: 'Private Parking',
-  ferme: 'Farm',
-  nature: 'Nature Spot',
+  rvPark: 'RV Park',
+  parking: 'Parking',
+  naturalParking: 'Natural Parking',
+  campsite: 'Campsite',
+  freeRvPark: 'Free RV Park',
+  restArea: 'Rest Area',
+  onSiteParking: 'On-Site Parking',
+  serviceArea: 'Service Area',
+  private: 'Private',
+  paid: 'Paid',
+  closed: 'Closed',
 };
 
 const TYPE_COLORS: Record<string, string> = {
-  cc: 'bg-blue-100 text-blue-700',
-  p: 'bg-gray-100 text-gray-700',
-  cp: 'bg-green-100 text-green-700',
-  p_prive: 'bg-amber-100 text-amber-700',
-  ferme: 'bg-red-100 text-red-700',
-  nature: 'bg-emerald-100 text-emerald-700',
+  rvPark: 'bg-blue-100 text-blue-700',
+  parking: 'bg-gray-100 text-gray-700',
+  naturalParking: 'bg-emerald-100 text-emerald-700',
+  campsite: 'bg-green-100 text-green-700',
+  freeRvPark: 'bg-teal-100 text-teal-700',
+  restArea: 'bg-purple-100 text-purple-700',
+  onSiteParking: 'bg-indigo-100 text-indigo-700',
+  serviceArea: 'bg-orange-100 text-orange-700',
+  private: 'bg-amber-100 text-amber-700',
+  paid: 'bg-yellow-100 text-yellow-700',
+  closed: 'bg-red-100 text-red-700',
 };
 
+// English amenity keys (must match server SERVICE_AMENITY_MAP values)
 const AMENITIES = [
-  { key: 'point_eau', label: 'Water', icon: Droplets, color: 'text-blue-500' },
-  { key: 'electricite', label: 'Electricity', icon: Zap, color: 'text-yellow-500' },
-  { key: 'poubelle', label: 'Trash', icon: Trash2, color: 'text-green-600' },
+  { key: 'waterPoint', label: 'Water', icon: Droplets, color: 'text-blue-500' },
+  { key: 'electricity', label: 'Electricity', icon: Zap, color: 'text-yellow-500' },
+  { key: 'trashCan', label: 'Trash', icon: Trash2, color: 'text-green-600' },
   { key: 'wifi', label: 'Wifi', icon: Wifi, color: 'text-purple-500' },
-  { key: 'vidange_eaux_usees', label: 'Grey Water', icon: Info, color: 'text-gray-500' },
-  { key: 'vidange_wc', label: 'Black Water', icon: Compass, color: 'text-gray-700' },
-  { key: 'douche', label: 'Shower', icon: Bath, color: 'text-blue-400' },
-  { key: 'baignade', label: 'Waves', icon: Waves, color: 'text-cyan-500' },
-  { key: 'animaux', label: 'Pets', icon: Dog, color: 'text-orange-400' },
-  { key: 'aire_pique_nique', label: 'Picnic', icon: Utensils, color: 'text-green-500' },
-  { key: 'laverie', label: 'Laundry', icon: Shirt, color: 'text-indigo-400' },
-  { key: 'wc_public', label: 'Public WC', icon: Map, color: 'text-blue-300' },
+  { key: 'wasteWaterDrain', label: 'Grey Water', icon: Info, color: 'text-gray-500' },
+  { key: 'toiletDrain', label: 'Black Water', icon: Compass, color: 'text-gray-700' },
+  { key: 'shower', label: 'Shower', icon: Bath, color: 'text-blue-400' },
+  { key: 'swimming', label: 'Waves', icon: Waves, color: 'text-cyan-500' },
+  { key: 'pets', label: 'Pets', icon: Dog, color: 'text-orange-400' },
+  { key: 'picnicArea', label: 'Picnic', icon: Utensils, color: 'text-green-500' },
+  { key: 'laundry', label: 'Laundry', icon: Shirt, color: 'text-indigo-400' },
+  { key: 'publicToilet', label: 'Public WC', icon: Map, color: 'text-blue-300' },
 ];
 
 const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
@@ -79,7 +91,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
     const request = {
       location: new google.maps.LatLng(parseFloat(place.latitude), parseFloat(place.longitude)),
       radius: 50,
-      keyword: place.name || place.titre
+      keyword: place.title || place.name
     };
 
     service.nearbySearch(request, (results, status) => {
@@ -104,7 +116,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
         axios.get(`/api/places/${place.id}/reviews`)
       ]);
       const local = localRes.data;
-      const p4n = p4nRes.data?.commentaires || [];
+      const p4n = p4nRes.data?.reviews || [];
       setReviews(local);
       setP4nReviews(p4n);
       await saveReviews(place.id, { local, p4n });
@@ -130,7 +142,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
 
   const addToGoogleMaps = () => {
     const googlePlaceId = googleDetails?.place_id || place.google_place_id || place.rawData?.google_place_id;
-    const query = encodeURIComponent(`${place.name || place.titre} ${place.address || place.adresse || ''}`);
+    const query = encodeURIComponent(`${place.title || place.name} ${place.address || ''}`);
     const url = googlePlaceId
       ? `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${googlePlaceId}`
       : `https://www.google.com/maps/search/?api=1&query=${query}`;
@@ -146,8 +158,8 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
     const url = new URL(window.location.origin);
     url.searchParams.set('place', place.id.toString());
     const shareData = {
-      title: place.titre || place.name,
-      text: `Check out this parking spot on Park4Night: ${place.titre || place.name}`,
+      title: place.title || place.name,
+      text: `Check out this parking spot on Park4Night: ${place.title || place.name}`,
       url: url.toString(),
     };
     if (navigator.share) {
@@ -169,7 +181,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
       {photos.length > 0 && (
         <div className="h-48 overflow-x-auto flex gap-1 snap-x bg-gray-100">
           {photos.map((p: any, idx: number) => (
-            <img key={idx} src={p.lien_mini} alt={`Spot ${idx}`} className="h-full object-cover snap-center min-w-[80%]" />
+            <img key={idx} src={p.thumbUrl || p.lien_mini} alt={`Spot ${idx}`} className="h-full object-cover snap-center min-w-[80%]" />
           ))}
         </div>
       )}
@@ -194,10 +206,10 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
       <div className="p-6 overflow-y-auto flex-1">
       <div className="flex justify-between items-start mb-1">
         <div>
-          <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full uppercase mb-2 ${TYPE_COLORS[place.code_type || place.type || ''] || 'bg-gray-100 text-gray-600'}`}>
-            {TYPE_NAMES[place.code_type || place.type || ''] || 'Spot'}
+          <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full uppercase mb-2 ${TYPE_COLORS[place.type || ''] || 'bg-gray-100 text-gray-600'}`}>
+            {TYPE_NAMES[place.type || ''] || 'Spot'}
           </span>
-          <h2 className="text-2xl font-bold leading-tight">{place.titre || place.name}</h2>
+          <h2 className="text-2xl font-bold leading-tight">{place.title || place.name}</h2>
         </div>
         <div className="flex gap-2">
           <button onClick={sharePlace} className="p-1 text-gray-500 hover:text-blue-600 transition-colors">
@@ -211,8 +223,8 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
       <div className="flex items-center gap-4 mb-1">
         <div className="flex items-center gap-1">
           <Star size={16} fill="orange" className="text-orange-500" />
-          <span className="font-bold">{place.rating ?? place.note_moyenne ?? 'N/A'}</span>
-          <span className="text-gray-400 text-xs">({place.reviewCount ?? place.nb_comm ?? 0} p4n)</span>
+          <span className="font-bold">{place.rating ?? 'N/A'}</span>
+          <span className="text-gray-400 text-xs">({place.reviewCount ?? 0} p4n)</span>
         </div>
         {googleDetails && (
           <div className="flex items-center gap-1.5 bg-blue-50 px-2 py-1 rounded-lg">
@@ -222,7 +234,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
           </div>
         )}
       </div>
-      <p className="text-sm text-gray-500 mb-4">{place.address || place.adresse}</p>
+      <p className="text-sm text-gray-500 mb-4">{place.address}</p>
 
       {place.description && (
         <p className="text-sm text-gray-700 mb-4 line-clamp-3">{place.description}</p>
@@ -325,10 +337,13 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
                 {p4nReviews.map((r, idx) => (
                   <div key={idx} className="text-sm border-b pb-2">
                     <div className="flex justify-between mb-1">
-                      <span className="font-bold">{r.auteur}</span>
-                      <span className="text-orange-500 font-bold">{r.note}/5</span>
+                      <span className="font-bold">{r.author}</span>
+                      <span className="text-orange-500 font-bold">{r.rating}/5</span>
                     </div>
-                    <p className="text-gray-600 italic">"{r.texte}"</p>
+                    <p className="text-gray-600 italic">"{r.content}"</p>
+                    {r.needsTranslation && (
+                      <span className="text-[10px] text-gray-400 italic">(original language)</span>
+                    )}
                   </div>
                 ))}
               </div>

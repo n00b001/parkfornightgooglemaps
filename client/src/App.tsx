@@ -124,12 +124,12 @@ const App: React.FC = () => {
 
     // Filter by type
     if (filters.type) {
-      filtered = filtered.filter((p: any) => p.code_type === filters.type);
+      filtered = filtered.filter((p: any) => p.type === filters.type);
     }
 
     // Filter by min rating
     if (filters.minRating) {
-      filtered = filtered.filter((p: any) => (parseFloat(p.note_moyenne) || 0) >= parseFloat(filters.minRating));
+      filtered = filtered.filter((p: any) => (parseFloat(p.rating) || 0) >= parseFloat(filters.minRating));
     }
 
     // Filter by amenities
@@ -143,14 +143,14 @@ const App: React.FC = () => {
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       filtered = filtered.filter((p: any) =>
-        (p.titre || '').toLowerCase().includes(q) ||
-        (p.adresse || '').toLowerCase().includes(q)
+        (p.title || '').toLowerCase().includes(q) ||
+        (p.address || '').toLowerCase().includes(q)
       );
     }
 
     // Sort
     if (filters.sortBy === 'rating') {
-      filtered.sort((a, b) => (parseFloat(b.note_moyenne) || 0) - (parseFloat(a.note_moyenne) || 0));
+      filtered.sort((a, b) => (parseFloat(b.rating) || 0) - (parseFloat(a.rating) || 0));
     } else if (filters.sortBy === 'distance') {
       filtered.sort((a, b) => {
         const distA = Math.sqrt(Math.pow(parseFloat(a.latitude) - mapCenter.lat, 2) + Math.pow(parseFloat(a.longitude) - mapCenter.lng, 2));
