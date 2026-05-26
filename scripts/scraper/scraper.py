@@ -105,9 +105,7 @@ def _str(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
 
-def download_place_photos(
-    place_id: int, photos: list[dict], downloader=None
-) -> list[dict]:
+def download_place_photos(place_id: int, photos: list[dict], downloader=None) -> list[dict]:
     """
     Download photos for a place and return normalized photo dicts with relative paths.
 
@@ -576,9 +574,7 @@ def download_images_worker(args: tuple) -> tuple[int, int, int]:
             return place_id, 0, 0
 
         # Check if photos already have local paths (already downloaded)
-        all_downloaded = all(
-            "path_thumb" in photo and "path_large" in photo for photo in photos
-        )
+        all_downloaded = all("path_thumb" in photo and "path_large" in photo for photo in photos)
         if all_downloaded:
             logger.info(f"[Worker {worker_id}] Place {place_id}: Images already downloaded")
             return place_id, 0, len(photos)
@@ -635,10 +631,7 @@ def download_images(checkpoint: Checkpoint, place_id_filter: int | None = None) 
         console.print("[bold yellow]No places found to download images for.[/bold yellow]")
         return
 
-    console.print(
-        f"\n[bold blue]Starting image download:[/bold blue] "
-        f"{len(place_ids)} places"
-    )
+    console.print(f"\n[bold blue]Starting image download:[/bold blue] {len(place_ids)} places")
 
     worker_args = [(pid, i % IMAGE_WORKERS) for i, pid in enumerate(place_ids)]
 
@@ -661,19 +654,14 @@ def download_images(checkpoint: Checkpoint, place_id_filter: int | None = None) 
         task = progress.add_task("Downloading images", total=total_to_process, photos=0)
 
         with ProcessPoolExecutor(max_workers=IMAGE_WORKERS) as executor:
-            futures = {
-                executor.submit(download_images_worker, args): args
-                for args in worker_args
-            }
+            futures = {executor.submit(download_images_worker, args): args for args in worker_args}
 
             for future in as_completed(futures):
                 place_id, downloaded, photo_count = future.result()
                 total_downloaded += downloaded
                 total_photos += photo_count
                 completed += 1
-                progress.update(
-                    task, completed=completed, photos=total_downloaded
-                )
+                progress.update(task, completed=completed, photos=total_downloaded)
 
     console.print(
         f"[bold green]✓ Image download complete:[/bold green] "
@@ -762,9 +750,7 @@ def main() -> None:
     elif args.command == "download-icons":
         downloader = create_image_downloader()
         icons = downloader.download_vehicle_icons()
-        console.print(
-            f"[bold green]✓ Downloaded {len(icons)} vehicle type icons[/bold green]"
-        )
+        console.print(f"[bold green]✓ Downloaded {len(icons)} vehicle type icons[/bold green]")
 
     elif args.command == "export":
         export_data()
