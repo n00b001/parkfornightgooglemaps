@@ -1,6 +1,14 @@
 const prisma = require("../config/db");
+const LRUCache = require("../services/lruCache");
 
 const MAX_PLACES_LIMIT = 200;
+
+// LRU cache: 100 entries, 5-minute TTL
+const placesCache = new LRUCache(100, 5 * 60 * 1000);
+
+// Build a cache key from query params
+const cacheKey = (lat, lng, type, minRating, sortBy, limit) =>
+	`${lat},${lng}|${type || "*"}|${minRating || "*"}|${sortBy || "*"}|${limit}`;
 
 // Simple Euclidean distance (good enough for sorting nearby places)
 const distance = (aLat, aLng, bLat, bLng) =>
@@ -17,6 +25,13 @@ const getPlaces = async (req, res) => {
 		limit ? parseInt(limit, 10) : MAX_PLACES_LIMIT,
 		MAX_PLACES_LIMIT,
 	);
+
+	// Check cache first
+	const key = cacheKey(lat, lng, type, minRating, sortBy, maxLimit);
+	const cached = placesCache.get(key);
+	if (cached !== undefined) {
+		return res.json(cached);
+	}
 
 	try {
 		const where = {
@@ -45,6 +60,7 @@ const getPlaces = async (req, res) => {
 
 		// Return only the closest N
 		places = places.slice(0, maxLimit);
+		placesCache.set(key, places);
 		res.json(places);
 	} catch (error) {
 		console.error("Unexpected error in getPlaces:", error.message, error.stack);
