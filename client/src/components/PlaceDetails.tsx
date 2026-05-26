@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, Map, Droplets, Zap, Trash2, Wifi, Info, Bath, Waves, Eye } from 'lucide-react';
+import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, Map, Droplets, Zap, Trash2, Wifi, Info, Bath, Waves, Eye, Dog, Utensils, Shirt, Share2, Compass } from 'lucide-react';
 import axios from '../axiosConfig';
 import ReviewForm from './ReviewForm';
 import { saveReviews, getCachedReviews } from '../services/db';
@@ -10,15 +10,37 @@ const getStreetViewUrl = (lat: number, lng: number) => {
   return `https://maps.googleapis.com/maps/api/streetview?size=800x400&location=${lat},${lng}&fov=100&heading=215&pitch=0&key=${apiKey}`;
 };
 
+const TYPE_NAMES: Record<string, string> = {
+  cc: 'Motorhome Area',
+  p: 'Parking',
+  cp: 'Campsite',
+  p_prive: 'Private Parking',
+  ferme: 'Farm',
+  nature: 'Nature Spot',
+};
+
+const TYPE_COLORS: Record<string, string> = {
+  cc: 'bg-blue-100 text-blue-700',
+  p: 'bg-gray-100 text-gray-700',
+  cp: 'bg-green-100 text-green-700',
+  p_prive: 'bg-amber-100 text-amber-700',
+  ferme: 'bg-red-100 text-red-700',
+  nature: 'bg-emerald-100 text-emerald-700',
+};
+
 const AMENITIES = [
   { key: 'point_eau', label: 'Water', icon: Droplets, color: 'text-blue-500' },
   { key: 'electricite', label: 'Electricity', icon: Zap, color: 'text-yellow-500' },
   { key: 'poubelle', label: 'Trash', icon: Trash2, color: 'text-green-600' },
   { key: 'wifi', label: 'Wifi', icon: Wifi, color: 'text-purple-500' },
   { key: 'vidange_eaux_usees', label: 'Grey Water', icon: Info, color: 'text-gray-500' },
-  { key: 'vidange_wc', label: 'Black Water', icon: Info, color: 'text-gray-700' },
+  { key: 'vidange_wc', label: 'Black Water', icon: Compass, color: 'text-gray-700' },
   { key: 'douche', label: 'Shower', icon: Bath, color: 'text-blue-400' },
   { key: 'baignade', label: 'Waves', icon: Waves, color: 'text-cyan-500' },
+  { key: 'animaux', label: 'Pets', icon: Dog, color: 'text-orange-400' },
+  { key: 'aire_pique_nique', label: 'Picnic', icon: Utensils, color: 'text-green-500' },
+  { key: 'laverie', label: 'Laundry', icon: Shirt, color: 'text-indigo-400' },
+  { key: 'wc_public', label: 'Public WC', icon: Map, color: 'text-blue-300' },
 ];
 
 const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
@@ -120,6 +142,26 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
     window.open(url, '_blank');
   };
 
+  const sharePlace = async () => {
+    const url = new URL(window.location.origin);
+    url.searchParams.set('place', place.id.toString());
+    const shareData = {
+      title: place.titre || place.name,
+      text: `Check out this parking spot on Park4Night: ${place.titre || place.name}`,
+      url: url.toString(),
+    };
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+      } catch (err) {
+        console.error('Share failed', err);
+      }
+    } else {
+      await navigator.clipboard.writeText(`${shareData.title} - ${shareData.url}`);
+      alert('Link copied to clipboard!');
+    }
+  };
+
   const photos = place.photos || [];
 
   return (
@@ -150,9 +192,21 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
         </div>
       )}
       <div className="p-6 overflow-y-auto flex-1">
-      <div className="flex justify-between mb-2">
-        <h2 className="text-2xl font-bold">{place.name || place.titre}</h2>
-        <button onClick={onClose}><X size={20} /></button>
+      <div className="flex justify-between items-start mb-1">
+        <div>
+          <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full uppercase mb-2 ${TYPE_COLORS[place.code_type || place.type || ''] || 'bg-gray-100 text-gray-600'}`}>
+            {TYPE_NAMES[place.code_type || place.type || ''] || 'Spot'}
+          </span>
+          <h2 className="text-2xl font-bold leading-tight">{place.titre || place.name}</h2>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={sharePlace} className="p-1 text-gray-500 hover:text-blue-600 transition-colors">
+            <Share2 size={20} />
+          </button>
+          <button onClick={onClose} className="p-1 text-gray-500 hover:text-black transition-colors">
+            <X size={20} />
+          </button>
+        </div>
       </div>
       <div className="flex items-center gap-4 mb-1">
         <div className="flex items-center gap-1">
