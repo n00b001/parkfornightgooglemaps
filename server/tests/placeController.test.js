@@ -1,29 +1,16 @@
 const placeController = require("../src/controllers/placeController");
-const localData = require("../src/services/localData");
 const prisma = require("../src/config/db");
-const park4night = require("../src/services/park4night");
 
 jest.mock("../src/config/db", () => ({
 	place: {
 		findMany: jest.fn(),
 		findUnique: jest.fn(),
-		upsert: jest.fn(),
 		count: jest.fn(),
 	},
 	review: {
 		count: jest.fn(),
-	}
-}));
-
-jest.mock("../src/services/park4night", () => ({
-	getPlaces: jest.fn(),
-	getPlaceDetail: jest.fn(),
-	getReviews: jest.fn(),
-}));
-
-jest.mock("../src/services/localData", () => ({
-	getAllPlaces: jest.fn(),
-	getPlaceById: jest.fn(),
+		findMany: jest.fn(),
+	},
 }));
 
 describe("placeController", () => {
@@ -36,14 +23,11 @@ describe("placeController", () => {
 			status: jest.fn().mockReturnThis(),
 			json: jest.fn(),
 		};
-		// Set default mock implementations
 		prisma.place.findMany.mockResolvedValue([]);
 		prisma.place.findUnique.mockResolvedValue(null);
-		prisma.place.upsert.mockImplementation((args) => Promise.resolve(args.create || args.update));
-		park4night.getPlaces.mockResolvedValue([]);
-		park4night.getPlaceDetail.mockResolvedValue(null);
-		localData.getAllPlaces.mockReturnValue([]);
-		localData.getPlaceById.mockReturnValue(null);
+		prisma.place.count.mockResolvedValue(0);
+		prisma.review.findMany.mockResolvedValue([]);
+		prisma.review.count.mockResolvedValue(0);
 	});
 
 	describe("getPlaces", () => {
@@ -53,39 +37,57 @@ describe("placeController", () => {
 			expect(res.json).toHaveBeenCalledWith({ error: "Lat/lng required" });
 		});
 
-		it("should return places from Prisma database", async () => {
+		it("should return places from Prisma sorted by distance", async () => {
 			req.query = { lat: "48.8566", lng: "2.3522" };
-			const mockPlaces = Array(15).fill({ id: 1, name: "Prisma Place" });
+			const mockPlaces = [
+				{ id: 1, name: "Far", latitude: 49.0, longitude: 3.0 },
+				{ id: 2, name: "Close", latitude: 48.86, longitude: 2.36 },
+			];
 			prisma.place.findMany.mockResolvedValue(mockPlaces);
 
 			await placeController.getPlaces(req, res);
 			expect(prisma.place.findMany).toHaveBeenCalled();
-			expect(res.json).toHaveBeenCalledWith(mockPlaces);
+			const returned = res.json.mock.calls[0][0];
+			expect(returned[0].name).toBe("Close");
+			expect(returned[1].name).toBe("Far");
 		});
 
-		it("should return places from Live API when DB has few results", async () => {
-			req.query = { lat: "48.8566", lng: "2.3522" };
-			prisma.place.findMany.mockResolvedValue([]);
-			const mockLivePlaces = [{ id: 1, name: "Live Place", latitude: 48.8, longitude: 2.3 }];
-			park4night.getPlaces.mockResolvedValue(mockLivePlaces);
-			prisma.place.upsert.mockResolvedValue(mockLivePlaces[0]);
+		it("should respect the limit parameter", async () => {
+			req.query = { lat: "48.8566", lng: "2.3522", limit: "2" };
+			const mockPlaces = Array.from({ length: 5 }, (_, i) => ({
+				id: i,
+				name: `Place ${i}`,
+				latitude: 48.8566 + i * 0.01,
+				longitude: 2.3522 + i * 0.01,
+			}));
+			prisma.place.findMany.mockResolvedValue(mockPlaces);
 
 			await placeController.getPlaces(req, res);
-			expect(park4night.getPlaces).toHaveBeenCalled();
-			expect(prisma.place.upsert).toHaveBeenCalled();
-			expect(res.json).toHaveBeenCalledWith(mockLivePlaces);
+			const returned = res.json.mock.calls[0][0];
+			expect(returned.length).toBe(2);
 		});
 
-		it("should return places from local data as fallback", async () => {
-			req.query = { lat: "48.8566", lng: "2.3522" };
-			prisma.place.findMany.mockResolvedValue([]);
-			park4night.getPlaces.mockResolvedValue([]);
-			const mockLocalPlaces = [{ id: 1, name: "Local Place" }];
-			localData.getAllPlaces.mockReturnValue(mockLocalPlaces);
+		it("should cap limit at MAX_PLACES_LIMIT (200)", async () => {
+			req.query = { lat: "48.8566", lng: "2.3522", limit: "9999" };
+			const mockPlaces = Array.from({ length: 250 }, (_, i) => ({
+				id: i,
+				name: `Place ${i}`,
+				latitude: 48.8566 + i * 0.001,
+				longitude: 2.3522 + i * 0.001,
+			}));
+			prisma.place.findMany.mockResolvedValue(mockPlaces);
 
 			await placeController.getPlaces(req, res);
-			expect(localData.getAllPlaces).toHaveBeenCalled();
-			expect(res.json).toHaveBeenCalledWith(mockLocalPlaces);
+			const returned = res.json.mock.calls[0][0];
+			expect(returned.length).toBe(200);
+		});
+
+		it("should return empty array when no places found", async () => {
+			req.query = { lat: "48.8566", lng: "2.3522" };
+			prisma.place.findMany.mockResolvedValue([]);
+
+			await placeController.getPlaces(req, res);
+			expect(res.json).toHaveBeenCalledWith([]);
 		});
 
 		it("should return 500 on error", async () => {
@@ -104,7 +106,7 @@ describe("placeController", () => {
 	describe("getPlaceDetail", () => {
 		it("should return place detail from Prisma", async () => {
 			req.params = { id: "123" };
-			const mockPlace = { id: 123, name: "Prisma Place" };
+			const mockPlace = { id: 123, name: "Test Place" };
 			prisma.place.findUnique.mockResolvedValue(mockPlace);
 
 			await placeController.getPlaceDetail(req, res);
@@ -112,21 +114,9 @@ describe("placeController", () => {
 			expect(res.json).toHaveBeenCalledWith(mockPlace);
 		});
 
-		it("should return place detail from Live API", async () => {
-			req.params = { id: "123" };
-			prisma.place.findUnique.mockResolvedValue(null);
-			const mockLivePlace = { id: 123, name: "Live Place" };
-			park4night.getPlaceDetail.mockResolvedValue(mockLivePlace);
-			prisma.place.upsert.mockResolvedValue(mockLivePlace);
-
-			await placeController.getPlaceDetail(req, res);
-			expect(park4night.getPlaceDetail).toHaveBeenCalledWith(123);
-			expect(res.json).toHaveBeenCalledWith(mockLivePlace);
-		});
-
 		it("should return 404 when place not found", async () => {
 			req.params = { id: "999" };
-			localData.getPlaceById.mockReturnValue(null);
+			prisma.place.findUnique.mockResolvedValue(null);
 
 			await placeController.getPlaceDetail(req, res);
 			expect(res.status).toHaveBeenCalledWith(404);
@@ -135,28 +125,37 @@ describe("placeController", () => {
 
 		it("should return 500 on error", async () => {
 			req.params = { id: "123" };
-			localData.getPlaceById.mockImplementation(() => {
-				throw new Error("Local data error");
-			});
+			prisma.place.findUnique.mockRejectedValue(new Error("DB error"));
 
 			await placeController.getPlaceDetail(req, res);
 			expect(res.status).toHaveBeenCalledWith(500);
 			expect(res.json).toHaveBeenCalledWith({
 				error: "Failed to fetch place",
-				details: "Local data error",
+				details: "DB error",
 			});
 		});
 	});
 
 	describe("getPlaceReviews", () => {
-		it("should return reviews from API", async () => {
+		it("should return reviews from DB", async () => {
 			req.params = { id: "123" };
-			const mockReviews = [{ id: "1", text: "Great!" }];
-			park4night.getReviews.mockResolvedValue(mockReviews);
+			const mockReviews = [{ id: "1", content: "Great!", rating: 5 }];
+			prisma.review.findMany.mockResolvedValue(mockReviews);
 
 			await placeController.getPlaceReviews(req, res);
-			expect(park4night.getReviews).toHaveBeenCalledWith(123);
+			expect(prisma.review.findMany).toHaveBeenCalledWith({
+				where: { placeId: 123 },
+				orderBy: { createdAt: "desc" },
+			});
 			expect(res.json).toHaveBeenCalledWith({ reviews: mockReviews });
+		});
+
+		it("should return empty reviews when none exist", async () => {
+			req.params = { id: "123" };
+			prisma.review.findMany.mockResolvedValue([]);
+
+			await placeController.getPlaceReviews(req, res);
+			expect(res.json).toHaveBeenCalledWith({ reviews: [] });
 		});
 	});
 
