@@ -156,7 +156,7 @@ describe("placeController", () => {
 
 			await placeController.getPlaceReviews(req, res);
 			expect(park4night.getReviews).toHaveBeenCalledWith(123);
-			expect(res.json).toHaveBeenCalledWith({ commentaires: mockReviews });
+			expect(res.json).toHaveBeenCalledWith({ reviews: mockReviews });
 		});
 	});
 

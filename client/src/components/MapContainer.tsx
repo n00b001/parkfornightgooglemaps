@@ -5,12 +5,17 @@ const containerStyle = { width: '100%', height: '100%' };
 
 const getIcon = (type: string, isFavorite: boolean, isVisited: boolean) => {
   const colors: Record<string, string> = {
-    cc: '#3B82F6', // Blue
-    p: '#6B7280',  // Gray
-    cp: '#10B981', // Green
-    p_prive: '#F59E0B', // Amber
-    ferme: '#EF4444', // Red
-    nature: '#059669', // Dark Green
+    rvPark: '#3B82F6', // Blue
+    parking: '#6B7280', // Gray
+    campsite: '#10B981', // Green
+    private: '#F59E0B', // Amber
+    closed: '#EF4444', // Red
+    naturalParking: '#059669', // Dark Green
+    freeRvPark: '#14B8A6', // Teal
+    restArea: '#8B5CF6', // Purple
+    onSiteParking: '#6366F1', // Indigo
+    serviceArea: '#F97316', // Orange
+    paid: '#EAB308', // Yellow
   };
 
   const color = colors[type] || '#3B82F6';
@@ -130,15 +135,15 @@ const MapContainer: React.FC<any> = ({ places, onMarkerClick, center, onCenterCh
                     key={place.id}
                     position={{ lat: parseFloat(place.latitude), lng: parseFloat(place.longitude) }}
                     onClick={() => onMarkerClick(place)}
-                    icon={getIcon(place.type || place.code_type, isFavorite, isVisited)}
+                    icon={getIcon(place.type, isFavorite, isVisited)}
                     clusterer={clusterer}
                     label={{
-                      text: ((place.type || place.code_type) === 'cc' ? 'A' :
-                             (place.type || place.code_type) === 'p' ? 'P' :
-                             (place.type || place.code_type) === 'cp' ? 'C' :
-                             (place.type || place.code_type) === 'p_prive' ? 'Pr' :
-                             (place.type || place.code_type) === 'ferme' ? 'F' :
-                             (place.type || place.code_type) === 'nature' ? 'N' : '?'),
+                      text: ((place.type) === 'rvPark' ? 'A' :
+                             (place.type) === 'parking' ? 'P' :
+                             (place.type) === 'campsite' ? 'C' :
+                             (place.type) === 'private' ? 'Pr' :
+                             (place.type) === 'closed' ? 'F' :
+                             (place.type) === 'naturalParking' ? 'N' : '?'),
                       color: 'white',
                       fontSize: '10px',
                       fontWeight: 'bold'

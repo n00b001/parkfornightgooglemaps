@@ -163,7 +163,7 @@ const getPlaceReviews = async (req, res) => {
 	try {
 		const placeId = parseInt(req.params.id);
 		const reviews = await park4night.getReviews(placeId);
-		res.json({ commentaires: reviews });
+		res.json({ reviews });
 	} catch (error) {
 		console.error("Error fetching reviews:", error.message);
 		res
