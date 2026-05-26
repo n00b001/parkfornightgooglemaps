@@ -113,8 +113,16 @@ const getPlaces = async (req, res) => {
 
 const getStats = async (_req, res) => {
 	try {
-		const stats = localData.getStats();
-		res.json(stats);
+		const totalPlaces = await prisma.place.count();
+		const totalReviews = await prisma.review.count();
+		const placesWithReviews = await prisma.place.count({
+			where: { reviews: { some: {} } }
+		});
+		res.json({
+			totalPlaces,
+			totalReviews,
+			placesWithReviews,
+		});
 	} catch (error) {
 		console.error("Unexpected error in getStats:", error.message, error.stack);
 		res
@@ -153,8 +161,9 @@ const getPlaceDetail = async (req, res) => {
 
 const getPlaceReviews = async (req, res) => {
 	try {
-		const reviews = localData.getPlaceReviews(req.params.id);
-		res.json(reviews);
+		const placeId = parseInt(req.params.id);
+		const reviews = await park4night.getReviews(placeId);
+		res.json({ commentaires: reviews });
 	} catch (error) {
 		console.error("Error fetching reviews:", error.message);
 		res

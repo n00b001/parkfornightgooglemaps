@@ -8,20 +8,22 @@ jest.mock("../src/config/db", () => ({
 		findMany: jest.fn(),
 		findUnique: jest.fn(),
 		upsert: jest.fn(),
+		count: jest.fn(),
 	},
+	review: {
+		count: jest.fn(),
+	}
 }));
 
 jest.mock("../src/services/park4night", () => ({
 	getPlaces: jest.fn(),
 	getPlaceDetail: jest.fn(),
+	getReviews: jest.fn(),
 }));
 
 jest.mock("../src/services/localData", () => ({
 	getAllPlaces: jest.fn(),
 	getPlaceById: jest.fn(),
-	getPlaceReviews: jest.fn(),
-	getStats: jest.fn(),
-	loadData: jest.fn(),
 }));
 
 describe("placeController", () => {
@@ -40,6 +42,8 @@ describe("placeController", () => {
 		prisma.place.upsert.mockImplementation((args) => Promise.resolve(args.create || args.update));
 		park4night.getPlaces.mockResolvedValue([]);
 		park4night.getPlaceDetail.mockResolvedValue(null);
+		localData.getAllPlaces.mockReturnValue([]);
+		localData.getPlaceById.mockReturnValue(null);
 	});
 
 	describe("getPlaces", () => {
@@ -84,18 +88,15 @@ describe("placeController", () => {
 			expect(res.json).toHaveBeenCalledWith(mockLocalPlaces);
 		});
 
-
 		it("should return 500 on error", async () => {
 			req.query = { lat: "48.8566", lng: "2.3522" };
-			localData.getAllPlaces.mockImplementation(() => {
-				throw new Error("Local data error");
-			});
+			prisma.place.findMany.mockRejectedValue(new Error("DB error"));
 
 			await placeController.getPlaces(req, res);
 			expect(res.status).toHaveBeenCalledWith(500);
 			expect(res.json).toHaveBeenCalledWith({
 				error: "Failed to fetch places",
-				details: "Local data error",
+				details: "DB error",
 			});
 		});
 	});
@@ -148,63 +149,28 @@ describe("placeController", () => {
 	});
 
 	describe("getPlaceReviews", () => {
-		it("should return reviews from local data", async () => {
+		it("should return reviews from API", async () => {
 			req.params = { id: "123" };
-			const mockReviews = [{ id: "1", place_id: 123, text: "Great!" }];
-			localData.getPlaceReviews.mockReturnValue(mockReviews);
+			const mockReviews = [{ id: "1", text: "Great!" }];
+			park4night.getReviews.mockResolvedValue(mockReviews);
 
 			await placeController.getPlaceReviews(req, res);
-			expect(localData.getPlaceReviews).toHaveBeenCalledWith("123");
-			expect(res.json).toHaveBeenCalledWith(mockReviews);
-		});
-
-		it("should return empty array when no reviews", async () => {
-			req.params = { id: "123" };
-			localData.getPlaceReviews.mockReturnValue([]);
-
-			await placeController.getPlaceReviews(req, res);
-			expect(res.json).toHaveBeenCalledWith([]);
-		});
-
-		it("should return 500 on error", async () => {
-			req.params = { id: "123" };
-			localData.getPlaceReviews.mockImplementation(() => {
-				throw new Error("Local data error");
-			});
-
-			await placeController.getPlaceReviews(req, res);
-			expect(res.status).toHaveBeenCalledWith(500);
-			expect(res.json).toHaveBeenCalledWith({
-				error: "Failed to fetch reviews",
-				details: "Local data error",
-			});
+			expect(park4night.getReviews).toHaveBeenCalledWith(123);
+			expect(res.json).toHaveBeenCalledWith({ commentaires: mockReviews });
 		});
 	});
 
 	describe("getStats", () => {
-		it("should return stats", async () => {
-			const mockStats = {
-				totalPlaces: 30606,
-				totalReviews: 296067,
-				placesWithReviews: 22560,
-			};
-			localData.getStats.mockReturnValue(mockStats);
+		it("should return stats from DB", async () => {
+			prisma.place.count.mockResolvedValue(100);
+			prisma.review.count.mockResolvedValue(500);
 
 			await placeController.getStats(req, res);
-			expect(localData.getStats).toHaveBeenCalled();
-			expect(res.json).toHaveBeenCalledWith(mockStats);
-		});
-
-		it("should return 500 on error", async () => {
-			localData.getStats.mockImplementation(() => {
-				throw new Error("Local data error");
-			});
-
-			await placeController.getStats(req, res);
-			expect(res.status).toHaveBeenCalledWith(500);
+			expect(prisma.place.count).toHaveBeenCalled();
 			expect(res.json).toHaveBeenCalledWith({
-				error: "Failed to fetch stats",
-				details: "Local data error",
+				totalPlaces: 100,
+				totalReviews: 500,
+				placesWithReviews: 100,
 			});
 		});
 	});

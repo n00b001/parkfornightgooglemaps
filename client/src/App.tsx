@@ -345,28 +345,47 @@ const App: React.FC = () => {
             <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20">
               <button
                 onClick={() => setViewMode(viewMode === 'map' ? 'list' : 'map')}
-                className="bg-gray-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-2 font-bold hover:bg-black transition-colors"
+                className="bg-gray-900 text-white px-8 py-4 rounded-full shadow-[0_20px_50px_rgba(0,0,0,0.3)] flex items-center gap-3 font-black uppercase tracking-wider hover:bg-black hover:scale-105 active:scale-95 transition-all duration-300 border border-white/20"
               >
                 {viewMode === 'map' ? (
-                  <><LayoutList size={20} /> List View</>
+                  <><LayoutList size={20} strokeWidth={3} /> List View</>
                 ) : (
-                  <><MapIcon size={20} /> Map View</>
+                  <><MapIcon size={20} strokeWidth={3} /> Map View</>
                 )}
               </button>
             </div>
 
-            {/* Subtle loading indicator - does not block user interaction */}
-            {isLoadingPlaces && (
-              <div className="absolute top-4 left-4 z-10 flex items-center gap-2 bg-white/90 backdrop-blur-sm px-3 py-2 rounded-full shadow-sm border">
-                <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                <span className="text-xs font-medium text-gray-600">Loading spots...</span>
+            {/* Loading state - full screen blur overlay for first load or major refresh */}
+            {(isLoadingPlaces && displayPlaces.length === 0) && (
+              <div className="absolute inset-0 z-[100] bg-white/60 backdrop-blur-md flex flex-col items-center justify-center animate-in fade-in duration-500">
+                <div className="relative">
+                  <div className="w-16 h-16 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin" />
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <MapIcon className="text-blue-600" size={24} />
+                  </div>
+                </div>
+                <p className="mt-6 text-gray-900 font-black uppercase tracking-widest text-sm animate-pulse">Finding parking spots...</p>
+              </div>
+            )}
+
+            {/* Subtle background loading indicator */}
+            {(isLoadingPlaces && displayPlaces.length > 0) && (
+              <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 bg-gray-900 text-white px-5 py-2.5 rounded-full shadow-2xl animate-in slide-in-from-top-10 duration-300">
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span className="text-xs font-black uppercase tracking-widest">Refreshing area...</span>
               </div>
             )}
           </>
         ) : (
           <div className="absolute inset-0 bg-white flex flex-col items-center justify-center">
-            <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-            <p className="mt-4 text-gray-600 font-medium">Loading Park4Night...</p>
+            <div className="relative">
+              <div className="w-20 h-20 border-8 border-blue-50 border-t-blue-600 rounded-full animate-spin" />
+              <div className="absolute inset-0 flex items-center justify-center">
+                <MapIcon className="text-blue-600" size={32} />
+              </div>
+            </div>
+            <h1 className="mt-8 text-2xl font-black text-gray-900 uppercase tracking-tighter">Park4Night</h1>
+            <p className="mt-2 text-gray-400 font-bold uppercase tracking-widest text-[10px]">Initializing Google Maps Integration</p>
           </div>
         )}
       </main>

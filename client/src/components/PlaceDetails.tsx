@@ -215,10 +215,10 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
           <span className="text-gray-400 text-xs">({place.reviewCount ?? place.nb_comm ?? 0} p4n)</span>
         </div>
         {googleDetails && (
-          <div className="flex items-center gap-1 border-l pl-4">
-            <Star size={16} fill="#4285F4" className="text-blue-500" />
-            <span className="font-bold">{googleDetails.rating}</span>
-            <span className="text-gray-400 text-xs">({googleDetails.user_ratings_total} Google)</span>
+          <div className="flex items-center gap-1.5 bg-blue-50 px-2 py-1 rounded-lg">
+            <Star size={16} fill="#3B82F6" className="text-blue-500" />
+            <span className="font-bold text-blue-700">{googleDetails.rating}</span>
+            <span className="text-blue-400 text-xs font-medium">({googleDetails.user_ratings_total})</span>
           </div>
         )}
       </div>

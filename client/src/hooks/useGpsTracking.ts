@@ -16,9 +16,9 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialV
   }, [places]);
 
   useEffect(() => {
-    if (initialVisitedIds.length > 0) {
-      initialVisitedIds.forEach(id => visitedRef.current.add(id));
-    }
+    // Append initialVisitedIds from server to our local set
+    // We don't overwrite to avoid losing spots recorded locally but not yet synced/refetched
+    initialVisitedIds.forEach(id => visitedRef.current.add(id));
   }, [initialVisitedIds]);
 
   useEffect(() => {
@@ -43,7 +43,7 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialV
         });
       },
       null,
-      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
     return () => navigator.geolocation.clearWatch(watchId);
   }, [isAuthenticated]);
