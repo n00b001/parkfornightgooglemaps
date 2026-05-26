@@ -160,7 +160,9 @@ const App: React.FC = () => {
     return filtered;
   }, [rawPlaces, showOnlyFavorites, favorites, filters, searchQuery, mapCenter]);
 
-  useGpsTracking(rawPlaces, !!user, visited);
+  useGpsTracking(rawPlaces, !!user, visited, (placeId) => {
+    setVisited(prev => [...prev, placeId]);
+  });
 
   // Default map center to user's location on mount
   useEffect(() => {
@@ -187,6 +189,19 @@ const App: React.FC = () => {
       }
     }).catch(() => setUser(null));
   }, []);
+
+  // Deep linking: check for place ID in URL on load
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const placeId = params.get('place');
+    if (placeId && rawPlaces.length > 0) {
+      const place = rawPlaces.find((p: any) => p.id.toString() === placeId);
+      if (place) {
+        setSelectedPlace(place);
+        setMapCenter({ lat: parseFloat(place.latitude), lng: parseFloat(place.longitude) });
+      }
+    }
+  }, [rawPlaces]);
 
   const handleCenterChange = (newCenter: { lat: number, lng: number }) => {
     setMapCenter(newCenter);

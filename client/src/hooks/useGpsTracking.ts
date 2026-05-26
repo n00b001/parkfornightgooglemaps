@@ -1,10 +1,15 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import axios from '../axiosConfig';
 import { savePendingVisit } from '../services/db';
 
-export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialVisitedIds: number[] = []) => {
+export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialVisitedIds: number[] = [], onVisitRecorded?: (placeId: number) => void) => {
   const visitedRef = useRef<Set<number>>(new Set(initialVisitedIds));
   const placesRef = useRef<any[]>(places);
+  const onVisitRecordedRef = useRef(onVisitRecorded);
+
+  useEffect(() => {
+    onVisitRecordedRef.current = onVisitRecorded;
+  }, [onVisitRecorded]);
 
   useEffect(() => {
     placesRef.current = places;
@@ -27,6 +32,7 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialV
           const dist = calculateDistance(latitude, longitude, parseFloat(place.latitude), parseFloat(place.longitude));
           if (dist < 0.1) { // 100 meters
             visitedRef.current.add(place.id);
+            if (onVisitRecordedRef.current) onVisitRecordedRef.current(place.id);
             try {
               await axios.post('/api/visits', { placeId: place.id });
             } catch (err) {
