@@ -28,28 +28,31 @@ interface ListViewProps {
 
 const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, onToggleFavorite }) => {
   return (
-    <div className="h-[calc(100vh-64px)] overflow-y-auto bg-gray-50 pb-28 pt-4">
-      <div className="max-w-2xl mx-auto p-4 space-y-4">
+    <div className="h-[calc(100vh-64px)] overflow-y-auto bg-gray-50 pb-32 pt-4 custom-scrollbar">
+      <div className="max-w-2xl mx-auto px-4 space-y-4">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-xl font-extrabold text-gray-900">{places.length} spots found</h2>
+          <div className="text-xs font-bold text-gray-400 uppercase tracking-widest">Sorted by relevance</div>
+        </div>
         {places.map((place) => {
           const isFavorite = favorites.includes(place.id);
-          const photo = place.photos?.[0]?.lien_mini;
-
+          const photo = place.photos?.[0]?.lien_mini || (place.photos && place.photos[0]?.url_thumb);
           return (
             <div
               key={place.id}
               onClick={() => onPlaceClick(place)}
-              className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex cursor-pointer hover:shadow-md transition-shadow"
+              className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden flex cursor-pointer hover:shadow-xl hover:scale-[1.01] transition-all duration-300 group"
             >
-              <div className="w-32 h-32 flex-shrink-0 bg-gray-200">
+              <div className="w-36 h-36 flex-shrink-0 bg-gray-100 overflow-hidden">
                 {photo ? (
                   <img src={photo} alt={place.name || place.titre} className="w-full h-full object-cover" />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center text-gray-400">
-                    <MapPin size={24} />
+                  <div className="w-full h-full flex items-center justify-center text-gray-300">
+                    <MapPin size={32} strokeWidth={1.5} />
                   </div>
                 )}
               </div>
-              <div className="flex-1 p-4 flex flex-col justify-between">
+              <div className="flex-1 p-5 flex flex-col justify-between">
                 <div>
                   <div className="flex justify-between items-start">
                     <h3 className="font-bold text-gray-900 line-clamp-1">{place.name || place.titre}</h3>
@@ -58,11 +61,12 @@ const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, on
                         e.stopPropagation();
                         onToggleFavorite(place.id);
                       }}
-                      className="p-1 focus:outline-none"
+                      className={`p-2 rounded-full transition-colors ${isFavorite ? 'bg-red-50 text-red-500' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'}`}
                     >
                       <Heart
                         size={20}
-                        className={isFavorite ? 'text-red-500 fill-red-500' : 'text-gray-400'}
+                        fill={isFavorite ? 'currentColor' : 'none'}
+                        strokeWidth={2.5}
                       />
                     </button>
                   </div>
