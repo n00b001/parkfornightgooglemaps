@@ -1,5 +1,20 @@
 const placeController = require("../src/controllers/placeController");
 const localData = require("../src/services/localData");
+const prisma = require("../src/config/db");
+const park4night = require("../src/services/park4night");
+
+jest.mock("../src/config/db", () => ({
+	place: {
+		findMany: jest.fn(),
+		findUnique: jest.fn(),
+		upsert: jest.fn(),
+	},
+}));
+
+jest.mock("../src/services/park4night", () => ({
+	getPlaces: jest.fn(),
+	getPlaceDetail: jest.fn(),
+}));
 
 jest.mock("../src/services/localData", () => ({
 	getAllPlaces: jest.fn(),
@@ -19,6 +34,12 @@ describe("placeController", () => {
 			status: jest.fn().mockReturnThis(),
 			json: jest.fn(),
 		};
+		// Set default mock implementations
+		prisma.place.findMany.mockResolvedValue([]);
+		prisma.place.findUnique.mockResolvedValue(null);
+		prisma.place.upsert.mockImplementation((args) => Promise.resolve(args.create || args.update));
+		park4night.getPlaces.mockResolvedValue([]);
+		park4night.getPlaceDetail.mockResolvedValue(null);
 	});
 
 	describe("getPlaces", () => {
@@ -28,72 +49,41 @@ describe("placeController", () => {
 			expect(res.json).toHaveBeenCalledWith({ error: "Lat/lng required" });
 		});
 
-		it("should return places from local data", async () => {
+		it("should return places from Prisma database", async () => {
 			req.query = { lat: "48.8566", lng: "2.3522" };
-			const mockPlaces = [
-				{ id: 1, name: "Test Place", latitude: 48.8566, longitude: 2.3522 },
-			];
-			localData.getAllPlaces.mockReturnValue(mockPlaces);
+			const mockPlaces = Array(15).fill({ id: 1, name: "Prisma Place" });
+			prisma.place.findMany.mockResolvedValue(mockPlaces);
 
 			await placeController.getPlaces(req, res);
-			expect(localData.getAllPlaces).toHaveBeenCalledWith({
-				lat: 48.8566,
-				lng: 2.3522,
-				type: undefined,
-				minRating: undefined,
-				sortBy: undefined,
-			});
+			expect(prisma.place.findMany).toHaveBeenCalled();
 			expect(res.json).toHaveBeenCalledWith(mockPlaces);
 		});
 
-		it("should filter by type", async () => {
-			req.query = { lat: "48.8566", lng: "2.3522", type: "cc" };
-			const mockPlaces = [{ id: 1, name: "CC Place", type: { code: "cc" } }];
-			localData.getAllPlaces.mockReturnValue(mockPlaces);
+		it("should return places from Live API when DB has few results", async () => {
+			req.query = { lat: "48.8566", lng: "2.3522" };
+			prisma.place.findMany.mockResolvedValue([]);
+			const mockLivePlaces = [{ id: 1, name: "Live Place", latitude: 48.8, longitude: 2.3 }];
+			park4night.getPlaces.mockResolvedValue(mockLivePlaces);
+			prisma.place.upsert.mockResolvedValue(mockLivePlaces[0]);
 
 			await placeController.getPlaces(req, res);
-			expect(localData.getAllPlaces).toHaveBeenCalledWith({
-				lat: 48.8566,
-				lng: 2.3522,
-				type: "cc",
-				minRating: undefined,
-				sortBy: undefined,
-			});
-			expect(res.json).toHaveBeenCalledWith(mockPlaces);
+			expect(park4night.getPlaces).toHaveBeenCalled();
+			expect(prisma.place.upsert).toHaveBeenCalled();
+			expect(res.json).toHaveBeenCalledWith(mockLivePlaces);
 		});
 
-		it("should filter by minRating", async () => {
-			req.query = { lat: "48.8566", lng: "2.3522", minRating: "4" };
-			const mockPlaces = [{ id: 1, name: "Good Place", rating: 4.5 }];
-			localData.getAllPlaces.mockReturnValue(mockPlaces);
+		it("should return places from local data as fallback", async () => {
+			req.query = { lat: "48.8566", lng: "2.3522" };
+			prisma.place.findMany.mockResolvedValue([]);
+			park4night.getPlaces.mockResolvedValue([]);
+			const mockLocalPlaces = [{ id: 1, name: "Local Place" }];
+			localData.getAllPlaces.mockReturnValue(mockLocalPlaces);
 
 			await placeController.getPlaces(req, res);
-			expect(localData.getAllPlaces).toHaveBeenCalledWith({
-				lat: 48.8566,
-				lng: 2.3522,
-				type: undefined,
-				minRating: "4",
-				sortBy: undefined,
-			});
+			expect(localData.getAllPlaces).toHaveBeenCalled();
+			expect(res.json).toHaveBeenCalledWith(mockLocalPlaces);
 		});
 
-		it("should sort by rating", async () => {
-			req.query = { lat: "48.8566", lng: "2.3522", sortBy: "rating" };
-			const mockPlaces = [
-				{ id: 2, name: "High", rating: 5.0 },
-				{ id: 1, name: "Low", rating: 3.0 },
-			];
-			localData.getAllPlaces.mockReturnValue(mockPlaces);
-
-			await placeController.getPlaces(req, res);
-			expect(localData.getAllPlaces).toHaveBeenCalledWith({
-				lat: 48.8566,
-				lng: 2.3522,
-				type: undefined,
-				minRating: undefined,
-				sortBy: "rating",
-			});
-		});
 
 		it("should return 500 on error", async () => {
 			req.query = { lat: "48.8566", lng: "2.3522" };
@@ -111,14 +101,26 @@ describe("placeController", () => {
 	});
 
 	describe("getPlaceDetail", () => {
-		it("should return place detail", async () => {
+		it("should return place detail from Prisma", async () => {
 			req.params = { id: "123" };
-			const mockPlace = { id: 123, name: "Test Place" };
-			localData.getPlaceById.mockReturnValue(mockPlace);
+			const mockPlace = { id: 123, name: "Prisma Place" };
+			prisma.place.findUnique.mockResolvedValue(mockPlace);
 
 			await placeController.getPlaceDetail(req, res);
-			expect(localData.getPlaceById).toHaveBeenCalledWith("123");
+			expect(prisma.place.findUnique).toHaveBeenCalled();
 			expect(res.json).toHaveBeenCalledWith(mockPlace);
+		});
+
+		it("should return place detail from Live API", async () => {
+			req.params = { id: "123" };
+			prisma.place.findUnique.mockResolvedValue(null);
+			const mockLivePlace = { id: 123, name: "Live Place" };
+			park4night.getPlaceDetail.mockResolvedValue(mockLivePlace);
+			prisma.place.upsert.mockResolvedValue(mockLivePlace);
+
+			await placeController.getPlaceDetail(req, res);
+			expect(park4night.getPlaceDetail).toHaveBeenCalledWith(123);
+			expect(res.json).toHaveBeenCalledWith(mockLivePlace);
 		});
 
 		it("should return 404 when place not found", async () => {

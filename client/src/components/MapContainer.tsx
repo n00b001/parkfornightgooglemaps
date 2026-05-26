@@ -133,12 +133,12 @@ const MapContainer: React.FC<any> = ({ places, onMarkerClick, center, onCenterCh
                     icon={getIcon(place.type || place.code_type, isFavorite, isVisited)}
                     clusterer={clusterer}
                     label={{
-                      text: (place.code_type === 'cc' ? 'A' :
-                             place.code_type === 'p' ? 'P' :
-                             place.code_type === 'cp' ? 'C' :
-                             place.code_type === 'p_prive' ? 'Pr' :
-                             place.code_type === 'ferme' ? 'F' :
-                             place.code_type === 'nature' ? 'N' : '?'),
+                      text: ((place.type || place.code_type) === 'cc' ? 'A' :
+                             (place.type || place.code_type) === 'p' ? 'P' :
+                             (place.type || place.code_type) === 'cp' ? 'C' :
+                             (place.type || place.code_type) === 'p_prive' ? 'Pr' :
+                             (place.type || place.code_type) === 'ferme' ? 'F' :
+                             (place.type || place.code_type) === 'nature' ? 'N' : '?'),
                       color: 'white',
                       fontSize: '10px',
                       fontWeight: 'bold'

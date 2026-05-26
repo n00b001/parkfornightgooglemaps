@@ -24,7 +24,7 @@ const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, on
             >
               <div className="w-32 h-32 flex-shrink-0 bg-gray-200">
                 {photo ? (
-                  <img src={photo} alt={place.titre || place.name} className="w-full h-full object-cover" />
+                  <img src={photo} alt={place.name || place.titre} className="w-full h-full object-cover" />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center text-gray-400">
                     <MapPin size={24} />
@@ -34,7 +34,7 @@ const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, on
               <div className="flex-1 p-4 flex flex-col justify-between">
                 <div>
                   <div className="flex justify-between items-start">
-                    <h3 className="font-bold text-gray-900 line-clamp-1">{place.titre || place.name}</h3>
+                    <h3 className="font-bold text-gray-900 line-clamp-1">{place.name || place.titre}</h3>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -50,10 +50,10 @@ const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, on
                   </div>
                   <div className="flex items-center gap-1 mt-1">
                     <Star size={14} fill="orange" className="text-orange-500" />
-                    <span className="text-sm font-bold">{place.note_moyenne || '0'}</span>
-                    <span className="text-xs text-gray-400">({place.nb_comm || 0})</span>
+                    <span className="text-sm font-bold">{place.rating ?? place.note_moyenne ?? '0'}</span>
+                    <span className="text-xs text-gray-400">({place.reviewCount ?? place.nb_comm ?? 0})</span>
                   </div>
-                  <p className="text-xs text-gray-500 mt-2 line-clamp-1 italic">{place.adresse}</p>
+                  <p className="text-xs text-gray-500 mt-2 line-clamp-1 italic">{place.address || place.adresse}</p>
                 </div>
               </div>
             </div>
