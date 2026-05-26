@@ -107,7 +107,9 @@ const App: React.FC = () => {
         console.warn('Network request failed, loading from cache');
         return await getCachedPlaces();
       }
-    }
+    },
+    staleTime: 5 * 60 * 1000, // 5 minutes — prevent aggressive refetches
+    refetchOnWindowFocus: false,
   });
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -355,24 +357,11 @@ const App: React.FC = () => {
               </button>
             </div>
 
-            {/* Loading state - full screen blur overlay for first load or major refresh */}
-            {(isLoadingPlaces && displayPlaces.length === 0) && (
-              <div className="absolute inset-0 z-[100] bg-white/60 backdrop-blur-md flex flex-col items-center justify-center animate-in fade-in duration-500">
-                <div className="relative">
-                  <div className="w-16 h-16 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin" />
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <MapIcon className="text-blue-600" size={24} />
-                  </div>
-                </div>
-                <p className="mt-6 text-gray-900 font-black uppercase tracking-widest text-sm animate-pulse">Finding parking spots...</p>
-              </div>
-            )}
-
-            {/* Subtle background loading indicator */}
-            {(isLoadingPlaces && displayPlaces.length > 0) && (
-              <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 bg-gray-900 text-white px-5 py-2.5 rounded-full shadow-2xl animate-in slide-in-from-top-10 duration-300">
-                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                <span className="text-xs font-black uppercase tracking-widest">Refreshing area...</span>
+            {/* Subtle, non-blocking loading indicator — map remains fully interactive */}
+            {isLoadingPlaces && (
+              <div className="absolute bottom-28 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-white/90 text-gray-600 px-4 py-2 rounded-full shadow-md border">
+                <div className="w-3 h-3 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin" />
+                <span className="text-xs font-medium">Loading spots...</span>
               </div>
             )}
           </>
