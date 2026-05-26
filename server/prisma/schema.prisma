@@ -33,7 +33,7 @@ model Place {
   photoCount      Int        @default(0)
   services        Json?      // [{code, label}]
   activities      Json?      // [{code, label}]
-  photos          Json?      // [{id, url_large, url_thumb}]
+  photos          Json?      // [{id, url_large, url_thumb, path_large, path_thumb}]
   pricing         Json?      // {parking, services}
   access          Json?      // {public, height_limit, parking_places}
   contact         Json?      // {phone, email, website}
@@ -61,14 +61,17 @@ model Favorite {
 }
 
 model Review {
-  id        String   @id @default(uuid())
-  content   String
-  rating    Int
-  user      User     @relation(fields: [userId], references: [id])
-  userId    String
-  place     Place    @relation(fields: [placeId], references: [id])
-  placeId   Int
-  createdAt DateTime @default(now())
+  id           String   @id @default(uuid())
+  content      String
+  rating       Int
+  vehicleType  String?  // Vehicle type code (NC, GV, UL, V, M, T, P, I)
+  authorName   String?  // Review author username
+  authorId     String?  // Review author ID
+  user         User     @relation(fields: [userId], references: [id])
+  userId       String
+  place        Place    @relation(fields: [placeId], references: [id])
+  placeId      Int
+  createdAt    DateTime @default(now())
 }
 
 model Visit {
