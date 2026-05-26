@@ -10,6 +10,8 @@ import {
 	getPendingReviews,
 	removePendingReview,
 	savePendingFavorite,
+	savePlaces,
+	getCachedPlaces,
 } from "./services/db";
 import {
 	Heart,
@@ -116,15 +118,31 @@ const App: React.FC = () => {
 			const cached = placesCache.get(key);
 			if (cached !== undefined) return cached;
 
-			const res = await axios.get("/api/places", {
-				params: {
-					lat: lastFetchedCenter.lat,
-					lng: lastFetchedCenter.lng,
-					limit: 150,
-				},
-			});
-			placesCache.set(key, res.data);
-			return res.data;
+			try {
+				const res = await axios.get("/api/places", {
+					params: {
+						lat: lastFetchedCenter.lat,
+						lng: lastFetchedCenter.lng,
+						limit: 150,
+					},
+				});
+				// Cache to IndexedDB for offline support
+				if (res.data && res.data.length > 0) {
+					await savePlaces(res.data);
+				}
+				placesCache.set(key, res.data);
+				return res.data;
+			} catch (err) {
+				console.warn("Failed to fetch places, falling back to IndexedDB", err);
+				const cachedPlaces = await getCachedPlaces();
+				// Filter cached places within 0.5 deg of current center
+				const nearby = cachedPlaces.filter(
+					(p: any) =>
+						Math.abs(p.latitude - lastFetchedCenter.lat) < 0.5 &&
+						Math.abs(p.longitude - lastFetchedCenter.lng) < 0.5,
+				);
+				return nearby.length > 0 ? nearby : [];
+			}
 		},
 		staleTime: 5 * 60 * 1000, // 5 minutes — prevent aggressive refetches
 		refetchOnWindowFocus: false,

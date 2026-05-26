@@ -1,15 +1,27 @@
 const prisma = require("../src/config/db");
+const park4night = require("../src/services/park4night");
+const localData = require("../src/services/localData");
 
 jest.mock("../src/config/db", () => ({
 	place: {
 		findMany: jest.fn(),
 		findUnique: jest.fn(),
+		upsert: jest.fn(),
 		count: jest.fn(),
 	},
 	review: {
 		count: jest.fn(),
 		findMany: jest.fn(),
 	},
+}));
+
+jest.mock("../src/services/park4night", () => ({
+	getPlaces: jest.fn(),
+	getReviews: jest.fn(),
+}));
+
+jest.mock("../src/services/localData", () => ({
+	getAllPlaces: jest.fn(),
 }));
 
 // Mock LRU cache — no caching during tests so each call hits the DB mock
@@ -150,22 +162,19 @@ describe("placeController", () => {
 	});
 
 	describe("getPlaceReviews", () => {
-		it("should return reviews from DB", async () => {
+		it("should return reviews from Park4Night", async () => {
 			req.params = { id: "123" };
 			const mockReviews = [{ id: "1", content: "Great!", rating: 5 }];
-			prisma.review.findMany.mockResolvedValue(mockReviews);
+			park4night.getReviews.mockResolvedValue(mockReviews);
 
 			await placeController.getPlaceReviews(req, res);
-			expect(prisma.review.findMany).toHaveBeenCalledWith({
-				where: { placeId: 123 },
-				orderBy: { createdAt: "desc" },
-			});
+			expect(park4night.getReviews).toHaveBeenCalledWith(123);
 			expect(res.json).toHaveBeenCalledWith({ reviews: mockReviews });
 		});
 
 		it("should return empty reviews when none exist", async () => {
 			req.params = { id: "123" };
-			prisma.review.findMany.mockResolvedValue([]);
+			park4night.getReviews.mockResolvedValue([]);
 
 			await placeController.getPlaceReviews(req, res);
 			expect(res.json).toHaveBeenCalledWith({ reviews: [] });
