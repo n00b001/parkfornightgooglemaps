@@ -1,4 +1,3 @@
-const placeController = require("../src/controllers/placeController");
 const prisma = require("../src/config/db");
 
 jest.mock("../src/config/db", () => ({
@@ -12,6 +11,20 @@ jest.mock("../src/config/db", () => ({
 		findMany: jest.fn(),
 	},
 }));
+
+// Mock LRU cache — no caching during tests so each call hits the DB mock
+jest.mock("../src/services/lruCache", () => {
+	class LRUCache {
+		constructor() {}
+		get() {
+			return undefined;
+		}
+		set() {}
+	}
+	return LRUCache;
+});
+
+const placeController = require("../src/controllers/placeController");
 
 describe("placeController", () => {
 	let req, res;

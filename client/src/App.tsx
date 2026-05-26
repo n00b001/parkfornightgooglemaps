@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import axios from "./axiosConfig";
 import { useQuery } from "@tanstack/react-query";
+import LRUCache from "./services/lruCache";
 import {
 	getPendingVisits,
 	removePendingVisit,
@@ -28,6 +29,9 @@ import { useJsApiLoader } from "@react-google-maps/api";
 const LIBRARIES: ("places" | "drawing" | "geometry" | "visualization")[] = [
 	"places",
 ];
+
+// LRU cache: 100 entries, 5-minute TTL — avoids redundant API calls
+const placesCache = new LRUCache<string, any[]>(100, 5 * 60 * 1000);
 
 const App: React.FC = () => {
 	const { isLoaded } = useJsApiLoader({
@@ -108,6 +112,10 @@ const App: React.FC = () => {
 	const { data: rawPlaces = [], isLoading: isLoadingPlaces } = useQuery({
 		queryKey: ["places", lastFetchedCenter],
 		queryFn: async () => {
+			const key = `${lastFetchedCenter.lat},${lastFetchedCenter.lng}`;
+			const cached = placesCache.get(key);
+			if (cached !== undefined) return cached;
+
 			const res = await axios.get("/api/places", {
 				params: {
 					lat: lastFetchedCenter.lat,
@@ -115,6 +123,7 @@ const App: React.FC = () => {
 					limit: 150,
 				},
 			});
+			placesCache.set(key, res.data);
 			return res.data;
 		},
 		staleTime: 5 * 60 * 1000, // 5 minutes — prevent aggressive refetches
