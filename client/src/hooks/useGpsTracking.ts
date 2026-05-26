@@ -6,7 +6,10 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialV
   const visitedRef = useRef<Set<number>>(new Set(initialVisitedIds));
   const placesRef = useRef<any[]>(places);
   const onVisitRecordedRef = useRef(onVisitRecorded);
-  onVisitRecordedRef.current = onVisitRecorded;
+
+  useEffect(() => {
+    onVisitRecordedRef.current = onVisitRecorded;
+  }, [onVisitRecorded]);
 
   useEffect(() => {
     placesRef.current = places;
@@ -43,7 +46,7 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialV
       { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
     );
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [isAuthenticated]); // onVisitRecorded accessed via ref to avoid re-subscribing on every render
+  }, [isAuthenticated]);
 };
 
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
