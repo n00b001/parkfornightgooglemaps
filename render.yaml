@@ -30,12 +30,12 @@ services:
         fromService:
           type: static
           name: park4night-client
-          property: host
+          property: url
       - key: SERVER_URL
         fromService:
           type: web
           name: park4night-server
-          property: host
+          property: url
 
   - type: static
     name: park4night-client
@@ -47,6 +47,6 @@ services:
         fromService:
           type: web
           name: park4night-server
-          property: host
+          property: url
       - key: VITE_GOOGLE_MAPS_API_KEY
         sync: false
