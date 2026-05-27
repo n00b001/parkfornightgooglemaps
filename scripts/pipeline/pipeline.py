@@ -2,17 +2,26 @@
 """
 Park4Night Unified ETL Pipeline
 
-True per-place generator pipeline:
-  Each place flows through ALL stages before the next begins.
-  --limit N means the pipeline iterates N times, each time
-  processing one place completely end-to-end.
+Parallel per-place pipeline:
+  Multiple places processed simultaneously by worker threads.
+  Each place flows through ALL stages:
 
-    extract → translate → normalize → upload R2 → insert DB
-    → checkpoint (save progress)
-    → next place
+    extract → download → fetch reviews → translate → enqueue R2 → normalize → enqueue DB
 
-Parallelism: within each stage (image downloads, translations, R2 uploads)
-Caching: translation cache in RAM, checkpoint on disk for resume
+  Workers share:
+    - Translation cache (thread-safe dict with lock)
+    - R2 upload pool (async queue-based)
+    - DB insert pool (async queue-based)
+
+  --limit N means process N places (in parallel, not serial).
+  Checkpoint saved periodically for resume capability.
+
+Parallelism:
+  - 16 worker threads (one per CPU core)
+  - Each worker runs full pipeline for one place
+  - argos-translate uses 2 internal threads per worker = 32 threads total
+  - R2 pool: 32 threads for uploads
+  - DB pool: 8 threads for inserts
 """
 
 from __future__ import annotations
@@ -23,7 +32,9 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 
 # Ensure pipeline package is importable
@@ -55,6 +66,7 @@ logger = logging.getLogger("pipeline")
 # ── Globals (for signal handling) ─────────────────
 _checkpoint: PipelineCheckpoint | None = None
 _r2_config: dict | None = None
+_stats_lock = threading.Lock()
 _stats: dict[str, int] = {
     "places_processed": 0,
     "images_downloaded": 0,
@@ -212,7 +224,7 @@ def stage_translate(place: dict) -> dict:
 
     # Translate (parallel, uses cache for already-seen strings)
     if texts_to_translate:
-        translations = translate_batch(texts_to_translate, max_workers=64)
+        translations = translate_batch(texts_to_translate, max_workers=8)
         _stats["translations_cached"] = get_cache_size()
 
         # Apply translations to descriptions
@@ -298,7 +310,6 @@ def stage_enqueue_db(
     """
     if db_pool is None:
         raise RuntimeError("DB worker pool is None — pipeline misconfigured")
-    place_id = place["id"]
     reviews = place.get("reviews") or []  # empty list is valid (no reviews for this place)
 
     # Enqueue place + pre-normalized reviews for async insert
@@ -362,14 +373,89 @@ def _handle_signal(signum, frame) -> None:
 
 
 # ── Main Pipeline ─────────────────────────────────
-def run_pipeline(
-    api: Park4NightAPI, checkpoint: PipelineCheckpoint, limit: int | None = None
-) -> None:
-    """Run the per-place generator pipeline.
+def _process_single_place(
+    raw_place: dict,
+    raw_photos: dict,
+    api: Park4NightAPI,
+    downloader: ImageDownloader,
+    r2_pool: R2WorkerPool | None,
+    db_pool: DBWorkerPool | None,
+    checkpoint: PipelineCheckpoint,
+) -> dict:
+    """Process a single place through all pipeline stages.
 
-    Each place flows through all stages sequentially:
-      extract → download images → translate → enqueue R2 → normalize → enqueue DB
-    Checkpoint saved after each place for resume capability.
+    Called by worker threads. Returns timing dict on success, or error info on failure.
+    """
+    place_id = int(raw_place.get("id") or 0)
+    place_start = time.time()
+
+    # ── Stage 1: Extract ─
+    t0 = time.time()
+    place = extract_place_data(raw_place)
+    extract_time = time.time() - t0
+    if not place:
+        return {"error": f"Failed to extract place {place_id}"}
+
+    # ── Stage 1b: Download images ─
+    t0 = time.time()
+    place["_raw_photos"] = raw_photos.get(place_id, [])
+    place = download_images(place, downloader)
+    download_time = time.time() - t0
+
+    # ── Stage 1c: Fetch reviews ─
+    t0 = time.time()
+    place["reviews"] = api.get_reviews(place_id)
+    fetch_time = time.time() - t0
+
+    # ── Stage 2: Translate ─
+    t0 = time.time()
+    place = stage_translate(place)
+    translate_time = time.time() - t0
+
+    # ── Stage 3: Enqueue R2 ─
+    t0 = time.time()
+    place = stage_enqueue_r2(place, r2_pool)
+    r2_time = time.time() - t0
+
+    # ── Stage 4: Normalize ─
+    t0 = time.time()
+    place = stage_normalize(place)
+    normalize_time = time.time() - t0
+    if not place:
+        return {"error": f"Failed to normalize place {place_id}"}
+
+    # ── Stage 5: Enqueue DB ─
+    t0 = time.time()
+    stage_enqueue_db(place, db_pool)
+    db_time = time.time() - t0
+
+    # ── Checkpoint ─
+    checkpoint._save()
+
+    place_elapsed = time.time() - place_start
+    return {
+        "place_id": place_id,
+        "elapsed": place_elapsed,
+        "extract": extract_time,
+        "download": download_time,
+        "fetch": fetch_time,
+        "translate": translate_time,
+        "r2": r2_time,
+        "normalize": normalize_time,
+        "db": db_time,
+    }
+
+
+def run_pipeline(
+    api: Park4NightAPI,
+    checkpoint: PipelineCheckpoint,
+    limit: int | None = None,
+    num_workers: int = 16,
+) -> None:
+    """Run the parallel per-place pipeline.
+
+    Multiple places processed simultaneously by worker threads.
+    Each worker runs the full pipeline for one place.
     """
     downloader = ImageDownloader()
 
@@ -388,113 +474,77 @@ def run_pipeline(
 
     # Progress tracking
     limit_label = f" (limit {limit})" if limit else ""
-    console.print(f"\n[bold cyan]Starting pipeline{limit_label}...[/bold cyan]\n")
+    workers_label = f" with {num_workers} workers"
+    console.print(f"\n[bold cyan]Starting pipeline{limit_label}{workers_label}...[/bold cyan]\n")
 
-    with create_progress("Pipeline", total=limit) as progress:
-        task = progress.add_task("Processing", total=limit or None)
+    # Collect all places to process (pre-fetch from generator)
+    places_to_process = list(place_source(api, checkpoint, limit))
+    total_places = len(places_to_process)
+
+    if not total_places:
+        return
+
+    # Build photos lookup for parallel access
+    raw_photos_map = {int(p["id"]): p.get("photos", []) for p in places_to_process}
+
+    with create_progress("Pipeline", total=total_places) as progress:
+        task = progress.add_task("Processing", total=total_places)
         place_num = 0
+        errors = 0
 
-        for raw_place in place_source(api, checkpoint, limit):
-            place_id = int(raw_place.get("id") or 0)
-            place_num += 1
-            place_start = time.time()
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {
+                executor.submit(
+                    _process_single_place,
+                    raw_place,
+                    raw_photos_map,
+                    api,
+                    downloader,
+                    r2_pool,
+                    db_pool,
+                    checkpoint,
+                ): raw_place
+                for raw_place in places_to_process
+            }
 
-            console.print(f"\n[bold]Place {place_num}:[/bold] [cyan]{place_id}[/cyan]")
-            console.print(f"  Title: {raw_place.get('titre', 'N/A')}")
+            for future in as_completed(futures):
+                place_num += 1
+                raw_place = futures[future]
+                place_id = int(raw_place.get("id") or 0)
 
-            # ── Stage 1: Extract (structure raw API data) ─
-            t0 = time.time()
-            console.print("  [dim]→ extract[/dim]")
-            place = extract_place_data(raw_place)
-            extract_time = time.time() - t0
-            if not place:
-                console.print(f"  [red]✗ Failed to extract place {place_id}[/red]")
-                continue
+                try:
+                    result = future.result()
 
-            # ── Stage 1b: Download images ─
-            t0 = time.time()
-            console.print("  [dim]→ download images[/dim]")
-            place["_raw_photos"] = raw_place.get("photos", [])
-            place = download_images(place, downloader)
-            download_time = time.time() - t0
+                    if "error" in result:
+                        console.print(f"  [red]✗ {result['error']}[/red]")
+                        errors += 1
+                    else:
+                        with _stats_lock:
+                            _stats["places_processed"] += 1
 
-            # ── Stage 1c: Fetch reviews ─
-            t0 = time.time()
-            console.print("  [dim]→ fetch reviews[/dim]")
-            place["reviews"] = api.get_reviews(place_id)
-            fetch_time = time.time() - t0
+                        rate = place_num / result["elapsed"] if result["elapsed"] > 0 else 0
+                        console.print(
+                            f"  [bold green]✓ Place {result['place_id']} complete "
+                            f"({result['elapsed']:.2f}s, {rate:.1f} places/s)[/bold green]"
+                        )
 
-            # ── Stage 2: Translate (place + reviews) ─
-            t0 = time.time()
-            console.print("  [dim]→ translate[/dim]")
-            place = stage_translate(place)
-            translate_time = time.time() - t0
+                        logger.info(
+                            f"Place {place_num} ({result['place_id']}): "
+                            f"total={result['elapsed']:.3f}s | "
+                            f"extract={result['extract']:.3f}s, "
+                            f"download={result['download']:.3f}s, "
+                            f"translate={result['translate']:.3f}s, "
+                            f"r2={result['r2']:.3f}s, "
+                            f"normalize={result['normalize']:.3f}s, "
+                            f"db={result['db']:.3f}s | "
+                            f"rate={rate:.2f} places/s"
+                        )
 
-            # ── Stage 3: Enqueue R2 upload (non-blocking) ─
-            t0 = time.time()
-            console.print("  [dim]→ enqueue R2[/dim]")
-            place = stage_enqueue_r2(place, r2_pool)
-            r2_time = time.time() - t0
+                except Exception as e:
+                    console.print(f"  [red]✗ Place {place_id} crashed: {e}[/red]")
+                    errors += 1
 
-            # ── Stage 4: Normalize (clean tables, no translation) ─
-            t0 = time.time()
-            console.print("  [dim]→ normalize[/dim]")
-            place = stage_normalize(place)
-            normalize_time = time.time() - t0
-            if not place:
-                console.print(f"  [red]✗ Failed to normalize place {place_id}[/red]")
-                continue
-
-            # ── Stage 5: Enqueue DB insert (non-blocking) ─
-            t0 = time.time()
-            console.print("  [dim]→ enqueue DB[/dim]")
-            stage_enqueue_db(place, db_pool)
-            db_time = time.time() - t0
-
-            # ── Checkpoint (save progress after each place) ─
-            checkpoint._save()
-            _stats["places_processed"] += 1
-            place_elapsed = time.time() - place_start
-
-            if limit:
                 progress.update(task, completed=place_num)
-
-            # Per-place timing summary
-            rate = (
-                place_num
-                / sum(
-                    t
-                    for t in [
-                        extract_time,
-                        download_time,
-                        fetch_time,
-                        translate_time,
-                        r2_time,
-                        normalize_time,
-                        db_time,
-                    ]
-                    if t > 0
-                )
-                if place_elapsed > 0
-                else 0
-            )
-            console.print(
-                f"  [bold green]✓ Place {place_id} complete "
-                f"({place_elapsed:.2f}s, {rate:.1f} places/s)[/bold green]"
-            )
-
-            # Log detailed timing
-            logger.info(
-                f"Place {place_num} ({place_id}): "
-                f"total={place_elapsed:.3f}s | "
-                f"extract={extract_time:.3f}s, "
-                f"download={download_time:.3f}s, "
-                f"translate={translate_time:.3f}s, "
-                f"r2={r2_time:.3f}s, "
-                f"normalize={normalize_time:.3f}s, "
-                f"db={db_time:.3f}s | "
-                f"rate={rate:.2f} places/s"
-            )
 
     # Cleanup: wait for all uploads/inserts to finish, then shut down workers
     if r2_pool is not None:
@@ -504,6 +554,9 @@ def run_pipeline(
     if db_pool is not None:
         console.print("[dim]Waiting for DB inserts to complete...[/dim]")
         db_pool.shutdown()
+
+    if errors:
+        console.print(f"\n[bold red]{errors} places had errors[/bold red]")
 
 
 # ── CLI ────────────────────────────────────────────
@@ -531,6 +584,12 @@ def main() -> None:
         "--env",
         default=os.path.join(os.path.dirname(__file__), "..", "..", ".env"),
         help="Path to .env file",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Number of parallel worker threads (default: 8)",
     )
 
     args = parser.parse_args()
@@ -570,7 +629,7 @@ def main() -> None:
 
     # ── Run pipeline ───────────────────────
     api = Park4NightAPI()
-    run_pipeline(api, _checkpoint, limit=args.limit)
+    run_pipeline(api, _checkpoint, limit=args.limit, num_workers=args.workers)
 
     elapsed = time.time() - start_time
 

@@ -196,8 +196,7 @@ def translate_batch(
     results: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_translate_single, text, lang): (text, lang)
-            for text, lang in uncached
+            executor.submit(_translate_single, text, lang): (text, lang) for text, lang in uncached
         }
         for future in as_completed(futures):
             original, translated = future.result()
