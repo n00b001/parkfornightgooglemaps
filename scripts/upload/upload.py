@@ -70,6 +70,7 @@ from rich.progress import (
 
 console = Console()
 logger: logging.Logger | None = None
+_log_file_path: str = ""
 
 # R2 URL template (public bucket URL)
 R2_PUBLIC_URL_TEMPLATE = "https://p4n-images.{bucket_hash}.cdn.cloudflare.com"
@@ -113,11 +114,12 @@ def load_env(env_path: str) -> dict[str, str]:
 
 def setup_logging(log_dir: str) -> None:
     """Configure logging with dual output: console + timestamped log file."""
-    global logger
+    global logger, _log_file_path
 
     os.makedirs(log_dir, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     log_file = os.path.join(log_dir, f"upload_{timestamp}.log")
+    _log_file_path = log_file
 
     console_handler = RichHandler(
         console=console,
@@ -138,6 +140,13 @@ def setup_logging(log_dir: str) -> None:
     logger.addHandler(file_handler)
 
     console.print(f"  Log file: [cyan]{log_file}[/cyan]")
+
+
+def log_progress(phase: str, completed: int, total: int) -> None:
+    """Write progress update to log file (visible while running)."""
+    if logger:
+        pct = (completed / total * 100) if total else 0
+        logger.info(f"[{phase}] {completed:>8,}/{total:,} ({pct:5.1f}%)")
 
 
 # ── Data Loading ─────────────────────────────────────────────────────
@@ -395,6 +404,10 @@ def upload_images_phase(
                     completed=uploaded + skipped + failed,
                     visible=True,
                 )
+
+                # Log progress every 100 images
+                if (uploaded + skipped + failed) % 100 == 0:
+                    log_progress("R2 upload", uploaded + skipped + failed, total)
 
     if logger:
         logger.info(
@@ -708,6 +721,7 @@ def upload_places(
                 conn.commit()
                 uploaded += len(batch)
                 progress.update(task, completed=uploaded)
+                log_progress("Place upload", uploaded, len(new_places))
 
             except Exception as e:
                 conn.rollback()
@@ -799,6 +813,7 @@ def upload_reviews(
                 conn.commit()
                 uploaded += len(batch)
                 progress.update(task, completed=uploaded)
+                log_progress("Review upload", uploaded, total)
 
             except psycopg2.errors.ForeignKeyViolation:
                 conn.rollback()

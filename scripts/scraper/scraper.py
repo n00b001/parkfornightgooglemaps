@@ -319,8 +319,36 @@ def scrape_reviews_worker(args: tuple) -> tuple[int, int]:
         return place_id, 0
 
 
-def scrape_places(checkpoint: Checkpoint) -> None:
-    """Scrape all places using multiprocessing with rich progress bar."""
+def _truncate_places_file(limit: int) -> None:
+    """Truncate places.jsonl to keep only the first N unique places."""
+    if not os.path.exists(PLACES_FILE):
+        return
+
+    seen: dict[int, str] = {}  # place_id -> json line
+    with open(PLACES_FILE, encoding="utf-8") as f:
+        for line in f:
+            try:
+                place = json.loads(line)
+                pid = place.get("id")
+                if pid and pid not in seen:
+                    seen[pid] = line
+                    if len(seen) >= limit:
+                        break
+            except json.JSONDecodeError:
+                continue
+
+    with open(PLACES_FILE, "w", encoding="utf-8") as f:
+        for line in seen.values():
+            f.write(line)
+
+
+def scrape_places(checkpoint: Checkpoint, limit: int | None = None) -> None:
+    """Scrape places using multiprocessing with rich progress bar.
+
+    Args:
+        checkpoint: Checkpoint instance for resume capability.
+        limit: Maximum number of unique places to scrape (None = no limit).
+    """
     grid_points = Park4NightAPI.generate_grid_points()
     remaining = checkpoint.get_remaining_grid_points(grid_points)
 
@@ -328,9 +356,10 @@ def scrape_places(checkpoint: Checkpoint) -> None:
         logger.info("All grid points already processed. Use 'reset' to start fresh.")
         return
 
+    limit_msg = f" (limit: {limit} places)" if limit else ""
     console.print(
         f"\n[bold blue]Starting place scrape:[/bold blue] "
-        f"{len(remaining)} grid points remaining (of {len(grid_points)} total)"
+        f"{len(remaining)} grid points remaining (of {len(grid_points)} total){limit_msg}"
     )
 
     worker_args = [(lat, lng, i % WORKERS) for i, (lat, lng) in enumerate(remaining)]
@@ -353,22 +382,52 @@ def scrape_places(checkpoint: Checkpoint) -> None:
         task = progress.add_task("Scraping places", total=total_to_scrape, places=0)
 
         with ProcessPoolExecutor(max_workers=WORKERS) as executor:
-            futures = {executor.submit(scrape_places_worker, args): args for args in worker_args}
+            # Submit workers in batches when limit is set, so we can stop early
+            if limit:
+                # Process grid points one at a time until limit reached
+                for args in worker_args:
+                    if total_places >= limit:
+                        logger.info(f"Limit of {limit} places reached, stopping place scrape.")
+                        break
 
-            for future in as_completed(futures):
-                grid_key, count, new_count = future.result()
-                checkpoint.mark_grid_point_done(
-                    float(grid_key.split(",")[0]),
-                    float(grid_key.split(",")[1]),
-                )
-                total_places += new_count
-                completed += 1
-                progress.update(task, completed=completed, places=total_places)
+                    future = executor.submit(scrape_places_worker, args)
+                    grid_key, count, new_count = future.result()
+                    checkpoint.mark_grid_point_done(
+                        float(grid_key.split(",")[0]),
+                        float(grid_key.split(",")[1]),
+                    )
+                    total_places += new_count
+                    completed += 1
+                    progress.update(task, completed=completed, places=total_places)
+            else:
+                futures = {
+                    executor.submit(scrape_places_worker, args): args for args in worker_args
+                }
+
+                for future in as_completed(futures):
+                    grid_key, count, new_count = future.result()
+                    checkpoint.mark_grid_point_done(
+                        float(grid_key.split(",")[0]),
+                        float(grid_key.split(",")[1]),
+                    )
+                    total_places += new_count
+                    completed += 1
+                    progress.update(task, completed=completed, places=total_places)
 
     console.print(
         f"[bold green]✓ Place scrape complete:[/bold green] "
         f"{total_places} total places from {completed} grid points"
     )
+
+    # Apply hard limit by truncating the file
+    if limit and total_places > limit:
+        _truncate_places_file(limit)
+        console.print(
+        f"  [yellow]Truncated to {limit} places "
+        f"(API minimum is 100 per grid point)[/yellow]"
+    )
+        if logger:
+            logger.info(f"Truncated places.jsonl to {limit} places")
 
 
 def scrape_reviews(checkpoint: Checkpoint) -> None:
@@ -596,10 +655,19 @@ def download_images_worker(args: tuple) -> tuple[int, int, int]:
         return place_id, 0, 0
 
 
-def download_images(checkpoint: Checkpoint, place_id_filter: int | None = None) -> None:
+def download_images(
+    checkpoint: Checkpoint,
+    place_id_filter: int | None = None,
+    limit: int | None = None,
+) -> None:
     """
     Download images for all already-scraped places.
     Can be run independently of place scraping.
+
+    Args:
+        checkpoint: Checkpoint instance.
+        place_id_filter: Filter to a specific place ID.
+        limit: Maximum number of places to download images for (None = no limit).
     """
     # Load all unique place IDs from places file
     place_ids = []
@@ -626,6 +694,11 @@ def download_images(checkpoint: Checkpoint, place_id_filter: int | None = None) 
     if not place_ids:
         console.print("[bold yellow]No places found to download images for.[/bold yellow]")
         return
+
+    # Apply limit
+    if limit and limit > 0:
+        place_ids = place_ids[:limit]
+        console.print(f"  [yellow]Limited to {limit} places[/yellow]")
 
     console.print(f"\n[bold blue]Starting image download:[/bold blue] {len(place_ids)} places")
     logger.info(f"Starting image download for {len(place_ids)} places")
@@ -721,6 +794,12 @@ def main() -> None:
         help=f"Number of parallel workers (default: {WORKERS})",
     )
     parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit to first N places (for testing)",
+    )
+    parser.add_argument(
         "--place-id",
         type=int,
         default=None,
@@ -732,12 +811,12 @@ def main() -> None:
 
     if args.command == "scrape":
         logger.info("Starting full scrape (places + reviews)")
-        scrape_places(_checkpoint)
+        scrape_places(_checkpoint, limit=args.limit)
         scrape_reviews(_checkpoint)
         logger.info("Full scrape complete!")
 
     elif args.command == "scrape-places":
-        scrape_places(_checkpoint)
+        scrape_places(_checkpoint, limit=args.limit)
 
     elif args.command == "scrape-reviews":
         scrape_reviews(_checkpoint)
@@ -755,7 +834,7 @@ def main() -> None:
         print("Checkpoint and data files reset. Ready for fresh scrape.")
 
     elif args.command == "download-images":
-        download_images(_checkpoint, args.place_id)
+        download_images(_checkpoint, args.place_id, limit=args.limit)
 
     elif args.command == "download-icons":
         downloader = create_image_downloader()

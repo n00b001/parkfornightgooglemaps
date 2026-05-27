@@ -537,6 +537,56 @@ def build_vehicle_types(places: list[dict], reviews: list[dict]) -> list[dict]:
     return list(seen.values())
 
 
+# ── Checkpoint / Resume ──────────────────────────────────────────────
+
+CHECKPOINT_FILENAME = "normalize_checkpoint.json"
+
+
+def load_normalize_checkpoint(output_dir: str) -> dict:
+    """Load normalisation checkpoint from output directory."""
+    checkpoint_path = os.path.join(output_dir, CHECKPOINT_FILENAME)
+    if os.path.exists(checkpoint_path):
+        try:
+            with open(checkpoint_path, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"normalised_place_ids": [], "version": 1}
+
+
+def save_normalize_checkpoint(output_dir: str, place_ids: list[int]) -> None:
+    """Save normalisation checkpoint."""
+    checkpoint_path = os.path.join(output_dir, CHECKPOINT_FILENAME)
+    checkpoint = {
+        "normalised_place_ids": sorted(place_ids),
+        "version": 1,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    with open(checkpoint_path, "w", encoding="utf-8") as f:
+        json.dump(checkpoint, f, indent=2)
+
+
+def get_new_places(
+    unique_places: list[dict], output_dir: str
+) -> tuple[list[dict], list[int]]:
+    """
+    Determine which places need normalisation (not yet done).
+
+    Returns:
+        (new_places, already_normalised_ids)
+    """
+    checkpoint = load_normalize_checkpoint(output_dir)
+    existing_ids = set(checkpoint.get("normalised_place_ids", []))
+
+    if not existing_ids:
+        return unique_places, []
+
+    new_places = [p for p in unique_places if p["id"] not in existing_ids]
+    skipped = [p["id"] for p in unique_places if p["id"] in existing_ids]
+
+    return new_places, skipped
+
+
 # ── Data I/O ─────────────────────────────────────────────────────────
 
 
@@ -577,9 +627,17 @@ def deduplicate_places(places: list[dict]) -> list[dict]:
 
 
 def write_jsonl(records: list[dict], filepath: str) -> None:
-    """Write records to a JSONL file."""
+    """Write records to a JSONL file (overwrite mode)."""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "w", encoding="utf-8") as f:
+        for record in records:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def append_jsonl(records: list[dict], filepath: str) -> None:
+    """Append records to a JSONL file."""
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "a", encoding="utf-8") as f:
         for record in records:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -631,7 +689,11 @@ def run(
     dry_run: bool = False,
     limit: int | None = None,
 ) -> None:
-    """Run the normalisation pipeline."""
+    """Run the normalisation pipeline with resume support.
+
+    On re-run, already-normalised places are skipped and only new places
+    are processed. Lookup tables are rebuilt from all data (existing + new).
+    """
     log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
     setup_logging(log_dir)
 
@@ -684,120 +746,134 @@ def run(
         f"[bold green]{len(unique_places):,}[/bold green] unique places"
     )
 
+    # ── Resume: check for already-normalised places ───────────────
+    existing_normalised_places = []
+    existing_normalised_reviews = []
+
+    if os.path.exists(os.path.join(output_dir, "places.jsonl")):
+        existing_normalised_places = load_jsonl(os.path.join(output_dir, "places.jsonl"))
+        if logger:
+            logger.info(f"Found {len(existing_normalised_places):,} previously normalised places")
+
+    if os.path.exists(os.path.join(output_dir, "reviews.jsonl")):
+        existing_normalised_reviews = load_jsonl(os.path.join(output_dir, "reviews.jsonl"))
+        if logger:
+            logger.info(f"Found {len(existing_normalised_reviews):,} previously normalised reviews")
+
+    # Determine which places are new
+    existing_place_ids = {p["id"] for p in existing_normalised_places}
+    new_places = [p for p in unique_places if p["id"] not in existing_place_ids]
+    skipped_count = len(unique_places) - len(new_places)
+
+    if skipped_count > 0:
+        console.print(
+            f"  [yellow]Skipping {skipped_count:,} already-normalised places "
+            f"(resuming with {len(new_places):,} new places)[/yellow]"
+        )
+        if logger:
+            logger.info(f"Resuming: {skipped_count:,} skipped, {len(new_places):,} new")
+
+    # Filter reviews to only those for new places
+    new_place_ids = {p["id"] for p in new_places}
+    new_reviews = [r for r in raw_reviews if r.get("place_id") in new_place_ids]
+    skipped_reviews = len(raw_reviews) - len(new_reviews)
+
     # ── Apply limit ───────────────────────────────────────────────
     if limit and limit > 0:
-        unique_places = unique_places[:limit]
-        # Filter reviews to match limited places
-        place_ids = {p["id"] for p in unique_places}
-        raw_reviews = [r for r in raw_reviews if r.get("place_id") in place_ids]
-        console.print(f"  [yellow]Limited to {limit} places[/yellow]")
-        if logger:
-            logger.info(f"Limit applied: {limit} places, {len(raw_reviews)} reviews")
+        # Limit applies to total (existing + new)
+        total_target = limit
+        remaining_slots = total_target - len(existing_normalised_places)
+        if remaining_slots <= 0:
+            console.print(f"  [yellow]Limit of {limit} already met by existing data.[/yellow]")
+            new_places = []
+            new_reviews = []
+        else:
+            new_places = new_places[:remaining_slots]
+            new_place_ids = {p["id"] for p in new_places}
+            new_reviews = [r for r in raw_reviews if r.get("place_id") in new_place_ids]
+            console.print(f"  [yellow]Limited to {limit} total places "
+                         f"({len(existing_normalised_places)} existing + {len(new_places)} new)[/yellow]")
+            if logger:
+                logger.info(f"Limit applied: {limit} total places")
 
     if dry_run:
         console.print("\n[bold yellow]=== DRY RUN — stopping here ===[/bold yellow]")
         return
 
     # ── Phase 1: Batch collect & translate all unique strings ─────
-    console.print("\n[bold blue]Phase 1: Collecting strings to translate...[/bold blue]")
-    strings_to_translate = collect_strings_to_translate(unique_places, raw_reviews)
-    # Remove already-cached
-    strings_to_translate -= set(_TRANSLATE_CACHE.keys())
+    if new_places or new_reviews:
+        console.print("\n[bold blue]Phase 1: Collecting strings to translate...[/bold blue]")
+        strings_to_translate = collect_strings_to_translate(new_places, new_reviews)
+        # Remove already-cached
+        strings_to_translate -= set(_TRANSLATE_CACHE.keys())
 
-    if strings_to_translate:
-        # Convert to sorted list for deterministic batching
-        all_strings = sorted(strings_to_translate)
-        total_strings = len(all_strings)
-        console.print(f"  [cyan]{total_strings:,}[/cyan] unique strings to translate\n")
-        if logger:
-            logger.info(
-                f"Batch translating {total_strings:,} unique strings "
-                f"(max_workers=8, batch_size=100)"
-            )
+        if strings_to_translate:
+            # Convert to sorted list for deterministic batching
+            all_strings = sorted(strings_to_translate)
+            total_strings = len(all_strings)
+            console.print(f"  [cyan]{total_strings:,}[/cyan] unique strings to translate\n")
+            if logger:
+                logger.info(
+                    f"Batch translating {total_strings:,} unique strings "
+                    f"(max_workers=8, batch_size=100)"
+                )
 
-        # Google Translate free API: 8 workers with retry/backoff
-        max_workers = 8
-        batch_size = 100
-        total_batches = (total_strings + batch_size - 1) // batch_size
+            # Google Translate free API: 8 workers with retry/backoff
+            max_workers = 8
+            batch_size = 100
+            total_batches = (total_strings + batch_size - 1) // batch_size
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TextColumn("•"),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Translating", total=total_strings)
-            translated_count = 0
-            failed_count = 0
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn("•"),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Translating", total=total_strings)
+                translated_count = 0
+                failed_count = 0
 
-            for batch_num in range(0, total_batches):
-                start_idx = batch_num * batch_size
-                end_idx = min(start_idx + batch_size, total_strings)
-                batch = all_strings[start_idx:end_idx]
+                for batch_num in range(0, total_batches):
+                    start_idx = batch_num * batch_size
+                    end_idx = min(start_idx + batch_size, total_strings)
+                    batch = all_strings[start_idx:end_idx]
 
-                try:
-                    translate_batch(batch, max_workers=max_workers)
-                    translated_count += len(batch)
-                except Exception as e:
-                    failed_count += len(batch)
-                    if logger:
-                        logger.error(
-                            f"Batch {batch_num} failed: {e}. "
-                            f"{len(batch)} strings will use original text."
-                        )
+                    try:
+                        translate_batch(batch, max_workers=max_workers)
+                        translated_count += len(batch)
+                    except Exception as e:
+                        failed_count += len(batch)
+                        if logger:
+                            logger.error(
+                                f"Batch {batch_num} failed: {e}. "
+                                f"{len(batch)} strings will use original text."
+                            )
 
-                completed = translated_count + failed_count
-                progress.update(task, completed=completed)
-                # Log progress every 10 batches (~every 1000 strings)
-                if batch_num % 10 == 0:
-                    log_progress("Translating", completed, total_strings)
+                    completed = translated_count + failed_count
+                    progress.update(task, completed=completed)
+                    # Log progress every 10 batches (~every 1000 strings)
+                    if batch_num % 10 == 0:
+                        log_progress("Translating", completed, total_strings)
 
-        if logger:
-            logger.info(
-                f"Translation complete: {len(_TRANSLATE_CACHE):,} entries in cache, "
-                f"{failed_count} strings failed (kept original)"
-            )
+            if logger:
+                logger.info(
+                    f"Translation complete: {len(_TRANSLATE_CACHE):,} entries in cache, "
+                    f"{failed_count} strings failed (kept original)"
+                )
+        else:
+            console.print("  [yellow]No strings to translate (all English or cached)[/yellow]")
     else:
-        console.print("  [yellow]No strings to translate (all English or cached)[/yellow]")
+        console.print("\n[yellow]No new places to translate.[/yellow]")
 
-    # ── Phase 2: Normalise places ────────────────────────────────
-    total_places = len(unique_places)
-    console.print(f"\n[bold blue]Phase 2: Normalising {total_places:,} places...[/bold blue]")
+    # ── Phase 2: Normalise new places ────────────────────────────
+    total_new_places = len(new_places)
+    normalised_new_places: list[dict] = []
 
-    normalised_places: list[dict] = []
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TextColumn("•"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Normalising places", total=total_places)
-
-        for i, place in enumerate(unique_places):
-            normalised = normalise_place(place)
-            if normalised:
-                normalised_places.append(normalised)
-            progress.advance(task)
-            # Log progress every 5000 places
-            if (i + 1) % 5000 == 0:
-                log_progress("Normalising places", i + 1, total_places)
-
-    if logger:
-        logger.info(f"Normalised {len(normalised_places):,} places")
-
-    # ── Phase 3: Normalise reviews ───────────────────────────────
-    total_reviews = len(raw_reviews)
-    normalised_reviews: list[dict] = []
-
-    if total_reviews > 0:
-        console.print(f"\n[bold blue]Phase 3: Normalising {total_reviews:,} reviews...[/bold blue]")
+    if total_new_places > 0:
+        console.print(f"\n[bold blue]Phase 2: Normalising {total_new_places:,} new places...[/bold blue]")
 
         with Progress(
             SpinnerColumn(),
@@ -808,27 +884,65 @@ def run(
             TimeElapsedColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task("Normalising reviews", total=total_reviews)
+            task = progress.add_task("Normalising places", total=total_new_places)
 
-            for i, review in enumerate(raw_reviews):
+            for i, place in enumerate(new_places):
+                normalised = normalise_place(place)
+                if normalised:
+                    normalised_new_places.append(normalised)
+                progress.advance(task)
+                # Log progress every 5000 places
+                if (i + 1) % 5000 == 0:
+                    log_progress("Normalising places", i + 1, total_new_places)
+
+        if logger:
+            logger.info(f"Normalised {len(normalised_new_places):,} new places")
+    else:
+        console.print("\n[yellow]Phase 2: No new places to normalise.[/yellow]")
+
+    # ── Phase 3: Normalise new reviews ───────────────────────────
+    total_new_reviews = len(new_reviews)
+    normalised_new_reviews: list[dict] = []
+
+    if total_new_reviews > 0:
+        console.print(f"\n[bold blue]Phase 3: Normalising {total_new_reviews:,} new reviews...[/bold blue]")
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Normalising reviews", total=total_new_reviews)
+
+            for i, review in enumerate(new_reviews):
                 normalised = normalise_review(review)
                 if normalised:
-                    normalised_reviews.append(normalised)
+                    normalised_new_reviews.append(normalised)
                 progress.advance(task)
                 # Log progress every 50000 reviews
                 if (i + 1) % 50000 == 0:
-                    log_progress("Normalising reviews", i + 1, total_reviews)
+                    log_progress("Normalising reviews", i + 1, total_new_reviews)
 
         if logger:
-            logger.info(f"Normalised {len(normalised_reviews):,} reviews")
+            logger.info(f"Normalised {len(normalised_new_reviews):,} new reviews")
+    else:
+        console.print("\n[yellow]Phase 3: No new reviews to normalise.[/yellow]")
 
-    # ── Phase 4: Build lookup tables ─────────────────────────────
+    # ── Merge existing + new data ────────────────────────────────
+    all_normalised_places = existing_normalised_places + normalised_new_places
+    all_normalised_reviews = existing_normalised_reviews + normalised_new_reviews
+
+    # ── Phase 4: Build lookup tables (from ALL data) ─────────────
     console.print("\n[bold blue]Phase 4: Building lookup tables...[/bold blue]")
 
-    place_types = build_place_types(normalised_places)
-    services = build_services(normalised_places)
-    activities = build_activities(normalised_places)
-    vehicle_types = build_vehicle_types(normalised_places, normalised_reviews)
+    place_types = build_place_types(all_normalised_places)
+    services = build_services(all_normalised_places)
+    activities = build_activities(all_normalised_places)
+    vehicle_types = build_vehicle_types(all_normalised_places, all_normalised_reviews)
 
     if logger:
         logger.info(f"Place types: {len(place_types):,}")
@@ -840,12 +954,16 @@ def run(
     os.makedirs(output_dir, exist_ok=True)
     console.print(f"\n[bold blue]Phase 5: Writing output to {output_dir}...[/bold blue]")
 
-    write_jsonl(normalised_places, os.path.join(output_dir, "places.jsonl"))
-    console.print(f"  ✓ places.jsonl — [bold green]{len(normalised_places):,}[/bold green] records")
-
-    write_jsonl(normalised_reviews, os.path.join(output_dir, "reviews.jsonl"))
+    write_jsonl(all_normalised_places, os.path.join(output_dir, "places.jsonl"))
     console.print(
-        f"  ✓ reviews.jsonl — [bold green]{len(normalised_reviews):,}[/bold green] records"
+        f"  ✓ places.jsonl — "
+        f"[bold green]{len(all_normalised_places):,}[/bold green] records"
+    )
+
+    write_jsonl(all_normalised_reviews, os.path.join(output_dir, "reviews.jsonl"))
+    console.print(
+        f"  ✓ reviews.jsonl — "
+        f"[bold green]{len(all_normalised_reviews):,}[/bold green] records"
     )
 
     write_jsonl(place_types, os.path.join(output_dir, "place_types.jsonl"))
@@ -861,6 +979,12 @@ def run(
     console.print(
         f"  ✓ vehicle_types.jsonl — [bold green]{len(vehicle_types):,}[/bold green] records"
     )
+
+    # ── Save checkpoint ──────────────────────────────────────────
+    all_place_ids = [p["id"] for p in all_normalised_places]
+    save_normalize_checkpoint(output_dir, all_place_ids)
+    if logger:
+        logger.info(f"Checkpoint saved: {len(all_place_ids):,} normalised place IDs")
 
     # ── Summary ───────────────────────────────────────────────────
     total_size = sum(
