@@ -1,5 +1,7 @@
 const prisma = require("../config/db");
 const LRUCache = require("../services/lruCache");
+const park4night = require("../services/park4night");
+const localData = require("../services/localData");
 
 const MAX_PLACES_LIMIT = 200;
 
@@ -39,6 +41,65 @@ const getPlaces = async (req, res) => {
 			longitude: { gte: lng - 0.5, lte: lng + 0.5 },
 		};
 
+		// Check for recent spots in DB
+		const recentThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24 hours
+		const dbCount = await prisma.place.count({
+			where: {
+				...where,
+				lastFetched: { gte: recentThreshold },
+			},
+		});
+
+		// If sparse data or stale, fetch from live API
+		if (dbCount < 10) {
+			try {
+				const livePlaces = await park4night.getPlaces(lat, lng);
+				if (livePlaces && livePlaces.length > 0) {
+					// Upsert live results to DB
+					const upserts = livePlaces.map((p) =>
+						prisma.place.upsert({
+							where: { id: p.id },
+							update: {
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								type: p.type,
+								description: p.description,
+								address: p.address,
+								rating: p.rating,
+								rawData: p.rawData,
+								lastFetched: new Date(),
+							},
+							create: {
+								id: p.id,
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								type: p.type,
+								description: p.description,
+								address: p.address,
+								rating: p.rating,
+								rawData: p.rawData,
+								lastFetched: new Date(),
+							},
+						}),
+					);
+					await Promise.allSettled(upserts);
+				}
+			} catch (apiError) {
+				console.warn("Park4night API fetch failed, falling back to local/DB:", apiError.message);
+				// If live API fails, try localData fallback as a last resort
+				if (process.env.NODE_ENV !== "production") {
+					const localPlaces = localData.getAllPlaces({ lat, lng, range: 0.5 });
+					if (localPlaces.length > 0) {
+						// Optionally seed these to DB too, but for now just return them
+						// To keep the logic consistent, we'll let the final DB query handle it
+					}
+				}
+			}
+		}
+
+		// Re-query DB after potential sync
 		if (type) where.type = type;
 		if (minRating) where.rating = { gte: parseFloat(minRating) };
 
@@ -50,6 +111,11 @@ const getPlaces = async (req, res) => {
 			where,
 			orderBy: Object.keys(orderBy).length > 0 ? orderBy : undefined,
 		});
+
+		// If DB is still empty and we are not in production, try one more time with localData
+		if (places.length === 0 && process.env.NODE_ENV !== "production") {
+			places = localData.getAllPlaces({ lat, lng, range: 0.5, type, minRating });
+		}
 
 		// Sort by distance from query point (closest first)
 		places.sort(
@@ -107,11 +173,30 @@ const getPlaceDetail = async (req, res) => {
 const getPlaceReviews = async (req, res) => {
 	try {
 		const placeId = parseInt(req.params.id);
-		const reviews = await prisma.review.findMany({
+
+		// Fetch community reviews from DB
+		const localReviews = await prisma.review.findMany({
 			where: { placeId },
+			include: { user: true },
 			orderBy: { createdAt: "desc" },
 		});
-		res.json({ reviews });
+
+		// Fetch original reviews from Park4night API
+		let p4nReviews = [];
+		try {
+			p4nReviews = await park4night.getReviews(placeId);
+		} catch (apiError) {
+			console.warn("Failed to fetch Park4night reviews:", apiError.message);
+			// Fallback to localData reviews if API fails and not in production
+			if (process.env.NODE_ENV !== "production") {
+				p4nReviews = localData.getPlaceReviews(placeId);
+			}
+		}
+
+		res.json({
+			local: localReviews,
+			reviews: p4nReviews, // Maintain backward compatibility with 'reviews' key for P4N reviews
+		});
 	} catch (error) {
 		console.error("Error fetching reviews:", error.message);
 		res

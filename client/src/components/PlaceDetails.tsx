@@ -39,20 +39,20 @@ const TYPE_COLORS: Record<string, string> = {
   closed: 'bg-red-100 text-red-700',
 };
 
-// English amenity keys (must match server SERVICE_AMENITY_MAP values)
+// English amenity keys with their corresponding Park4night raw API keys
 const AMENITIES = [
-  { key: 'waterPoint', label: 'Water', icon: Droplets, color: 'text-blue-500' },
-  { key: 'electricity', label: 'Electricity', icon: Zap, color: 'text-yellow-500' },
-  { key: 'trashCan', label: 'Trash', icon: Trash2, color: 'text-green-600' },
-  { key: 'wifi', label: 'Wifi', icon: Wifi, color: 'text-purple-500' },
-  { key: 'wasteWaterDrain', label: 'Grey Water', icon: Info, color: 'text-gray-500' },
-  { key: 'toiletDrain', label: 'Black Water', icon: Compass, color: 'text-gray-700' },
-  { key: 'shower', label: 'Shower', icon: Bath, color: 'text-blue-400' },
-  { key: 'swimming', label: 'Waves', icon: Waves, color: 'text-cyan-500' },
-  { key: 'pets', label: 'Pets', icon: Dog, color: 'text-orange-400' },
-  { key: 'picnicArea', label: 'Picnic', icon: Utensils, color: 'text-green-500' },
-  { key: 'laundry', label: 'Laundry', icon: Shirt, color: 'text-indigo-400' },
-  { key: 'publicToilet', label: 'Public WC', icon: Map, color: 'text-blue-300' },
+  { key: 'waterPoint', rawKeys: ['point_eau', 'eau'], label: 'Water', icon: Droplets, color: 'text-blue-500' },
+  { key: 'electricity', rawKeys: ['electricite', 'électricité'], label: 'Electricity', icon: Zap, color: 'text-yellow-500' },
+  { key: 'trashCan', rawKeys: ['poubelle'], label: 'Trash', icon: Trash2, color: 'text-green-600' },
+  { key: 'wifi', rawKeys: ['wifi'], label: 'Wifi', icon: Wifi, color: 'text-purple-500' },
+  { key: 'wasteWaterDrain', rawKeys: ['vidange_eaux_usees', 'vidance_eaux_grises', 'eau_usee'], label: 'Grey Water', icon: Info, color: 'text-gray-500' },
+  { key: 'toiletDrain', rawKeys: ['vidange_wc', 'vidange_chasse', 'eau_noire'], label: 'Black Water', icon: Compass, color: 'text-gray-700' },
+  { key: 'shower', rawKeys: ['douche'], label: 'Shower', icon: Bath, color: 'text-blue-400' },
+  { key: 'swimming', rawKeys: ['baignade', 'piscine'], label: 'Waves', icon: Waves, color: 'text-cyan-500' },
+  { key: 'pets', rawKeys: ['animaux'], label: 'Pets', icon: Dog, color: 'text-orange-400' },
+  { key: 'picnicArea', rawKeys: ['aire_pique_nique'], label: 'Picnic', icon: Utensils, color: 'text-green-500' },
+  { key: 'laundry', rawKeys: ['laverie'], label: 'Laundry', icon: Shirt, color: 'text-indigo-400' },
+  { key: 'publicToilet', rawKeys: ['wc_public'], label: 'Public WC', icon: Map, color: 'text-blue-300' },
 ];
 
 const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
@@ -111,12 +111,10 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   const fetchReviews = async () => {
     setIsLoadingReviews(true);
     try {
-      const [localRes, p4nRes] = await Promise.all([
-        axios.get(`/api/reviews/${place.id}`),
-        axios.get(`/api/places/${place.id}/reviews`)
-      ]);
-      const local = localRes.data;
-      const p4n = p4nRes.data?.reviews || [];
+      // Unified endpoint returns both local and p4n reviews
+      const res = await axios.get(`/api/places/${place.id}/reviews`);
+      const { local = [], reviews: p4n = [] } = res.data;
+
       setReviews(local);
       setP4nReviews(p4n);
       await saveReviews(place.id, { local, p4n });
@@ -277,8 +275,12 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
         <h3 className="text-xs font-bold text-gray-400 uppercase mb-2">Amenities</h3>
         <div className="grid grid-cols-4 gap-3">
           {AMENITIES.map(amenity => {
-            // Check in top level (Prisma) or rawData (Live/Local)
-            const hasAmenity = place[amenity.key] === '1' || place.rawData?.[amenity.key] === '1';
+            // Check in top level (Prisma), rawData (Normalized), or rawData (P4N Original)
+            const hasAmenity =
+              place[amenity.key] === '1' ||
+              place.rawData?.[amenity.key] === '1' ||
+              amenity.rawKeys.some(rk => place.rawData?.[rk] === '1' || place.rawData?.[rk] === true);
+
             if (!hasAmenity) return null;
             return (
               <div key={amenity.key} className="flex flex-col items-center p-3 bg-white rounded-2xl border border-gray-100 shadow-sm hover:border-blue-200 transition-colors">
@@ -287,7 +289,11 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
               </div>
             );
           })}
-          {!AMENITIES.some(a => place[a.key] === '1' || place.rawData?.[a.key] === '1') && <p className="text-sm text-gray-400 italic col-span-4">No amenity info available.</p>}
+          {!AMENITIES.some(amenity =>
+            place[amenity.key] === '1' ||
+            place.rawData?.[amenity.key] === '1' ||
+            amenity.rawKeys.some(rk => place.rawData?.[rk] === '1' || place.rawData?.[rk] === true)
+          ) && <p className="text-sm text-gray-400 italic col-span-4">No amenity info available.</p>}
         </div>
       </div>
 

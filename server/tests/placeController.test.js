@@ -5,6 +5,7 @@ jest.mock("../src/config/db", () => ({
 		findMany: jest.fn(),
 		findUnique: jest.fn(),
 		count: jest.fn(),
+		upsert: jest.fn(),
 	},
 	review: {
 		count: jest.fn(),
@@ -150,25 +151,29 @@ describe("placeController", () => {
 	});
 
 	describe("getPlaceReviews", () => {
-		it("should return reviews from DB", async () => {
+		it("should return reviews from DB and API", async () => {
 			req.params = { id: "123" };
-			const mockReviews = [{ id: "1", content: "Great!", rating: 5 }];
-			prisma.review.findMany.mockResolvedValue(mockReviews);
+			const mockLocalReviews = [{ id: "1", content: "Great!", rating: 5 }];
+			prisma.review.findMany.mockResolvedValue(mockLocalReviews);
 
 			await placeController.getPlaceReviews(req, res);
 			expect(prisma.review.findMany).toHaveBeenCalledWith({
 				where: { placeId: 123 },
+				include: { user: true },
 				orderBy: { createdAt: "desc" },
 			});
-			expect(res.json).toHaveBeenCalledWith({ reviews: mockReviews });
+			const returned = res.json.mock.calls[0][0];
+			expect(returned.local).toEqual(mockLocalReviews);
+			expect(Array.isArray(returned.reviews)).toBe(true);
 		});
 
-		it("should return empty reviews when none exist", async () => {
+		it("should return empty local reviews when none exist", async () => {
 			req.params = { id: "123" };
 			prisma.review.findMany.mockResolvedValue([]);
 
 			await placeController.getPlaceReviews(req, res);
-			expect(res.json).toHaveBeenCalledWith({ reviews: [] });
+			const returned = res.json.mock.calls[0][0];
+			expect(returned.local).toEqual([]);
 		});
 	});
 
