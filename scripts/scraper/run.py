@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Entry point for the Park4Night scraper.
-Run from the project root: python scripts/scraper/run.py scrape
+Run from the project root: uv run scripts/scraper/run.py scrape
 """
 
 import os

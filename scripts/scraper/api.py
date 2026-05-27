@@ -13,12 +13,12 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from config import (
-    GRID,
     MAX_RETRIES,
     NEW_PLACE_DETAIL,
     NEW_PLACE_REVIEWS,
     NEW_PLACES_ENDPOINT,
     PLACES_ENDPOINT,
+    REGIONS,
     REQUEST_DELAY,
     REQUEST_TIMEOUT,
     RETRY_DELAY,
@@ -137,17 +137,41 @@ class Park4NightAPI:
     # ── Grid generation ────────────────────────────────────────────
 
     @staticmethod
-    def generate_grid_points() -> list[tuple[float, float]]:
-        """Generate all grid points for scraping Europe."""
+    def _generate_region_points(region: dict) -> list[tuple[float, float]]:
+        """Generate grid points for a single region."""
         points = []
-        lat = GRID["lat_min"]
-        while lat <= GRID["lat_max"]:
-            lng = GRID["lng_min"]
-            while lng <= GRID["lng_max"]:
+        lat_min, lat_max = region["lat_min"], region["lat_max"]
+        lng_min, lng_max = region["lng_min"], region["lng_max"]
+        step = region["step"]
+
+        # Handle both north-to-south and south-to-north ranges
+        lat_step = step if lat_min <= lat_max else -step
+        lng_step = step if lng_min <= lng_max else -step
+
+        lat = lat_min
+        while (lat_step > 0 and lat <= lat_max) or (lat_step < 0 and lat >= lat_max):
+            lng = lng_min
+            while (lng_step > 0 and lng <= lng_max) or (lng_step < 0 and lng >= lng_max):
                 points.append((round(lat, 4), round(lng, 4)))
-                lng += GRID["step"]
-            lat += GRID["step"]
+                lng += lng_step
+            lat += lat_step
         return points
+
+    @staticmethod
+    def generate_grid_points() -> list[tuple[float, float]]:
+        """Generate all grid points for scraping the entire globe."""
+        points = []
+        for region in REGIONS:
+            points.extend(Park4NightAPI._generate_region_points(region))
+        return points
+
+    @staticmethod
+    def generate_grid_points_for_region(region_name: str) -> list[tuple[float, float]]:
+        """Generate grid points for a specific region by name."""
+        for region in REGIONS:
+            if region["name"] == region_name:
+                return Park4NightAPI._generate_region_points(region)
+        return []
 
 
 def create_api_client() -> Park4NightAPI:
