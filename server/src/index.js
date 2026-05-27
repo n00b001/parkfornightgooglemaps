@@ -6,10 +6,6 @@ const pgSession = require('connect-pg-simple')(session);
 const { Pool } = require('pg');
 const passport = require('./config/passport');
 
-// Load local scraped data on startup
-const localData = require('./services/localData');
-localData.loadData();
-
 const authRoutes = require('./routes/auth');
 const placeRoutes = require('./routes/places');
 const favoriteRoutes = require('./routes/favorites');
@@ -71,16 +67,9 @@ if (typeof passport.on === 'function') {
   });
 }
 
-// Serve images from Firestore
-const imageRoutes = require('./routes/images');
-try {
-	require('./config/firebase').initFirebase();
-	console.log("Images served from Firestore");
-} catch (err) {
-	console.error("FATAL: Failed to initialize Firebase for images:", err.message);
-	process.exit(1);
-}
-app.use("/images", imageRoutes);
+// Images are served directly from Cloudflare R2 URLs stored in the database.
+// The /images route is no longer needed — place photos contain R2 URLs
+// and vehicle icons are served as static files.
 
 app.use('/auth', authRoutes);
 app.use('/api/places', placeRoutes);

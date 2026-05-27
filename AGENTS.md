@@ -53,6 +53,18 @@ git commit --no-gpg-sign -m "message"
 - `fix/<description>` — bug fixes
 - `chore/<description>` — maintenance, deps, config
 
+## Budget Constraint
+
+**NO PAID SERVICES.** Every data store, CDN, and infrastructure component must use a free tier.
+
+| Service | Free Tier | Usage |
+|---------|-----------|-------|
+| Firebase Firestore | 1GB storage, 50K reads/day | Place metadata + image base64 (thumbnails) |
+| Render PostgreSQL | 1GB storage | Structured data: places, reviews, services, descriptions |
+| Firebase Storage | 5GB storage | Image files (WebP compressed) — ~$0.03/mo at current size, monitor closely |
+
+**Image compression**: Always convert JPEG → WebP before upload. Typical 50-75% size reduction.
+
 ## Critical Project Rules
 
 ### NO Park4Night CDN / External Resources

@@ -21,32 +21,85 @@ model User {
 }
 
 model Place {
-  id              Int        @id
+  id              Int           @id
   name            String
   latitude        Float
   longitude       Float
-  type            String
-  description     String?
+  type            PlaceType     @relation(fields: [typeId], references: [id])
+  typeId          Int
   address         String?
   rating          Float?
-  reviewCount     Int        @default(0)
-  photoCount      Int        @default(0)
-  services        Json?      // [{code, label}]
-  activities      Json?      // [{code, label}]
-  photos          Json?      // [{id, url_large, url_thumb, path_large, path_thumb}]
-  pricing         Json?      // {parking, services}
-  access          Json?      // {public, height_limit, parking_places}
-  contact         Json?      // {phone, email, website}
-  descriptions    Json?      // {fr, en, de, es, it, nl}
-  isPublic        Boolean    @default(true)
-  onlineBooking   Boolean    @default(false)
+  reviewCount     Int           @default(0)
+  photoCount      Int           @default(0)
+  services        PlaceService[]
+  activities      PlaceActivity[]
+  photos          Json?         // [{id, numero, path_thumb, path_large}]
+  pricing         Json?         // {parking: "free", services: ""}
+  access          Json?         // {public, height_limit, parking_places}
+  contact         Json?         // {phone, email, website}
+  descriptions    Json?         // {default: "English text", _original: "French source text"}
+  isPublic        Boolean       @default(true)
+  onlineBooking   Boolean       @default(false)
   favorites       Favorite[]
   reviews         Review[]
   visits          Visit[]
-  rawData         Json?
-  lastFetched     DateTime   @default(now())
+  lastFetched     DateTime      @default(now())
 
   @@index([latitude, longitude])
+}
+
+/// Lookup table: place type codes (English + original)
+model PlaceType {
+  id            Int          @id @default(autoincrement())
+  englishName   String       @unique // "Parking", "Camping", etc.
+  originalCode  String       @unique // "P", "PN", etc.
+  places        Place[]
+}
+
+/// Lookup table: service codes (English + original)
+model Service {
+  id            Int          @id @default(autoincrement())
+  code          String       @unique // "trash_bins", "water_point", etc.
+  label         String       // "Trash bins", "Water point", etc.
+  originalCode  String       @unique // "poubelle", "point_eau", etc.
+  places        PlaceService[]
+}
+
+/// Lookup table: activity codes (English + original)
+model Activity {
+  id            Int          @id @default(autoincrement())
+  code          String       @unique // "viewpoint", "swimming", etc.
+  label         String       // "Viewpoint", "Swimming", etc.
+  originalCode  String       @unique // "point_de_vue", "baignade", etc.
+  places        PlaceActivity[]
+}
+
+/// Lookup table: vehicle type codes (English + original)
+model VehicleType {
+  id              Int       @id @default(autoincrement())
+  code            String    @unique // "car", "motorhome", etc.
+  originalCode    String    @unique // "NC", "GV", etc.
+  reviews         Review[]
+}
+
+/// Junction: Place ↔ Service
+model PlaceService {
+  place   Place    @relation(fields: [placeId], references: [id])
+  placeId Int
+  service Service  @relation(fields: [serviceId], references: [id])
+  serviceId Int
+
+  @@id([placeId, serviceId])
+}
+
+/// Junction: Place ↔ Activity
+model PlaceActivity {
+  place    Place    @relation(fields: [placeId], references: [id])
+  placeId  Int
+  activity Activity @relation(fields: [activityId], references: [id])
+  activityId Int
+
+  @@id([placeId, activityId])
 }
 
 model Favorite {
@@ -61,17 +114,20 @@ model Favorite {
 }
 
 model Review {
-  id           String   @id @default(uuid())
-  content      String
-  rating       Int
-  vehicleType  String?  // Vehicle type code (NC, GV, UL, V, M, T, P, I)
-  authorName   String?  // Review author username
-  authorId     String?  // Review author ID
-  user         User     @relation(fields: [userId], references: [id])
-  userId       String
-  place        Place    @relation(fields: [placeId], references: [id])
-  placeId      Int
-  createdAt    DateTime @default(now())
+  id                String       @id @default(uuid())
+  content           String
+  rating            Int
+  vehicleType       VehicleType? @relation(fields: [vehicleTypeId], references: [id])
+  vehicleTypeId     Int?
+  authorName        String?
+  authorId          String?      // Park4Night author ID
+  user              User         @relation(fields: [userId], references: [id])
+  userId            String
+  place             Place        @relation(fields: [placeId], references: [id])
+  placeId           Int
+  createdAt         DateTime     @default(now())
+
+  @@index([placeId])
 }
 
 model Visit {
