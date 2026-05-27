@@ -14,7 +14,6 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from translator import translate_text  # type: ignore[import-not-found]
 
 logger = logging.getLogger("pipeline")
 
@@ -24,24 +23,23 @@ def _str(value: Any) -> str:
 
 
 def pick_or_translate(descriptions: dict[str, str]) -> dict[str, Any]:
-    """Given {lang: text}, produce {default, _original}."""
+    """Given {lang: text}, produce {default, _original}.
+
+    Uses pre-translated text if available (descriptions["translated"]).
+    Falls back to English description, then first available description.
+    """
     originals = {lang: (text or "").strip() for lang, text in descriptions.items()}
-    lang_priority = ["en", "fr", "de", "es", "it", "nl"]
 
-    english_text = ""
-    for lang in lang_priority:
-        candidate = originals.get(lang, "")
-        if candidate:
-            if lang == "en":
-                english_text = candidate
-            else:
-                english_text = translate_text(candidate)
-            break
-
+    # Use pre-translated text if available
+    english_text = descriptions.get("translated", "")
     if not english_text:
+        # Fall back to English description
+        english_text = originals.get("en", "")
+    if not english_text:
+        # Fall back to first available description
         for text in originals.values():
             if text:
-                english_text = translate_text(text)
+                english_text = text
                 break
 
     return {
@@ -89,7 +87,7 @@ def normalize_place(place: dict) -> dict | None:
         "country_iso": _str(raw_address.get("country_iso")),
     }
 
-    # Pricing
+    # Pricing (already translated by stage_translate)
     raw_pricing = place.get("pricing", {})
     if not isinstance(raw_pricing, dict):
         raw_pricing = {}
@@ -100,9 +98,8 @@ def normalize_place(place: dict) -> dict | None:
         if value in mapping:
             value = mapping[value]
         elif value and value not in ("free", "paid", "on request"):
-            translated = translate_text(value)
-            if translated.lower() != value:
-                value = translated.lower()
+            # Already translated by stage_translate — use as-is
+            pass
         pricing[key] = value
 
     # Access
@@ -190,7 +187,11 @@ def normalize_place(place: dict) -> dict | None:
 
 
 def normalize_review(review: dict) -> dict | None:
-    """Normalize a single review record."""
+    """Normalize a single review record.
+
+    Review text must be pre-translated by the caller.
+    Expects review["text"] to be a dict with "default" (English) and "_original" keys.
+    """
     review_id = review.get("id")
     if not review_id:
         return None
@@ -199,12 +200,16 @@ def normalize_review(review: dict) -> dict | None:
     if not place_id:
         return None
 
-    raw_text = _str(review.get("text"))
-    if raw_text:
-        translated = translate_text(raw_text)
-        review_text = {"default": translated, "_original": raw_text}
+    # Text should already be translated: {"default": "English", "_original": "original"}
+    raw_text = review.get("text", {})
+    if isinstance(raw_text, dict):
+        review_text = {
+            "default": _str(raw_text.get("default", "")),
+            "_original": _str(raw_text.get("_original", "")),
+        }
     else:
-        review_text = {"default": "", "_original": ""}
+        # Fallback: treat as plain text (already English)
+        review_text = {"default": _str(raw_text), "_original": _str(raw_text)}
 
     author = review.get("author", {})
     if not isinstance(author, dict):

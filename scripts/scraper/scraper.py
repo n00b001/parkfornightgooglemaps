@@ -423,9 +423,8 @@ def scrape_places(checkpoint: Checkpoint, limit: int | None = None) -> None:
     if limit and total_places > limit:
         _truncate_places_file(limit)
         console.print(
-        f"  [yellow]Truncated to {limit} places "
-        f"(API minimum is 100 per grid point)[/yellow]"
-    )
+            f"  [yellow]Truncated to {limit} places (API minimum is 100 per grid point)[/yellow]"
+        )
         if logger:
             logger.info(f"Truncated places.jsonl to {limit} places")
 
@@ -826,12 +825,9 @@ def main() -> None:
 
     elif args.command == "reset":
         _checkpoint.reset()
-        # Also clear data files
-        for fname in [PLACES_FILE, REVIEWS_FILE]:
-            if os.path.exists(fname):
-                os.remove(fname)
-                logger.info(f"Removed {fname}")
-        print("Checkpoint and data files reset. Ready for fresh scrape.")
+        # NEVER delete data files — the entire design is append-only JSONL with
+        # checkpoint-based resume. Data is never deleted, ever.
+        print("Checkpoint reset. Data files preserved (append-only design).")
 
     elif args.command == "download-images":
         download_images(_checkpoint, args.place_id, limit=args.limit)

@@ -253,9 +253,7 @@ def _detect_language(text: str) -> str:
         try:
             lang = detect(text)
         except (LangDetectException, ValueError) as e:
-            raise RuntimeError(
-                f"Language detection failed for text: {text[:80]}... ({e})"
-            ) from e
+            raise RuntimeError(f"Language detection failed for text: {text[:80]}... ({e})") from e
     # Normalize Norwegian codes
     if lang in ("no", "nn"):
         return "nb"
@@ -279,9 +277,7 @@ def _translate_single(text: str) -> tuple[str, str]:
 
     translated = argos_translate.translate(stripped, from_code=src_lang, to_code="en")
     if not translated or not translated.strip():
-        raise RuntimeError(
-            f"Translation returned empty result ({src_lang}→en): {stripped[:80]}..."
-        )
+        raise RuntimeError(f"Translation returned empty result ({src_lang}→en): {stripped[:80]}...")
     return (text, translated.strip())
 
 
@@ -387,9 +383,7 @@ def pick_or_translate(
                 break
 
     if not english_text:
-        raise RuntimeError(
-            f"No translatable text found for {field_name}: {descriptions}"
-        )
+        raise RuntimeError(f"No translatable text found for {field_name}: {descriptions}")
 
     return {
         "default": english_text,
@@ -991,9 +985,7 @@ def run(
                         log_progress("Translating", translated_count, total_strings)
 
             if logger:
-                logger.info(
-                    f"Translation complete: {len(_TRANSLATE_CACHE):,} entries in cache"
-                )
+                logger.info(f"Translation complete: {len(_TRANSLATE_CACHE):,} entries in cache")
         else:
             console.print("  [yellow]No strings to translate (all English or cached)[/yellow]")
     else:

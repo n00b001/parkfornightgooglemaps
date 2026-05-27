@@ -83,6 +83,37 @@ This project is designed to **supercede** Park4Night. The original Park4Night CD
 - Client constructs URLs as `${API_URL}/<relative-path>` — no CDN fallback, no default avatars, no `onError` handlers pointing elsewhere
 - If images directory is missing, the server must **fail to start** (not log a warning and continue)
 
+## DATA SAFETY — ABSOLUTE RULES
+
+### NEVER DELETE DATA FILES. EVER.
+- **NEVER** run `rm`, `truncate`, or any command that deletes/empties data files in `scripts/data/`
+- **NEVER** run `scraper.py reset` — it resets the checkpoint (which is fine) but was historically dangerous
+- **NEVER** clear, wipe, or reset accumulated scraped data (`places.jsonl`, `reviews.jsonl`, images)
+- The entire pipeline is designed around **append-only JSONL with checkpoint-based resume** — each run picks up where the last left off
+- If you need to re-process data (e.g., normalise again), just re-run the script — it skips already-processed items via checkpoints
+- Data files (`places.jsonl`, `reviews.jsonl`, `images/`) are **accumulated over days of scraping** — deleting them destroys irreplaceable work
+- If you accidentally delete data, restore from the export files (`places_export.json`, `reviews_export.json`) which are kept as backups
+- **This rule overrides everything else.** No feature, refactor, or "clean start" justifies deleting data.
+
+### Pipeline Design — Skip What Exists
+- **Scraper**: Uses `checkpoint.json` to skip already-scraped grid points. Appends new places/reviews to JSONL files.
+- **Normaliser**: Uses `normalize_checkpoint.json` to skip already-normalised place IDs. Reads from `places.jsonl`, writes to `normalized/`.
+- **Uploader**: Skips images that already exist on disk (`_download_file` checks `save_path.exists()`). Database uses upserts — existing records are skipped.
+- **Images**: Downloaded during normal scrape (`scrape_places_worker` calls `normalize_place(place, downloader)` which downloads photos inline)
+
+### Running the Pipeline
+```bash
+# Full pipeline (safe to run multiple times — skips already-processed data):
+cd scripts/scraper && uv run scraper.py scrape          # places + reviews + images
+cd scripts/normalize && uv run normalize.py              # translate & clean
+cd scripts/upload && uv run upload.py                    # R2 images + Supabase DB
+
+# With limits (for testing):
+uv run scraper.py scrape --limit 100
+uv run normalize.py --limit 100
+uv run upload.py --places 100
+```
+
 ### PR Merge Rule — NEVER merge broken code
 - **NEVER merge a PR that breaks the app.** If the feature requires data (scraped places, reviews, images) to function, that data MUST exist before merging.
 - Code that introduces new functionality requiring local assets (images, data files) is incomplete until those assets are actually downloaded and committed.

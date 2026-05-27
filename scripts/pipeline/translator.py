@@ -84,9 +84,7 @@ def _ensure_packages_installed() -> None:
 
         # Build set of installed source→en translations
         installed_pairs = {
-            (pkg.from_code, pkg.to_code)
-            for pkg in installed_packages
-            if hasattr(pkg, "from_code")
+            (pkg.from_code, pkg.to_code) for pkg in installed_packages if hasattr(pkg, "from_code")
         }
 
         # Install missing packages
@@ -144,9 +142,7 @@ def _detect_language(text: str) -> str:
         try:
             lang = detect(text)
         except (LangDetectException, ValueError) as e:
-            raise RuntimeError(
-                f"Language detection failed for text: {text[:80]}... ({e})"
-            ) from e
+            raise RuntimeError(f"Language detection failed for text: {text[:80]}... ({e})") from e
     # Normalize Norwegian codes
     if lang in ("no", "nn"):
         return "nb"
@@ -171,13 +167,9 @@ def _translate_single(text: str) -> tuple[str, str]:
     if src_lang == "en":
         return (text, stripped)
 
-    translated = argos_translate.translate(
-        stripped, from_code=src_lang, to_code="en"
-    )
+    translated = argos_translate.translate(stripped, from_code=src_lang, to_code="en")
     if not translated or not translated.strip():
-        raise RuntimeError(
-            f"Translation returned empty result ({src_lang}→en): {stripped[:80]}..."
-        )
+        raise RuntimeError(f"Translation returned empty result ({src_lang}→en): {stripped[:80]}...")
     return (text, translated.strip())
 
 
@@ -203,9 +195,7 @@ def translate_batch(
     # Translate uncached texts in parallel
     results: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_translate_single, text): text for text in uncached
-        }
+        futures = {executor.submit(_translate_single, text): text for text in uncached}
         for future in as_completed(futures):
             original, translated = future.result()
             results[original] = translated

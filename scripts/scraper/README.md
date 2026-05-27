@@ -2,6 +2,8 @@
 
 Scrapes all place data, reviews, and images from Park4Night.com and saves them locally.
 
+**Images are downloaded during normal scrape operation** — every place's photos (thumbnails + large) are fetched inline as each grid point is processed. No separate image download step needed.
+
 ## Installation
 
 ```bash
@@ -23,7 +25,7 @@ uv run scraper.py scrape-places
 # Scrape reviews only
 uv run scraper.py scrape-reviews
 
-# Download images for already-scraped places
+# Download images for places scraped before image support was added (legacy catch-up)
 uv run scraper.py download-images
 
 # Download vehicle type icons
@@ -32,7 +34,7 @@ uv run scraper.py download-icons
 # Check progress
 uv run scraper.py status
 
-# Reset checkpoint (start fresh)
+# Reset checkpoint only (data files are NEVER deleted — append-only design)
 uv run scraper.py reset
 ```
 

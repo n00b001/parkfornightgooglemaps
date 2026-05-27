@@ -33,26 +33,17 @@ from api_client import Park4NightAPI  # type: ignore[import-not-found]
 from checkpoint import PipelineCheckpoint  # type: ignore[import-not-found]
 from config import (  # type: ignore[import-not-found]
     ACTIVITY_CODES,
-    DATA_DIR,
     PLACE_TYPE_CODES,
     SERVICE_CODES,
 )
+from db_worker import DBWorkerPool  # type: ignore[import-not-found]
 from image_downloader import ImageDownloader  # type: ignore[import-not-found]
 from logging_setup import console, create_progress
 from normalizer import (  # type: ignore[import-not-found]
     normalize_place,
     normalize_review,
 )
-from r2_uploader import (  # type: ignore[import-not-found]
-    create_r2_client,
-    upload_place_images,
-)
-from supabase_uploader import (  # type: ignore[import-not-found]
-    ensure_schema,
-    get_connection,
-    insert_place,
-    insert_reviews_for_place,
-)
+from r2_worker import R2WorkerPool  # type: ignore[import-not-found]
 from translator import (  # type: ignore[import-not-found]
     get_cache_size,
     translate_batch,
@@ -88,24 +79,16 @@ def _str(value) -> str:
     return str(value).strip() if value is not None else ""
 
 
-# ── Stage 1: Extract (normalize raw API data, download images) ─
-def stage_extract(
-    place: dict, downloader: ImageDownloader, checkpoint: PipelineCheckpoint
-) -> dict | None:
-    """Normalize a raw API place and download its images.
+# ── Stage 1: Extract (structure raw API data) ─
+def extract_place_data(place: dict) -> dict | None:
+    """Structure raw API data into a clean place dict.
 
-    Returns normalized place dict ready for translation, or None on failure.
+    Pure function: no I/O, no checkpoint, no side effects.
+    Returns structured place dict ready for image download, or None on failure.
     """
     place_id = int(place.get("id") or 0)
     if not place_id:
         return None
-
-    description = (
-        place.get("description_en")
-        or place.get("description_fr")
-        or place.get("description_de")
-        or ""
-    ).strip()
 
     services = []
     for key, label in SERVICE_CODES.items():
@@ -120,41 +103,10 @@ def stage_extract(
     type_code = place.get("code", "")
     place_type = PLACE_TYPE_CODES.get(type_code, type_code)
 
-    # Download images (parallel within this place)
-    photos = downloader.download_place_photos(place_id, place.get("photos", []))
-    _stats["images_downloaded"] += len(photos)
-
-    contact = {
-        "phone": _str(place.get("tel")),
-        "email": _str(place.get("mail")),
-        "website": _str(place.get("site_internet")),
-        "video": _str(place.get("video")),
-    }
-
-    address = {
-        "street": _str(place.get("route")),
-        "city": _str(place.get("ville")),
-        "zipcode": _str(place.get("code_postal")),
-        "country": _str(place.get("pays")),
-        "country_iso": _str(place.get("pays_iso")),
-    }
-
-    pricing = {
-        "parking": _str(place.get("prix_stationnement")),
-        "services": _str(place.get("prix_services")),
-    }
-
-    access = {
-        "public": bool(place.get("publique") in ("1", 1, True)),
-        "height_limit": _str(place.get("hauteur_limite")),
-        "parking_places": _str(place.get("nb_places")),
-    }
-
-    normalized = {
+    return {
         "id": place_id,
         "title": _str(place.get("titre")),
         "name": _str(place.get("name")),
-        "description": description,
         "descriptions": {
             "fr": _str(place.get("description_fr")),
             "en": _str(place.get("description_en")),
@@ -166,14 +118,34 @@ def stage_extract(
         "latitude": float(place.get("latitude") or 0),
         "longitude": float(place.get("longitude") or 0),
         "type": {"code": type_code, "label": place_type},
-        "address": address,
-        "pricing": pricing,
-        "access": access,
-        "contact": contact,
+        "address": {
+            "street": _str(place.get("route")),
+            "city": _str(place.get("ville")),
+            "zipcode": _str(place.get("code_postal")),
+            "country": _str(place.get("pays")),
+            "country_iso": _str(place.get("pays_iso")),
+        },
+        "pricing": {
+            "parking": _str(place.get("prix_stationnement")),
+            "services": _str(place.get("prix_services")),
+        },
+        "access": {
+            "public": bool(place.get("publique") in ("1", 1, True)),
+            "height_limit": _str(place.get("hauteur_limite")),
+            "parking_places": _str(place.get("nb_places")),
+        },
+        "contact": {
+            "phone": _str(place.get("tel")),
+            "email": _str(place.get("mail")),
+            "website": _str(place.get("site_internet")),
+            "video": _str(place.get("video")),
+        },
         "services": services,
         "activities": activities,
-        "photos": photos,
-        "rating": (float(place.get("note_moyenne", 0)) if place.get("note_moyenne") else None),
+        "photos": [],  # populated by download_images
+        "rating": (
+            float(place.get("note_moyenne", 0)) if place.get("note_moyenne") else None
+        ),
         "review_count": int(place.get("nb_commentaires") or 0),
         "photo_count": int(place.get("nb_photos") or 0),
         "visit_count": int(place.get("nb_visites") or 0),
@@ -192,21 +164,32 @@ def stage_extract(
         "source": "guest_api",
     }
 
-    # Cache to disk (append-only JSONL)
-    places_file = os.path.join(DATA_DIR, "places.jsonl")
-    with open(places_file, "a", encoding="utf-8") as f:
-        f.write(json.dumps(normalized) + "\n")
 
-    checkpoint.mark_place_stage_done(place_id, "extracted")
-    return normalized
+# ── Stage 1b: Download images ─
+def download_images(
+    place: dict, downloader: ImageDownloader
+) -> dict:
+    """Download photos for a place. Updates place["photos"] in-place.
+
+    Returns the same place dict with photos populated.
+    """
+    place_id = place["id"]
+    raw_photos = place.get("_raw_photos", [])
+    photos = downloader.download_place_photos(place_id, raw_photos)
+    place["photos"] = photos
+    _stats["images_downloaded"] += len(photos)
+    return place
 
 
 # ── Stage 2: Translate (translate strings for this place) ─
 def stage_translate(place: dict) -> dict:
-    """Translate all non-English strings for a single place.
+    """Translate all non-English strings for a single place + reviews.
 
+    Applies translations directly to the place dict:
+      - descriptions["translated"] = English translation
+      - pricing values translated in-place
+      - review text translated: {"default": English, "_original": original}
     Uses in-memory cache — repeated strings across places are instant.
-    Returns the same place dict with translations populated in _TRANSLATE_CACHE.
     """
     # Collect strings to translate
     strings_to_translate: list[str] = []
@@ -224,71 +207,107 @@ def stage_translate(place: dict) -> dict:
             if val and val not in ("free", "paid", "on request", "gratuit", "payant"):
                 strings_to_translate.append(val)
 
+    # Collect review text to translate
+    reviews = place.get("reviews", [])
+    for review in reviews:
+        text = review.get("text", "")
+        if text and str(text).strip():
+            strings_to_translate.append(str(text).strip())
+
     # Translate (parallel, uses cache for already-seen strings)
     if strings_to_translate:
-        translate_batch(strings_to_translate, max_workers=64)
+        translations = translate_batch(strings_to_translate, max_workers=64)
         _stats["translations_cached"] = get_cache_size()
+
+        # Apply translations to descriptions
+        if isinstance(raw_desc, dict):
+            translated_desc = {}
+            for lang, text in raw_desc.items():
+                text_stripped = (str(text) or "").strip()
+                if lang == "en" and text_stripped:
+                    translated_desc["en"] = text_stripped
+                elif text_stripped and text_stripped in translations:
+                    translated_desc["translated"] = translations[text_stripped]
+            if "translated" in translated_desc:
+                place["descriptions"]["translated"] = translated_desc["translated"]
+
+        # Apply translations to pricing
+        if isinstance(raw_pricing, dict):
+            for key, value in raw_pricing.items():
+                val = (str(value) or "").strip().lower()
+                if val and val in translations:
+                    raw_pricing[key] = translations[val]
+
+        # Apply translations to reviews
+        for review in reviews:
+            text = review.get("text", "")
+            if text and str(text).strip():
+                text_stripped = str(text).strip()
+                translated = translations.get(text_stripped, text_stripped)
+                review["text"] = {
+                    "default": translated,
+                    "_original": text_stripped,
+                }
 
     return place
 
 
-# ── Stage 3: Normalize (apply translations, build final DB-ready record) ─
+# ── Stage 4: Normalize (clean tables, no translation) ─
 def stage_normalize(place: dict) -> dict | None:
-    """Apply cached translations and produce final normalized record.
+    """Normalize place + reviews into clean DB-ready records.
 
+    No translation — all text must be pre-translated by stage_translate.
     Returns fully normalized place ready for DB insert, or None on failure.
     """
     normalized = normalize_place(place)
-    if normalized:
-        _checkpoint.mark_place_stage_done(normalized["id"], "normalized")  # type: ignore[union-attr]
+    if not normalized:
+        return None
+
+    # Normalize reviews
+    normalized_reviews = []
+    for review in place.get("reviews", []):
+        normalized_review = normalize_review(review)
+        if normalized_review:
+            normalized_reviews.append(normalized_review)
+    normalized["reviews"] = normalized_reviews
+
     return normalized
 
 
-# ── Stage 4: Upload R2 (upload images for this place) ─
-def stage_upload_r2(place: dict, r2_client) -> dict:
-    """Upload images for a single place to Cloudflare R2.
+# ── Stage 4: Enqueue R2 upload (non-blocking) ─
+def stage_enqueue_r2(place: dict, r2_pool: R2WorkerPool | None) -> dict:
+    """Enqueue images for async R2 upload. Non-blocking.
 
-    Updates the place's photos in-place with r2_url_thumb / r2_url_large.
-    Returns the updated place dict.
+    Worker threads dequeue and upload in parallel, then update DB with URLs.
+    Returns the unchanged place dict.
     """
-    if r2_client is None or _r2_config is None:
+    if r2_pool is None:
         return place
 
-    place = upload_place_images(r2_client, place, _r2_config)
-    photo_count = sum(1 for p in place.get("photos", []) if "r2_url_thumb" in p)
-    _stats["images_uploaded_r2"] += photo_count
-    _checkpoint.mark_place_stage_done(place["id"], "images_uploaded_r2")  # type: ignore[union-attr]
+    photos = place.get("photos", [])
+    if photos:
+        r2_pool.enqueue(place["id"], photos)
     return place
 
 
 # ── Stage 5: Insert DB (place + reviews into Supabase) ─
-def stage_insert_db(place: dict, api: Park4NightAPI, db_conn) -> None:
-    """Insert a single place and its reviews into Supabase.
+def stage_enqueue_db(
+    place: dict,
+    db_pool: DBWorkerPool | None,
+) -> None:
+    """Enqueue a place + reviews for async DB insert. Non-blocking.
 
-    Fetches reviews from API if not already present.
+    Place and reviews MUST already be normalized by the caller.
+    Raises if reviews are missing.
     """
-    if db_conn is None:
-        return
-
+    if db_pool is None:
+        raise RuntimeError("DB worker pool is None — pipeline misconfigured")
     place_id = place["id"]
+    reviews = place.get("reviews") or []  # empty list is valid (no reviews for this place)
 
-    # Insert the place record
-    insert_place(db_conn, place)
-    _checkpoint.mark_place_stage_done(place_id, "db_inserted")  # type: ignore[union-attr]
+    # Enqueue place + pre-normalized reviews for async insert
+    db_pool.enqueue(place, reviews)
     _stats["db_inserts"] += 1
-
-    # Fetch and insert reviews
-    if not place.get("reviews"):
-        reviews = api.get_reviews(place_id)
-        place["reviews"] = reviews
-
-    for review in place.get("reviews", []):
-        normalized_review = normalize_review(review)
-        if normalized_review:
-            insert_reviews_for_place(db_conn, [normalized_review])
-            _stats["db_inserts"] += 1
-
-    _checkpoint.mark_place_stage_done(place_id, "reviews_inserted")  # type: ignore[union-attr]
 
 
 # ── Generator: yield raw places from API ──────────
@@ -353,24 +372,23 @@ def run_pipeline(
     """Run the per-place generator pipeline.
 
     Each place flows through all stages sequentially:
-      extract → translate → normalize → upload R2 → insert DB
+      extract → download images → translate → enqueue R2 → normalize → enqueue DB
     Checkpoint saved after each place for resume capability.
     """
     downloader = ImageDownloader()
 
-    # Setup R2 client (persistent, reused across places)
-    r2_client = None
+    # Setup R2 worker pool (async queue-based uploads)
+    r2_pool: R2WorkerPool | None = None
     if _r2_config is not None:
-        r2_client = create_r2_client(_r2_config)
+        r2_pool = R2WorkerPool(_r2_config)
+        r2_pool.start()
 
-    # Setup DB connection (persistent, reused across places)
-    db_conn = None
-    try:
-        db_conn = get_connection()
-        ensure_schema(db_conn)
-    except Exception as e:
-        logger.warning(f"Could not connect to database: {e}")
-        console.print(f"  [yellow]⚠ Database unavailable: {e}[/yellow]")
+    # Setup DB worker pool (async queue-based inserts)
+    db_pool: DBWorkerPool | None = None
+    if os.environ.get("DATABASE_URL"):
+        db_pool = DBWorkerPool()
+        if db_pool is not None:
+            db_pool.start()
 
     # Progress tracking
     limit_label = f" (limit {limit})" if limit else ""
@@ -388,27 +406,41 @@ def run_pipeline(
             console.print(f"\n[bold]Place {place_num}:[/bold] [cyan]{place_id}[/cyan]")
             console.print(f"  Title: {raw_place.get('titre', 'N/A')}")
 
-            # ── Stage 1: Extract (normalize + download images) ─
+            # ── Stage 1: Extract (structure raw API data) ─
             t0 = time.time()
-            if not checkpoint.is_place_stage_done(place_id, "extracted"):
-                console.print("  [dim]→ extract[/dim]")
-                place = stage_extract(raw_place, downloader, checkpoint)
-            else:
-                console.print("  [green]✓[/green] extracted (cached)")
-                place = raw_place
+            console.print("  [dim]→ extract[/dim]")
+            place = extract_place_data(raw_place)
             extract_time = time.time() - t0
-
             if not place:
                 console.print(f"  [red]✗ Failed to extract place {place_id}[/red]")
                 continue
 
-            # ── Stage 2: Translate ─
+            # ── Stage 1b: Download images ─
+            t0 = time.time()
+            console.print("  [dim]→ download images[/dim]")
+            place["_raw_photos"] = raw_place.get("photos", [])
+            place = download_images(place, downloader)
+            download_time = time.time() - t0
+
+            # ── Stage 1c: Fetch reviews ─
+            t0 = time.time()
+            console.print("  [dim]→ fetch reviews[/dim]")
+            place["reviews"] = api.get_reviews(place_id)
+            fetch_time = time.time() - t0
+
+            # ── Stage 2: Translate (place + reviews) ─
             t0 = time.time()
             console.print("  [dim]→ translate[/dim]")
             place = stage_translate(place)
             translate_time = time.time() - t0
 
-            # ── Stage 3: Normalize (apply translations) ─
+            # ── Stage 3: Enqueue R2 upload (non-blocking) ─
+            t0 = time.time()
+            console.print("  [dim]→ enqueue R2[/dim]")
+            place = stage_enqueue_r2(place, r2_pool)
+            r2_time = time.time() - t0
+
+            # ── Stage 4: Normalize (clean tables, no translation) ─
             t0 = time.time()
             console.print("  [dim]→ normalize[/dim]")
             place = stage_normalize(place)
@@ -417,16 +449,10 @@ def run_pipeline(
                 console.print(f"  [red]✗ Failed to normalize place {place_id}[/red]")
                 continue
 
-            # ── Stage 4: Upload R2 ─
+            # ── Stage 5: Enqueue DB insert (non-blocking) ─
             t0 = time.time()
-            console.print("  [dim]→ upload R2[/dim]")
-            place = stage_upload_r2(place, r2_client)
-            r2_time = time.time() - t0
-
-            # ── Stage 5: Insert DB ─
-            t0 = time.time()
-            console.print("  [dim]→ insert DB[/dim]")
-            stage_insert_db(place, api, db_conn)
+            console.print("  [dim]→ enqueue DB[/dim]")
+            stage_enqueue_db(place, db_pool)
             db_time = time.time() - t0
 
             # ── Checkpoint (save progress after each place) ─
@@ -442,7 +468,15 @@ def run_pipeline(
                 place_num
                 / sum(
                     t
-                    for t in [extract_time, translate_time, normalize_time, r2_time, db_time]
+                    for t in [
+                        extract_time,
+                        download_time,
+                        fetch_time,
+                        translate_time,
+                        r2_time,
+                        normalize_time,
+                        db_time,
+                    ]
                     if t > 0
                 )
                 if place_elapsed > 0
@@ -458,16 +492,22 @@ def run_pipeline(
                 f"Place {place_num} ({place_id}): "
                 f"total={place_elapsed:.3f}s | "
                 f"extract={extract_time:.3f}s, "
+                f"download={download_time:.3f}s, "
                 f"translate={translate_time:.3f}s, "
-                f"normalize={normalize_time:.3f}s, "
                 f"r2={r2_time:.3f}s, "
+                f"normalize={normalize_time:.3f}s, "
                 f"db={db_time:.3f}s | "
                 f"rate={rate:.2f} places/s"
             )
 
-    # Cleanup
-    if db_conn:
-        db_conn.close()
+    # Cleanup: wait for all uploads/inserts to finish, then shut down workers
+    if r2_pool is not None:
+        console.print("\n[dim]Waiting for R2 uploads to complete...[/dim]")
+        r2_pool.shutdown()
+
+    if db_pool is not None:
+        console.print("[dim]Waiting for DB inserts to complete...[/dim]")
+        db_pool.shutdown()
 
 
 # ── CLI ────────────────────────────────────────────
