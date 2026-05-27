@@ -8,7 +8,7 @@ and outputs clean normalised JSONL files ready for upload.
 
 Translation strategy:
   - If an English version exists (e.g. descriptions.en), use it directly
-  - If no English version, translate from the source language using Google Translate
+  - If no English version, translate from the source language using argos-translate (offline)
   - All field names are already English (set by the scraper)
   - Field VALUES that may be in foreign languages: descriptions, review text,
     place titles, address fields, pricing values
@@ -33,6 +33,9 @@ Usage:
 
     # Dry run (load + deduplicate, no translation):
     uv run normalize.py --dry-run
+
+    # Pre-install translation packages (one-time setup):
+    uv run normalize.py --setup
 """
 
 from __future__ import annotations
@@ -43,11 +46,13 @@ import logging
 import os
 import sys
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
 
+import argostranslate.package as argos_package
+import argostranslate.translate as argos_translate
+from langdetect import LangDetectException, detect
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import (
@@ -113,61 +118,191 @@ def log_progress(phase: str, completed: int, total: int) -> None:
 
 
 # ── Translation Engine ──────────────────────────────────────────────
+# Uses argos-translate: offline, free, no API keys, no rate limits.
+# Language model packages are downloaded once on first run and cached locally.
+
 
 # Shared translation cache
 _TRANSLATE_CACHE: dict[str, str] = {}
-# Shared translator instance (created lazily)
-_TRANSLATOR: Any = None
-_TRANSLATOR_LOCK = threading.Lock()  # type: ignore[name-defined]  # noqa:F821
+_PACKAGES_INITIALIZED = False
+_PACKAGES_LOCK = threading.Lock()
+# langdetect is not thread-safe - serialize all detection calls
+_LANG_DETECT_LOCK = threading.Lock()
+
+# Source languages to install translation packages for (→ English).
+# Covers all common European languages found in Park4Night data.
+# argos-translate code for Norwegian is "nb" (Bokmål).
+REQUIRED_SOURCE_LANGUAGES = [
+    "fr",  # French
+    "de",  # German
+    "es",  # Spanish
+    "it",  # Italian
+    "nl",  # Dutch
+    "pt",  # Portuguese
+    "pl",  # Polish
+    "ru",  # Russian
+    "sv",  # Swedish
+    "da",  # Danish
+    "nb",  # Norwegian (Bokmål)
+    "fi",  # Finnish
+    "cs",  # Czech
+    "el",  # Greek
+    "hu",  # Hungarian
+    "ro",  # Romanian
+    "bg",  # Bulgarian
+    "sk",  # Slovak
+    "sl",  # Slovenian
+    "et",  # Estonian
+    "lt",  # Lithuanian
+    "lv",  # Latvian
+    "uk",  # Ukrainian
+    "tr",  # Turkish
+    "sq",  # Albanian
+    "ca",  # Catalan
+    "gl",  # Galician
+    "eu",  # Basque
+    "ga",  # Irish
+]  # fmt: skip
 
 
-def _get_translator():
-    """Lazy-init shared GoogleTranslator."""
-    global _TRANSLATOR
-    if _TRANSLATOR is None:
-        with _TRANSLATOR_LOCK:
-            if _TRANSLATOR is None:
-                from deep_translator import GoogleTranslator
+def _ensure_packages_installed() -> None:
+    """Ensure all required language packages are installed.
 
-                _TRANSLATOR = GoogleTranslator(source="auto", target="en")
-    return _TRANSLATOR
+    Downloads and installs missing language model packages on first run.
+    Packages are cached locally after first download (~10-50MB each).
+    Fails loudly if any required package cannot be installed.
+    """
+    global _PACKAGES_INITIALIZED
+
+    with _PACKAGES_LOCK:
+        if _PACKAGES_INITIALIZED:
+            return
+
+        if logger:
+            logger.info("Checking argos-translate language packages...")
+        console.print("[bold blue]Checking translation packages...[/bold blue]")
+
+        # Update package index (lightweight JSON file)
+        argos_package.update_package_index()
+
+        # Get available and installed packages
+        available_packages = argos_package.get_available_packages()
+        installed_packages = argos_package.get_installed_packages()
+
+        # Build set of installed source→en translations
+        installed_pairs = {
+            (pkg.from_code, pkg.to_code) for pkg in installed_packages if hasattr(pkg, "from_code")
+        }
+
+        # Install missing packages
+        packages_to_install = []
+        missing_languages = []
+        for lang_code in REQUIRED_SOURCE_LANGUAGES:
+            if (lang_code, "en") not in installed_pairs:
+                # Find matching package (some languages may use different codes)
+                match = next(
+                    (
+                        pkg
+                        for pkg in available_packages
+                        if pkg.from_code == lang_code and pkg.to_code == "en"
+                    ),
+                    None,
+                )
+                if match:
+                    packages_to_install.append((lang_code, match))
+                else:
+                    missing_languages.append(lang_code)
+
+        # Fail loudly if any required language has no available package
+        if missing_languages:
+            raise RuntimeError(
+                f"No translation packages available for: {', '.join(missing_languages)}. "
+                f"Run 'uv run normalize.py --setup' to install packages."
+            )
+
+        if packages_to_install:
+            console.print(
+                f"  [yellow]Installing {len(packages_to_install)} translation "
+                f"packages (one-time, offline after download)...[/yellow]"
+            )
+            if logger:
+                logger.info(f"Installing {len(packages_to_install)} translation packages")
+
+            for lang_code, pkg in packages_to_install:
+                console.print(f"  ⬇ Downloading {lang_code} → en...")
+                if logger:
+                    logger.info(f"Installing {lang_code} → en")
+                download_path = pkg.download()
+                argos_package.install_from_path(download_path)
+                # Clean up downloaded file
+                download_path.unlink(missing_ok=True)
+        else:
+            console.print("  [green]✓ All translation packages already installed[/green]")
+
+        _PACKAGES_INITIALIZED = True
+
+
+def _detect_language(text: str) -> str:
+    """Detect the language of a text string.
+
+    Returns ISO 639-1 language code (e.g. 'fr', 'de', 'en').
+    Raises RuntimeError if detection fails.
+    Thread-safe: uses lock since langdetect is not thread-safe.
+    """
+    with _LANG_DETECT_LOCK:
+        try:
+            lang = detect(text)
+        except (LangDetectException, ValueError) as e:
+            raise RuntimeError(
+                f"Language detection failed for text: {text[:80]}... ({e})"
+            ) from e
+    # Normalize Norwegian codes
+    if lang in ("no", "nn"):
+        return "nb"
+    return lang
 
 
 def _translate_single(text: str) -> tuple[str, str]:
-    """Translate a single text using Google Translate with retry/backoff.
+    """Translate a single text to English using argos-translate.
 
-    Returns (original, translated). On failure, returns original text.
+    Returns (original, translated). Fails loudly on any error.
     """
-    translator = _get_translator()
-    for attempt in range(5):
-        try:
-            translated = translator.translate(text)
-            if translated and translated.strip():
-                return (text, translated.strip())
-            break
-        except Exception:
-            if attempt < 4:
-                time.sleep(2**attempt)  # exponential backoff: 1, 2, 4, 8s
-            else:
-                if logger:
-                    logger.warning(f"Translation failed after retries: {text[:80]}...")
-    return (text, text)
+    if not text or not text.strip():
+        return (text, text)
+
+    stripped = text.strip()
+    src_lang = _detect_language(stripped)
+
+    # No translation needed if already English
+    if src_lang == "en":
+        return (text, stripped)
+
+    translated = argos_translate.translate(stripped, from_code=src_lang, to_code="en")
+    if not translated or not translated.strip():
+        raise RuntimeError(
+            f"Translation returned empty result ({src_lang}→en): {stripped[:80]}..."
+        )
+    return (text, translated.strip())
 
 
 def translate_batch(
     texts: list[str],
     max_workers: int = 8,
 ) -> dict[str, str]:
-    """Translate a batch of texts to English using parallel Google Translate calls.
+    """Translate a batch of texts to English using parallel argos-translate calls.
 
     Returns {original_text: translated_text} for all inputs.
-    Already-cached entries are returned immediately without API call.
+    Already-cached entries are returned immediately.
+    Offline translation means no rate limits — can use high concurrency.
     """
+    # Ensure packages are installed before any translation
+    _ensure_packages_installed()
+
     # Filter out already-cached and empty texts
-    to_translate = [t for t in texts if t and t not in _TRANSLATE_CACHE]
+    to_translate = [t for t in texts if t and t.strip() not in _TRANSLATE_CACHE]
 
     if not to_translate:
-        return {t: _TRANSLATE_CACHE.get(t, t) for t in texts}
+        return {t: _TRANSLATE_CACHE.get(t.strip(), t) for t in texts}
 
     results: dict[str, str] = {}
 
@@ -175,18 +310,18 @@ def translate_batch(
         futures = {executor.submit(_translate_single, t): t for t in to_translate}
         for future in as_completed(futures):
             original, translated = future.result()
-            results[original] = translated
-            _TRANSLATE_CACHE[original] = translated
+            key = original.strip() if original else original
+            results[key] = translated
+            _TRANSLATE_CACHE[key] = translated
 
     # Merge with cache for all inputs
     all_results: dict[str, str] = {}
     for t in texts:
-        if not t:
+        if not t or not t.strip():
             all_results[t] = t
-        elif t in _TRANSLATE_CACHE:
-            all_results[t] = _TRANSLATE_CACHE[t]
         else:
-            all_results[t] = t
+            key = t.strip()
+            all_results[t] = _TRANSLATE_CACHE.get(key, key)
 
     return all_results
 
@@ -201,6 +336,8 @@ def translate_text(text: str) -> str:
     key = text.strip()
     if key in _TRANSLATE_CACHE:
         return _TRANSLATE_CACHE[key]
+    # Ensure packages are installed
+    _ensure_packages_installed()
     # Cache miss — translate on demand
     _, translated = _translate_single(key)
     _TRANSLATE_CACHE[key] = translated
@@ -225,6 +362,7 @@ def pick_or_translate(
       }
 
     Strategy: pick English if available, otherwise translate the best available.
+    Fails loudly if no translatable text is found.
     """
     originals = {lang: (text or "").strip() for lang, text in descriptions.items()}
 
@@ -247,6 +385,11 @@ def pick_or_translate(
             if text:
                 english_text = translate_text(text)
                 break
+
+    if not english_text:
+        raise RuntimeError(
+            f"No translatable text found for {field_name}: {descriptions}"
+        )
 
     return {
         "default": english_text,
@@ -566,9 +709,7 @@ def save_normalize_checkpoint(output_dir: str, place_ids: list[int]) -> None:
         json.dump(checkpoint, f, indent=2)
 
 
-def get_new_places(
-    unique_places: list[dict], output_dir: str
-) -> tuple[list[dict], list[int]]:
+def get_new_places(unique_places: list[dict], output_dir: str) -> tuple[list[dict], list[int]]:
     """
     Determine which places need normalisation (not yet done).
 
@@ -776,7 +917,6 @@ def run(
     # Filter reviews to only those for new places
     new_place_ids = {p["id"] for p in new_places}
     new_reviews = [r for r in raw_reviews if r.get("place_id") in new_place_ids]
-    skipped_reviews = len(raw_reviews) - len(new_reviews)
 
     # ── Apply limit ───────────────────────────────────────────────
     if limit and limit > 0:
@@ -791,8 +931,10 @@ def run(
             new_places = new_places[:remaining_slots]
             new_place_ids = {p["id"] for p in new_places}
             new_reviews = [r for r in raw_reviews if r.get("place_id") in new_place_ids]
-            console.print(f"  [yellow]Limited to {limit} total places "
-                         f"({len(existing_normalised_places)} existing + {len(new_places)} new)[/yellow]")
+            console.print(
+                f"  [yellow]Limited to {limit} total places "
+                f"({len(existing_normalised_places)} existing + {len(new_places)} new)[/yellow]"
+            )
             if logger:
                 logger.info(f"Limit applied: {limit} total places")
 
@@ -812,15 +954,15 @@ def run(
             all_strings = sorted(strings_to_translate)
             total_strings = len(all_strings)
             console.print(f"  [cyan]{total_strings:,}[/cyan] unique strings to translate\n")
+
+            # argos-translate is offline: no rate limits, crank up concurrency
+            max_workers = 64
+            batch_size = 500
             if logger:
                 logger.info(
                     f"Batch translating {total_strings:,} unique strings "
-                    f"(max_workers=8, batch_size=100)"
+                    f"(max_workers={max_workers}, batch_size={batch_size})"
                 )
-
-            # Google Translate free API: 8 workers with retry/backoff
-            max_workers = 8
-            batch_size = 100
             total_batches = (total_strings + batch_size - 1) // batch_size
 
             with Progress(
@@ -834,34 +976,23 @@ def run(
             ) as progress:
                 task = progress.add_task("Translating", total=total_strings)
                 translated_count = 0
-                failed_count = 0
 
                 for batch_num in range(0, total_batches):
                     start_idx = batch_num * batch_size
                     end_idx = min(start_idx + batch_size, total_strings)
                     batch = all_strings[start_idx:end_idx]
 
-                    try:
-                        translate_batch(batch, max_workers=max_workers)
-                        translated_count += len(batch)
-                    except Exception as e:
-                        failed_count += len(batch)
-                        if logger:
-                            logger.error(
-                                f"Batch {batch_num} failed: {e}. "
-                                f"{len(batch)} strings will use original text."
-                            )
+                    translate_batch(batch, max_workers=max_workers)
+                    translated_count += len(batch)
 
-                    completed = translated_count + failed_count
-                    progress.update(task, completed=completed)
+                    progress.update(task, completed=translated_count)
                     # Log progress every 10 batches (~every 1000 strings)
                     if batch_num % 10 == 0:
-                        log_progress("Translating", completed, total_strings)
+                        log_progress("Translating", translated_count, total_strings)
 
             if logger:
                 logger.info(
-                    f"Translation complete: {len(_TRANSLATE_CACHE):,} entries in cache, "
-                    f"{failed_count} strings failed (kept original)"
+                    f"Translation complete: {len(_TRANSLATE_CACHE):,} entries in cache"
                 )
         else:
             console.print("  [yellow]No strings to translate (all English or cached)[/yellow]")
@@ -873,7 +1004,9 @@ def run(
     normalised_new_places: list[dict] = []
 
     if total_new_places > 0:
-        console.print(f"\n[bold blue]Phase 2: Normalising {total_new_places:,} new places...[/bold blue]")
+        console.print(
+            f"\n[bold blue]Phase 2: Normalising {total_new_places:,} new places...[/bold blue]"
+        )
 
         with Progress(
             SpinnerColumn(),
@@ -905,7 +1038,9 @@ def run(
     normalised_new_reviews: list[dict] = []
 
     if total_new_reviews > 0:
-        console.print(f"\n[bold blue]Phase 3: Normalising {total_new_reviews:,} new reviews...[/bold blue]")
+        console.print(
+            f"\n[bold blue]Phase 3: Normalising {total_new_reviews:,} new reviews...[/bold blue]"
+        )
 
         with Progress(
             SpinnerColumn(),
@@ -956,14 +1091,12 @@ def run(
 
     write_jsonl(all_normalised_places, os.path.join(output_dir, "places.jsonl"))
     console.print(
-        f"  ✓ places.jsonl — "
-        f"[bold green]{len(all_normalised_places):,}[/bold green] records"
+        f"  ✓ places.jsonl — [bold green]{len(all_normalised_places):,}[/bold green] records"
     )
 
     write_jsonl(all_normalised_reviews, os.path.join(output_dir, "reviews.jsonl"))
     console.print(
-        f"  ✓ reviews.jsonl — "
-        f"[bold green]{len(all_normalised_reviews):,}[/bold green] records"
+        f"  ✓ reviews.jsonl — [bold green]{len(all_normalised_reviews):,}[/bold green] records"
     )
 
     write_jsonl(place_types, os.path.join(output_dir, "place_types.jsonl"))
@@ -1030,8 +1163,22 @@ def main() -> None:
         action="store_true",
         help="Load and deduplicate data without translating or writing output",
     )
+    parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="Install translation language packages and exit (no normalisation)",
+    )
 
     args = parser.parse_args()
+
+    # Handle --setup: install packages and exit
+    if args.setup:
+        console.print("\n[bold cyan]╔═══════════════════════════════════════════╗[/bold cyan]")
+        console.print("[bold cyan]║   Park4Night Translation Setup             ║[/bold cyan]")
+        console.print("[bold cyan]╚═══════════════════════════════════════════╝[/bold cyan]\n")
+        _ensure_packages_installed()
+        console.print("\n[bold green]✓ Setup complete![/bold green]")
+        return
 
     input_dir = os.path.abspath(args.input_dir)
     output_dir = os.path.abspath(args.output_dir)
