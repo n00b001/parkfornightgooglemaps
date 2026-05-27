@@ -22,8 +22,16 @@ Output:
   scripts/data/normalized/vehicle_types.jsonl
 
 Usage:
+    # Full run:
     uv run normalize.py
-    uv run normalize.py --input-dir /path/to/data
+
+    # Test with 10 places only:
+    uv run normalize.py --limit 10
+
+    # Custom paths:
+    uv run normalize.py --input-dir /path/to/data --output-dir /path/to/output
+
+    # Dry run (load + deduplicate, no translation):
     uv run normalize.py --dry-run
 """
 
@@ -32,9 +40,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing as mp
 import os
 import sys
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 from typing import Any
 
 from rich.console import Console
@@ -48,51 +58,126 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+# ── Console & Logger ────────────────────────────────────────────────
+
+console = Console()
+logger: logging.Logger | None = None
+
+
+def setup_logging(log_dir: str) -> str:
+    """Configure logging with dual output: console + timestamped log file.
+
+    Returns the path to the log file created.
+    """
+    global logger
+
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"normalize_{timestamp}.log")
+
+    console_handler = RichHandler(
+        console=console,
+        show_time=True,
+        show_level=False,
+        markup=False,
+    )
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
+
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)-8s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+
+    logger = logging.getLogger("normalize")
+    logger.setLevel(logging.INFO)
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+
+    console.print(f"  Log file: [cyan]{log_file}[/cyan]")
+    return log_file
+
+
 # ── Translation ──────────────────────────────────────────────────────
 
-# Lazy-import translator to avoid startup cost when --dry-run is used
-_translator = None
+# Shared translation cache (populated during batch phase)
 _TRANSLATE_CACHE: dict[str, str] = {}
-_TRANSLATE_LOCK: object = object()  # simple lock for single-process safety
 
 
-def get_translator():
-    """Lazy-initialise the translator."""
-    global _translator
-    if _translator is None:
-        from deep_translator import MyMemoryTranslator
+def translate_batch(
+    texts: list[str], max_workers: int = 16
+) -> dict[str, str]:
+    """Translate a batch of unique strings to English using parallel API calls.
 
-        _translator = MyMemoryTranslator(source="auto", target="en")
-    return _translator
-
-
-def translate_text(text: str, max_retries: int = 3) -> str:
+    Returns {original_text: translated_text} for all inputs.
+    Already-cached entries are returned immediately without API call.
     """
-    Translate text to English. Uses cache to avoid repeated API calls.
-    Returns original text if translation fails.
-    """
+    # Filter out already-cached and empty texts
+    to_translate = [t for t in texts if t and t not in _TRANSLATE_CACHE]
+
+    if not to_translate:
+        return {t: _TRANSLATE_CACHE.get(t, t) for t in texts}
+
+    results: dict[str, str] = {}
+
+    def do_translate(text: str) -> tuple[str, str]:
+        """Translate a single text. Returns (original, translated)."""
+        try:
+            from deep_translator import MyMemoryTranslator
+
+            translator = MyMemoryTranslator(source="auto", target="en-GB")
+            translated = translator.translate(text)
+            if translated and translated.strip():
+                return (text, translated.strip())
+        except Exception:
+            pass
+        # Fallback: return original
+        return (text, text)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(do_translate, t): t for t in to_translate}
+        for future in as_completed(futures):
+            original, translated = future.result()
+            results[original] = translated
+            _TRANSLATE_CACHE[original] = translated
+
+    # Merge with cache
+    all_results: dict[str, str] = {}
+    for t in texts:
+        if not t:
+            all_results[t] = t
+        elif t in _TRANSLATE_CACHE:
+            all_results[t] = _TRANSLATE_CACHE[t]
+        elif t in results:
+            all_results[t] = results[t]
+        else:
+            all_results[t] = t
+
+    return all_results
+
+
+def translate_text(text: str) -> str:
+    """Translate a single text to English, using the shared cache."""
     if not text or not text.strip():
         return text
+    key = text.strip()
+    if key in _TRANSLATE_CACHE:
+        return _TRANSLATE_CACHE[key]
+    # Cache miss — this shouldn't happen if we batch first, but handle it
+    try:
+        from deep_translator import MyMemoryTranslator
 
-    cached_key = text.strip()
-    if cached_key in _TRANSLATE_CACHE:
-        return _TRANSLATE_CACHE[cached_key]
-
-    translator = get_translator()
-    for attempt in range(max_retries):
-        try:
-            result = translator.translate(cached_key)
-            if result and result.strip():
-                _TRANSLATE_CACHE[cached_key] = result.strip()
-                return result.strip()
-            break
-        except Exception:
-            if attempt < max_retries - 1:
-                time.sleep(1 * (attempt + 1))
-
-    # Fallback: return original
-    _TRANSLATE_CACHE[cached_key] = text.strip()
-    return text.strip()
+        translator = MyMemoryTranslator(source="auto", target="en-GB")
+        result = translator.translate(key)
+        if result and result.strip():
+            _TRANSLATE_CACHE[key] = result.strip()
+            return result.strip()
+    except Exception:
+        pass
+    _TRANSLATE_CACHE[key] = key
+    return key
 
 
 # ── Language detection helpers ───────────────────────────────────────
@@ -163,7 +248,6 @@ def normalise_place(place: dict) -> dict | None:
     # Also consider the top-level 'description' field
     top_level_desc = (place.get("description") or "").strip()
     if top_level_desc and "en" not in (raw_descriptions or {}):
-        # The top-level description is usually already English (scraper picks best)
         raw_descriptions.setdefault("en", top_level_desc)
 
     descriptions = pick_or_translate(raw_descriptions, "description")
@@ -185,7 +269,9 @@ def normalise_place(place: dict) -> dict | None:
     address = {
         "street": (raw_address.get("street") or "").strip(),
         "city": (raw_address.get("city") or "").strip(),
-        "zipcode": (raw_address.get("zipcode") or raw_address.get("code_postal") or "").strip(),
+        "zipcode": (
+            raw_address.get("zipcode") or raw_address.get("code_postal") or ""
+        ).strip(),
         "country": (raw_address.get("country") or "").strip(),
         "country_iso": (raw_address.get("country_iso") or "").strip(),
     }
@@ -206,7 +292,6 @@ def normalise_place(place: dict) -> dict | None:
         elif value == "sur demande":
             value = "on request"
         elif value and value not in ("free", "paid", "on request", ""):
-            # Might be a foreign language term — try to translate
             translated = translate_text(value)
             if translated.lower() != value.lower():
                 value = translated.lower()
@@ -256,12 +341,14 @@ def normalise_place(place: dict) -> dict | None:
     for photo in photos:
         if not isinstance(photo, dict):
             continue
-        normalised_photos.append({
-            "id": str(photo.get("id", "")),
-            "numero": photo.get("numero"),
-            "path_thumb": photo.get("path_thumb") or photo.get("url_thumb", ""),
-            "path_large": photo.get("path_large") or photo.get("url_large", ""),
-        })
+        normalised_photos.append(
+            {
+                "id": str(photo.get("id", "")),
+                "numero": photo.get("numero"),
+                "path_thumb": photo.get("path_thumb") or photo.get("url_thumb", ""),
+                "path_large": photo.get("path_large") or photo.get("url_large", ""),
+            }
+        )
 
     # ── Owner ─────────────────────────────────────────────────────
     raw_owner = place.get("owner", {})
@@ -285,9 +372,13 @@ def normalise_place(place: dict) -> dict | None:
         "services": services,
         "activities": activities,
         "photos": normalised_photos,
-        "rating": float(place["rating"]) if place.get("rating") is not None else None,
+        "rating": (
+            float(place["rating"]) if place.get("rating") is not None else None
+        ),
         "review_count": int(place.get("review_count") or 0),
-        "photo_count": int(place.get("photo_count") or len(normalised_photos)),
+        "photo_count": int(
+            place.get("photo_count") or len(normalised_photos)
+        ),
         "visit_count": int(place.get("visit_count") or 0),
         "is_public": access["public"],
         "is_protected_nature": bool(place.get("is_protected_nature")),
@@ -315,8 +406,6 @@ def normalise_review(review: dict) -> dict | None:
     # ── Review text — translate if not English ───────────────────
     raw_text = (review.get("text") or "").strip()
     if raw_text:
-        # Park4Night reviews can be in any language.
-        # We translate to English and keep the original.
         translated = translate_text(raw_text)
         review_text = {
             "default": translated,
@@ -430,34 +519,7 @@ def build_vehicle_types(
     return list(seen.values())
 
 
-# ── Main pipeline ────────────────────────────────────────────────────
-
-console = Console()
-
-
-def setup_logging(log_dir: str) -> None:
-    """Configure logging with dual output: console + log file."""
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "normalize.log")
-
-    console_handler = RichHandler(
-        console=console,
-        show_time=True,
-        show_level=False,
-        markup=False,
-    )
-    console_handler.setFormatter(logging.Formatter("%(message)s"))
-
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-    )
-
-    logging.basicConfig(
-        level=logging.INFO,
-        handlers=[console_handler, file_handler],
-        format="%(message)s",
-    )
+# ── Data I/O ─────────────────────────────────────────────────────────
 
 
 def load_jsonl(filepath: str) -> list[dict]:
@@ -474,7 +536,10 @@ def load_jsonl(filepath: str) -> list[dict]:
             try:
                 records.append(json.loads(line))
             except json.JSONDecodeError as e:
-                logging.warning(f"Skipping invalid JSON at {filepath}:{line_num}: {e}")
+                if logger:
+                    logger.warning(
+                        f"Skipping invalid JSON at {filepath}:{line_num}: {e}"
+                    )
     return records
 
 
@@ -503,13 +568,57 @@ def write_jsonl(records: list[dict], filepath: str) -> None:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+# ── Collect unique strings for batch translation ─────────────────────
+
+
+def collect_strings_to_translate(
+    places: list[dict], reviews: list[dict]
+) -> set[str]:
+    """Collect all unique non-English strings that need translation."""
+    strings: set[str] = set()
+
+    for place in places:
+        # Descriptions
+        raw_desc = place.get("descriptions", {})
+        if isinstance(raw_desc, dict):
+            for lang, text in raw_desc.items():
+                if lang != "en" and text and str(text).strip():
+                    strings.add(str(text).strip())
+
+        # Pricing values
+        raw_pricing = place.get("pricing", {})
+        if isinstance(raw_pricing, dict):
+            for value in raw_pricing.values():
+                val = (str(value) or "").strip().lower()
+                if val and val not in (
+                    "free",
+                    "paid",
+                    "on request",
+                    "gratuit",
+                    "payant",
+                    "sur demande",
+                ):
+                    strings.add(val)
+
+    for review in reviews:
+        text = (review.get("text") or "").strip()
+        if text:
+            strings.add(text)
+
+    return strings
+
+
+# ── Main pipeline ────────────────────────────────────────────────────
+
+
 def run(
     input_dir: str,
     output_dir: str,
     dry_run: bool = False,
+    limit: int | None = None,
 ) -> None:
     """Run the normalisation pipeline."""
-    log_dir = os.path.join(input_dir, "..", "logs")
+    log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
     setup_logging(log_dir)
 
     places_file = os.path.join(input_dir, "places.jsonl")
@@ -521,6 +630,8 @@ def run(
 
     # ── Load raw data ─────────────────────────────────────────────
     console.print("\n[bold blue]Loading scraped data...[/bold blue]")
+    if logger:
+        logger.info("Loading places.jsonl")
 
     with Progress(
         SpinnerColumn(),
@@ -530,7 +641,8 @@ def run(
         task = progress.add_task("Loading places...", total=None)
         raw_places = load_jsonl(places_file)
         progress.update(task, completed=len(raw_places))
-        logging.info(f"Loaded {len(raw_places)} raw place records")
+        if logger:
+            logger.info(f"Loaded {len(raw_places):,} raw place records")
 
     if os.path.exists(reviews_file):
         with Progress(
@@ -541,30 +653,91 @@ def run(
             task = progress.add_task("Loading reviews...", total=None)
             raw_reviews = load_jsonl(reviews_file)
             progress.update(task, completed=len(raw_reviews))
-            logging.info(f"Loaded {len(raw_reviews)} raw review records")
+            if logger:
+                logger.info(f"Loaded {len(raw_reviews):,} raw review records")
     else:
         raw_reviews = []
-        logging.info("No reviews file found, skipping")
+        if logger:
+            logger.info("No reviews file found, skipping")
 
     # ── Deduplicate places ────────────────────────────────────────
     console.print("\n[bold blue]Deduplicating places...[/bold blue]")
     unique_places = deduplicate_places(raw_places)
-    logging.info(
-        f"Deduplicated: {len(raw_places)} raw → {len(unique_places)} unique places"
-    )
+    if logger:
+        logger.info(
+            f"Deduplicated: {len(raw_places):,} raw → {len(unique_places):,} unique places"
+        )
     console.print(
         f"  [cyan]{len(raw_places):,}[/cyan] raw records → "
         f"[bold green]{len(unique_places):,}[/bold green] unique places"
     )
 
+    # ── Apply limit ───────────────────────────────────────────────
+    if limit and limit > 0:
+        unique_places = unique_places[:limit]
+        # Filter reviews to match limited places
+        place_ids = {p["id"] for p in unique_places}
+        raw_reviews = [r for r in raw_reviews if r.get("place_id") in place_ids]
+        console.print(f"  [yellow]Limited to {limit} places[/yellow]")
+        if logger:
+            logger.info(f"Limit applied: {limit} places, {len(raw_reviews)} reviews")
+
     if dry_run:
         console.print("\n[bold yellow]=== DRY RUN — stopping here ===[/bold yellow]")
         return
 
-    # ── Normalise places ──────────────────────────────────────────
-    total_places = len(unique_places)
+    # ── Phase 1: Batch collect & translate all unique strings ─────
+    console.print("\n[bold blue]Phase 1: Collecting strings to translate...[/bold blue]")
+    strings_to_translate = collect_strings_to_translate(unique_places, raw_reviews)
+    # Remove already-cached
+    strings_to_translate -= set(_TRANSLATE_CACHE.keys())
 
-    console.print(f"\n[bold blue]Normalising {total_places:,} places...[/bold blue]")
+    if strings_to_translate:
+        console.print(
+            f"  [cyan]{len(strings_to_translate):,}[/cyan] unique strings to translate\n"
+        )
+        if logger:
+            logger.info(
+                f"Batch translating {len(strings_to_translate):,} unique strings "
+                f"(max_workers={mp.cpu_count() * 4})"
+            )
+
+        max_workers = mp.cpu_count() * 4  # I/O bound — go parallel
+        batch_size = 200
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task(
+                "Translating", total=len(strings_to_translate)
+            )
+            translated_count = 0
+
+            for i in range(0, len(strings_to_translate), batch_size):
+                batch = list(strings_to_translate)[i : i + batch_size]
+                results = translate_batch(batch, max_workers=max_workers)
+                translated_count += len(batch)
+                progress.update(task, completed=translated_count)
+
+        if logger:
+            logger.info(
+                f"Translation complete: {len(_TRANSLATE_CACHE):,} entries in cache"
+            )
+    else:
+        console.print("  [yellow]No strings to translate (all English or cached)[/yellow]")
+
+    # ── Phase 2: Normalise places ────────────────────────────────
+    total_places = len(unique_places)
+    console.print(
+        f"\n[bold blue]Phase 2: Normalising {total_places:,} places...[/bold blue]"
+    )
+
     normalised_places: list[dict] = []
 
     with Progress(
@@ -573,37 +746,28 @@ def run(
         BarColumn(),
         MofNCompleteColumn(),
         TextColumn("•"),
-        TextColumn("[cyan]{task.fields[translated]} translated[/cyan]"),
-        TextColumn("•"),
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Normalising places", total=total_places, translated=0)
-        translation_count = 0
+        task = progress.add_task("Normalising places", total=total_places)
 
         for place in unique_places:
             normalised = normalise_place(place)
             if normalised:
                 normalised_places.append(normalised)
-
-            # Count translations (cache misses mean actual API calls)
-            current_translations = len(_TRANSLATE_CACHE)
-            if current_translations > translation_count:
-                translation_count = current_translations
-                progress.update(task, translated=translation_count)
-
             progress.advance(task)
 
-    logging.info(f"Normalised {len(normalised_places)} places")
-    logging.info(f"Translation cache: {len(_TRANSLATE_CACHE)} entries")
+    if logger:
+        logger.info(f"Normalised {len(normalised_places):,} places")
 
-    # ── Normalise reviews ─────────────────────────────────────────
+    # ── Phase 3: Normalise reviews ───────────────────────────────
     total_reviews = len(raw_reviews)
+    normalised_reviews: list[dict] = []
+
     if total_reviews > 0:
         console.print(
-            f"\n[bold blue]Normalising {total_reviews:,} reviews...[/bold blue]"
+            f"\n[bold blue]Phase 3: Normalising {total_reviews:,} reviews...[/bold blue]"
         )
-        normalised_reviews: list[dict] = []
 
         with Progress(
             SpinnerColumn(),
@@ -622,45 +786,53 @@ def run(
                     normalised_reviews.append(normalised)
                 progress.advance(task)
 
-        logging.info(f"Normalised {len(normalised_reviews)} reviews")
-    else:
-        normalised_reviews = []
+        if logger:
+            logger.info(f"Normalised {len(normalised_reviews):,} reviews")
 
-    # ── Build lookup tables ───────────────────────────────────────
-    console.print("\n[bold blue]Building lookup tables...[/bold blue]")
+    # ── Phase 4: Build lookup tables ─────────────────────────────
+    console.print("\n[bold blue]Phase 4: Building lookup tables...[/bold blue]")
 
     place_types = build_place_types(normalised_places)
     services = build_services(normalised_places)
     activities = build_activities(normalised_places)
     vehicle_types = build_vehicle_types(normalised_places, normalised_reviews)
 
-    logging.info(f"Place types: {len(place_types)}")
-    logging.info(f"Services: {len(services)}")
-    logging.info(f"Activities: {len(activities)}")
-    logging.info(f"Vehicle types: {len(vehicle_types)}")
+    if logger:
+        logger.info(f"Place types: {len(place_types):,}")
+        logger.info(f"Services: {len(services):,}")
+        logger.info(f"Activities: {len(activities):,}")
+        logger.info(f"Vehicle types: {len(vehicle_types):,}")
 
-    # ── Write output files ────────────────────────────────────────
+    # ── Phase 5: Write output files ──────────────────────────────
     os.makedirs(output_dir, exist_ok=True)
-
-    console.print(f"\n[bold blue]Writing output to {output_dir}...[/bold blue]")
+    console.print(
+        f"\n[bold blue]Phase 5: Writing output to {output_dir}...[/bold blue]"
+    )
 
     write_jsonl(normalised_places, os.path.join(output_dir, "places.jsonl"))
-    console.print(f"  ✓ places.jsonl — [bold green]{len(normalised_places):,}[/bold green] records")
+    console.print(
+        f"  ✓ places.jsonl — [bold green]{len(normalised_places):,}[/bold green] records"
+    )
 
     write_jsonl(normalised_reviews, os.path.join(output_dir, "reviews.jsonl"))
     console.print(
-        f"  ✓ reviews.jsonl — "
-        f"[bold green]{len(normalised_reviews):,}[/bold green] records"
+        f"  ✓ reviews.jsonl — [bold green]{len(normalised_reviews):,}[/bold green] records"
     )
 
     write_jsonl(place_types, os.path.join(output_dir, "place_types.jsonl"))
-    console.print(f"  ✓ place_types.jsonl — [bold green]{len(place_types):,}[/bold green] records")
+    console.print(
+        f"  ✓ place_types.jsonl — [bold green]{len(place_types):,}[/bold green] records"
+    )
 
     write_jsonl(services, os.path.join(output_dir, "services.jsonl"))
-    console.print(f"  ✓ services.jsonl — [bold green]{len(services):,}[/bold green] records")
+    console.print(
+        f"  ✓ services.jsonl — [bold green]{len(services):,}[/bold green] records"
+    )
 
     write_jsonl(activities, os.path.join(output_dir, "activities.jsonl"))
-    console.print(f"  ✓ activities.jsonl — [bold green]{len(activities):,}[/bold green] records")
+    console.print(
+        f"  ✓ activities.jsonl — [bold green]{len(activities):,}[/bold green] records"
+    )
 
     write_jsonl(vehicle_types, os.path.join(output_dir, "vehicle_types.jsonl"))
     console.print(
@@ -683,6 +855,12 @@ def run(
         f"  Translation cache: [cyan]{len(_TRANSLATE_CACHE):,}[/cyan] entries"
     )
 
+    if logger:
+        logger.info(
+            f"Output: {total_size / (1024 * 1024):.1f} MB, "
+            f"{len(_TRANSLATE_CACHE):,} translations cached"
+        )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -691,12 +869,19 @@ def main() -> None:
     parser.add_argument(
         "--input-dir",
         default=os.path.join(os.path.dirname(__file__), "..", "data"),
-        help="Directory containing scraped places.jsonl and reviews.jsonl (default: ../data)",
+        help="Directory containing scraped places.jsonl and reviews.jsonl "
+        "(default: ../data)",
     )
     parser.add_argument(
         "--output-dir",
         default=os.path.join(os.path.dirname(__file__), "..", "data", "normalized"),
         help="Directory for normalised output (default: ../data/normalized)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit to first N places (and their reviews) for testing",
     )
     parser.add_argument(
         "--dry-run",
@@ -715,8 +900,12 @@ def main() -> None:
 
     console.print(f"  Input:  [cyan]{input_dir}[/cyan]")
     console.print(f"  Output: [cyan]{output_dir}[/cyan]")
+    if args.limit:
+        console.print(f"  Limit:  [yellow]{args.limit} places[/yellow]")
 
-    run(input_dir, output_dir, dry_run=args.dry_run)
+    run(
+        input_dir, output_dir, dry_run=args.dry_run, limit=args.limit
+    )
 
 
 if __name__ == "__main__":

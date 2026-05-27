@@ -104,8 +104,7 @@ def load_env(env_path: str) -> dict[str, str]:
 
     load_dotenv(env_path)
     return {
-        "SUPABASE_URL": os.environ.get("SUPABASE_URL", ""),
-        "SUPABASE_SERVICE_KEY": os.environ.get("SUPABASE_SERVICE_KEY", ""),
+        "DATABASE_URL": os.environ.get("DATABASE_URL", ""),
     }
 
 
@@ -238,14 +237,16 @@ def collect_images(places: list[dict], images_base_dir: str) -> list[dict]:
                 ext = os.path.splitext(local_path)[1] or ".jpg"
                 r2_key = f"places/{place_id}/{photo_id}_{img_type}{ext}"
 
-                images.append({
-                    "place_id": place_id,
-                    "photo_id": photo_id,
-                    "local_path": local_path,
-                    "r2_key": r2_key,
-                    "size": os.path.getsize(local_path),
-                    "type": img_type,
-                })
+                images.append(
+                    {
+                        "place_id": place_id,
+                        "photo_id": photo_id,
+                        "local_path": local_path,
+                        "r2_key": r2_key,
+                        "size": os.path.getsize(local_path),
+                        "type": img_type,
+                    }
+                )
 
     return images
 
@@ -362,10 +363,7 @@ def upload_images_phase(
         task = progress.add_task("Uploading to R2", total=total)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(upload_image_to_r2, r2, img, bucket): img
-                for img in images
-            }
+            futures = {executor.submit(upload_image_to_r2, r2, img, bucket): img for img in images}
 
             total_bytes = 0
             for future in as_completed(futures):
@@ -400,8 +398,7 @@ def upload_images_phase(
 
     if logger:
         logger.info(
-            f"R2 upload complete: {uploaded:,} uploaded, "
-            f"{skipped:,} skipped, {failed:,} failed"
+            f"R2 upload complete: {uploaded:,} uploaded, {skipped:,} skipped, {failed:,} failed"
         )
 
     return url_map
@@ -441,28 +438,16 @@ def update_place_photo_urls(
 
 def get_supabase_connection(env_vars: dict) -> psycopg2.extensions.connection:
     """Get Supabase PostgreSQL connection."""
-    supabase_url = env_vars.get("SUPABASE_URL", "")
-
-    if not supabase_url:
-        console.print("[bold red]ERROR:[/bold red] SUPABASE_URL not set in .env file")
-        sys.exit(1)
-
-    # Supabase URL is like: https://xyz.supabase.co
-    # We need the PostgreSQL connection string
-    # The DATABASE_URL format for Supabase is typically provided separately
-    # Try to construct from SUPABASE_URL or use DATABASE_URL directly
     database_url = os.environ.get("DATABASE_URL", "")
 
+    # Strip query parameters (e.g. ?pgbouncer=true) that psycopg2 can't parse
+    if "?" in database_url:
+        database_url = database_url.split("?")[0]
+
     if not database_url:
-        # Try to construct from SUPABASE_URL
-        # Format: postgresql://postgres.{project_ref}:{password}@{host}:5432/postgres
         console.print(
-            "[bold yellow]WARNING:[/bold yellow] DATABASE_URL not set. "
-            "Set it in your .env file for Supabase PostgreSQL connection."
-        )
-        console.print(
-            "[bold yellow]   Format:[/bold yellow] "
-            "postgresql://postgres.{project_ref}:{password}@db.{project_ref}.supabase.co:5432/postgres"
+            "[bold red]ERROR:[/bold red] DATABASE_URL not set in .env file.\n"
+            "  Format: postgresql://user:pass@host:port/dbname"
         )
         sys.exit(1)
 
@@ -478,9 +463,7 @@ def get_supabase_connection(env_vars: dict) -> psycopg2.extensions.connection:
 def ensure_schema(conn: psycopg2.extensions.connection) -> None:
     """Ensure the database schema exists."""
     cur = conn.cursor()
-    cur.execute(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'Place')"
-    )
+    cur.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'Place')")
     row = cur.fetchone()
     if not row or not row[0]:
         console.print(
@@ -499,9 +482,9 @@ def create_system_user(conn: psycopg2.extensions.connection) -> str:
 
     cur.execute(
         """
-        INSERT INTO "User" (id, googleId, email)
-        VALUES (%s, 'scraped-import', 'scraped@import.local')
-        ON CONFLICT (googleId) DO UPDATE SET id = EXCLUDED.id
+        INSERT INTO "User" (id, "googleId", email, "updatedAt")
+        VALUES (%s, 'scraped-import', 'scraped@import.local', NOW())
+        ON CONFLICT ("googleId") DO UPDATE SET id = EXCLUDED.id, "updatedAt" = NOW()
         RETURNING id
         """,
         (system_user_id,),
@@ -525,9 +508,9 @@ def upload_lookup_tables(
         try:
             cur.execute(
                 """
-                INSERT INTO "PlaceType" (englishName, originalCode)
+                INSERT INTO "PlaceType" ("englishName", "originalCode")
                 VALUES (%s, %s)
-                ON CONFLICT (originalCode) DO UPDATE SET englishName = EXCLUDED.englishName
+                ON CONFLICT ("originalCode") DO UPDATE SET "englishName" = EXCLUDED."englishName"
                 """,
                 (pt.get("english_name", pt.get("code", "")), pt.get("code", "")),
             )
@@ -540,9 +523,9 @@ def upload_lookup_tables(
         try:
             cur.execute(
                 """
-                INSERT INTO "Service" (code, label, originalCode)
+                INSERT INTO "Service" (code, label, "originalCode")
                 VALUES (%s, %s, %s)
-                ON CONFLICT (originalCode) DO UPDATE SET label = EXCLUDED.label
+                ON CONFLICT ("originalCode") DO UPDATE SET label = EXCLUDED.label
                 """,
                 (
                     svc.get("code", ""),
@@ -559,9 +542,9 @@ def upload_lookup_tables(
         try:
             cur.execute(
                 """
-                INSERT INTO "Activity" (code, label, originalCode)
+                INSERT INTO "Activity" (code, label, "originalCode")
                 VALUES (%s, %s, %s)
-                ON CONFLICT (originalCode) DO UPDATE SET label = EXCLUDED.label
+                ON CONFLICT ("originalCode") DO UPDATE SET label = EXCLUDED.label
                 """,
                 (
                     act.get("code", ""),
@@ -578,9 +561,9 @@ def upload_lookup_tables(
         try:
             cur.execute(
                 """
-                INSERT INTO "VehicleType" (code, originalCode)
+                INSERT INTO "VehicleType" (code, "originalCode")
                 VALUES (%s, %s)
-                ON CONFLICT (originalCode) DO NOTHING
+                ON CONFLICT ("originalCode") DO NOTHING
                 """,
                 (vt.get("code", ""), vt.get("original_code", "")),
             )
@@ -629,11 +612,11 @@ def upload_places(
         return
 
     # Build type code -> ID mapping
-    cur.execute('SELECT id, originalCode FROM "PlaceType"')
+    cur.execute('SELECT id, "originalCode" FROM "PlaceType"')
     type_map = {row[1]: row[0] for row in cur.fetchall()}
-    cur.execute('SELECT id, originalCode FROM "Service"')
+    cur.execute('SELECT id, "originalCode" FROM "Service"')
     service_map = {row[1]: row[0] for row in cur.fetchall()}
-    cur.execute('SELECT id, originalCode FROM "Activity"')
+    cur.execute('SELECT id, "originalCode" FROM "Activity"')
     activity_map = {row[1]: row[0] for row in cur.fetchall()}
 
     batch_size = 500
@@ -659,10 +642,10 @@ def upload_places(
                     cur,
                     """
                     INSERT INTO "Place" (
-                        id, name, latitude, longitude, typeId, address,
-                        rating, reviewCount, photoCount, photos, pricing,
-                        access, contact, descriptions, isPublic, onlineBooking,
-                        lastFetched
+                        id, name, latitude, longitude, "typeId", address,
+                        rating, "reviewCount", "photoCount", photos, pricing,
+                        access, contact, descriptions, "isPublic", "onlineBooking",
+                        "lastFetched"
                     ) VALUES %s
                     ON CONFLICT (id) DO NOTHING
                     """,
@@ -699,7 +682,7 @@ def upload_places(
                             if svc_id:
                                 cur.execute(
                                     """
-                                    INSERT INTO "PlaceService" (placeId, serviceId)
+                                    INSERT INTO "PlaceService" ("placeId", "serviceId")
                                     VALUES (%s, %s)
                                     ON CONFLICT DO NOTHING
                                     """,
@@ -715,7 +698,7 @@ def upload_places(
                             if act_id:
                                 cur.execute(
                                     """
-                                    INSERT INTO "PlaceActivity" (placeId, activityId)
+                                    INSERT INTO "PlaceActivity" ("placeId", "activityId")
                                     VALUES (%s, %s)
                                     ON CONFLICT DO NOTHING
                                     """,
@@ -758,7 +741,7 @@ def upload_reviews(
     cur = conn.cursor()
 
     # Get vehicle type mapping
-    cur.execute('SELECT id, originalCode FROM "VehicleType"')
+    cur.execute('SELECT id, "originalCode" FROM "VehicleType"')
     vehicle_map = {row[1]: row[0] for row in cur.fetchall()}
 
     batch_size = 1000
@@ -783,8 +766,8 @@ def upload_reviews(
                     cur,
                     """
                     INSERT INTO "Review" (
-                        id, content, rating, vehicleTypeId, authorName,
-                        authorId, userId, placeId, createdAt
+                        id, content, rating, "vehicleTypeId", "authorName",
+                        "authorId", "userId", "placeId", "createdAt"
                     ) VALUES %s
                     ON CONFLICT DO NOTHING
                     """,
@@ -944,8 +927,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--config",
-        default=os.path.join(os.path.dirname(__file__), "..", "r2-config.json"),
-        help="Path to R2 config JSON (default: ../r2-config.json)",
+        default=os.path.join(os.path.dirname(__file__), "r2-config.json"),
+        help="Path to R2 config JSON (default: r2-config.json)",
     )
     parser.add_argument(
         "--log-dir",
