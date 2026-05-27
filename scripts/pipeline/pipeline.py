@@ -143,9 +143,7 @@ def extract_place_data(place: dict) -> dict | None:
         "services": services,
         "activities": activities,
         "photos": [],  # populated by download_images
-        "rating": (
-            float(place.get("note_moyenne", 0)) if place.get("note_moyenne") else None
-        ),
+        "rating": (float(place.get("note_moyenne", 0)) if place.get("note_moyenne") else None),
         "review_count": int(place.get("nb_commentaires") or 0),
         "photo_count": int(place.get("nb_photos") or 0),
         "visit_count": int(place.get("nb_visites") or 0),
@@ -166,9 +164,7 @@ def extract_place_data(place: dict) -> dict | None:
 
 
 # ── Stage 1b: Download images ─
-def download_images(
-    place: dict, downloader: ImageDownloader
-) -> dict:
+def download_images(place: dict, downloader: ImageDownloader) -> dict:
     """Download photos for a place. Updates place["photos"] in-place.
 
     Returns the same place dict with photos populated.
@@ -191,32 +187,32 @@ def stage_translate(place: dict) -> dict:
       - review text translated: {"default": English, "_original": original}
     Uses in-memory cache — repeated strings across places are instant.
     """
-    # Collect strings to translate
-    strings_to_translate: list[str] = []
+    # Collect (text, src_lang) pairs to translate
+    texts_to_translate: list[tuple[str, str]] = []
 
     raw_desc = place.get("descriptions", {})
     if isinstance(raw_desc, dict):
         for lang, text in raw_desc.items():
             if lang != "en" and text and str(text).strip():
-                strings_to_translate.append(str(text).strip())
+                texts_to_translate.append((str(text).strip(), lang))
 
     raw_pricing = place.get("pricing", {})
     if isinstance(raw_pricing, dict):
         for value in raw_pricing.values():
             val = (str(value) or "").strip().lower()
             if val and val not in ("free", "paid", "on request", "gratuit", "payant"):
-                strings_to_translate.append(val)
+                texts_to_translate.append((val, "fr"))  # pricing is always French
 
-    # Collect review text to translate
+    # Collect review text to translate (always French)
     reviews = place.get("reviews", [])
     for review in reviews:
         text = review.get("text", "")
         if text and str(text).strip():
-            strings_to_translate.append(str(text).strip())
+            texts_to_translate.append((str(text).strip(), "fr"))
 
     # Translate (parallel, uses cache for already-seen strings)
-    if strings_to_translate:
-        translations = translate_batch(strings_to_translate, max_workers=64)
+    if texts_to_translate:
+        translations = translate_batch(texts_to_translate, max_workers=64)
         _stats["translations_cached"] = get_cache_size()
 
         # Apply translations to descriptions

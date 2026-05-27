@@ -3,6 +3,11 @@
 Replaces Google Translate with local neural machine translation.
 Supports all common European languages -> EN.
 No API rate limits. No internet required after initial package download.
+
+All source languages are known from data structure:
+  - Descriptions: keys are language codes (fr, de, es, etc.)
+  - Pricing: always French
+  - Reviews: always French (Park4Night is a French site)
 """
 
 from __future__ import annotations
@@ -13,7 +18,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import argostranslate.package as argos_package
 import argostranslate.translate as argos_translate
-from langdetect import LangDetectException, detect
 
 logger = logging.getLogger("pipeline")
 
@@ -21,7 +25,6 @@ logger = logging.getLogger("pipeline")
 _TRANSLATE_CACHE: dict[str, str] = {}
 _PACKAGES_INITIALIZED = False
 _PACKAGES_LOCK = threading.Lock()
-_LANG_DETECT_LOCK = threading.Lock()  # langdetect is not thread-safe
 
 # Source languages to install translation packages for (→ English).
 REQUIRED_SOURCE_LANGUAGES = [
@@ -128,32 +131,15 @@ def _ensure_packages_installed() -> None:
         _PACKAGES_INITIALIZED = True
 
 
-# ── Language detection ────────────────────────────────────────────────
-
-
-def _detect_language(text: str) -> str:
-    """Detect the language of a text string.
-
-    Returns ISO 639-1 language code (e.g. 'fr', 'de', 'en').
-    Raises RuntimeError if detection fails.
-    Thread-safe: uses lock since langdetect is not thread-safe.
-    """
-    with _LANG_DETECT_LOCK:
-        try:
-            lang = detect(text)
-        except (LangDetectException, ValueError) as e:
-            raise RuntimeError(f"Language detection failed for text: {text[:80]}... ({e})") from e
-    # Normalize Norwegian codes
-    if lang in ("no", "nn"):
-        return "nb"
-    return lang
-
-
 # ── Translation ───────────────────────────────────────────────────────
 
 
-def _translate_single(text: str) -> tuple[str, str]:
+def _translate_single(text: str, src_lang: str) -> tuple[str, str]:
     """Translate a single text to English using argos-translate.
+
+    Args:
+        text: Text to translate.
+        src_lang: ISO 639-1 source language code (e.g. 'fr', 'de').
 
     Returns (original, translated). Fails loudly on any error.
     """
@@ -161,10 +147,20 @@ def _translate_single(text: str) -> tuple[str, str]:
         return (text, text)
 
     stripped = text.strip()
-    src_lang = _detect_language(stripped)
 
     # No translation needed if already English
     if src_lang == "en":
+        return (text, stripped)
+
+    # Check if translation model exists
+    installed = argos_package.get_installed_packages()
+    has_model = any(pkg.from_code == src_lang and pkg.to_code == "en" for pkg in installed)
+    if not has_model:
+        logger.warning(
+            "No translation model for %s→en, skipping: %s...",
+            src_lang,
+            stripped[:80],
+        )
         return (text, stripped)
 
     translated = argos_translate.translate(stripped, from_code=src_lang, to_code="en")
@@ -174,10 +170,14 @@ def _translate_single(text: str) -> tuple[str, str]:
 
 
 def translate_batch(
-    texts: list[str],
+    texts: list[tuple[str, str]],
     max_workers: int = 8,
 ) -> dict[str, str]:
     """Translate a batch of texts to English using parallel argos-translate calls.
+
+    Args:
+        texts: List of (text, src_lang) tuples.
+        max_workers: Number of parallel threads.
 
     Returns {original_text: translated_text} for all inputs.
     Already-cached entries are returned immediately.
@@ -187,15 +187,18 @@ def translate_batch(
     _ensure_packages_installed()
 
     # Filter out already-cached texts
-    uncached = [t for t in texts if t not in _TRANSLATE_CACHE]
+    uncached = [(t, lang) for t, lang in texts if t not in _TRANSLATE_CACHE]
 
     if not uncached:
-        return {t: _TRANSLATE_CACHE[t] for t in texts}
+        return {t: _TRANSLATE_CACHE[t] for t, _ in texts}
 
     # Translate uncached texts in parallel
     results: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_translate_single, text): text for text in uncached}
+        futures = {
+            executor.submit(_translate_single, text, lang): (text, lang)
+            for text, lang in uncached
+        }
         for future in as_completed(futures):
             original, translated = future.result()
             results[original] = translated
@@ -204,11 +207,15 @@ def translate_batch(
     _TRANSLATE_CACHE.update(results)
 
     # Return results for all inputs (cached + newly translated)
-    return {t: _TRANSLATE_CACHE[t] for t in texts}
+    return {t: _TRANSLATE_CACHE[t] for t, _ in texts}
 
 
-def translate_text(text: str) -> str:
+def translate_text(text: str, src_lang: str) -> str:
     """Translate a single text to English.
+
+    Args:
+        text: Text to translate.
+        src_lang: ISO 639-1 source language code.
 
     Uses in-memory cache for repeated strings.
     Returns the original text if already English or empty.
@@ -220,7 +227,7 @@ def translate_text(text: str) -> str:
     if stripped in _TRANSLATE_CACHE:
         return _TRANSLATE_CACHE[stripped]
 
-    _, translated = _translate_single(stripped)
+    _, translated = _translate_single(stripped, src_lang)
     _TRANSLATE_CACHE[stripped] = translated
     return translated
 
