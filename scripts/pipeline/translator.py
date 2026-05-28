@@ -131,6 +131,27 @@ def _ensure_packages_installed() -> None:
         _PACKAGES_INITIALIZED = True
 
 
+def preload_models() -> None:
+    """Preload all translation models into memory.
+
+    Call this ONCE in the main process BEFORE forking workers.
+    On Linux, fork() uses copy-on-write so child processes inherit
+    the loaded models without reloading from disk.
+    """
+    _ensure_packages_installed()
+    logger.info("Preloading translation models (once, inherited by forked workers)...")
+    for lang_code in REQUIRED_SOURCE_LANGUAGES:
+        try:
+            argos_translate.translate(
+                "test sentence for preloading",
+                from_code=lang_code,
+                to_code="en",
+            )
+        except Exception:
+            logger.warning("Failed to preload model for %s", lang_code)
+    logger.info("All translation models preloaded")
+
+
 # ── Translation ───────────────────────────────────────────────────────
 
 

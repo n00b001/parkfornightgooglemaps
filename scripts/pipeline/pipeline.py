@@ -29,12 +29,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing
 import os
 import signal
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, datetime
 
 # Ensure pipeline package is importable
@@ -57,6 +58,7 @@ from normalizer import (  # type: ignore[import-not-found]
 from r2_worker import R2WorkerPool  # type: ignore[import-not-found]
 from translator import (  # type: ignore[import-not-found]
     get_cache_size,
+    preload_models,
     translate_batch,
 )
 
@@ -372,19 +374,26 @@ def _handle_signal(signum, frame) -> None:
     sys.exit(0)
 
 
-# ── Main Pipeline ─────────────────────────────────
-def _process_single_place(
-    raw_place: dict,
-    raw_photos: dict,
-    api: Park4NightAPI,
-    downloader: ImageDownloader,
-    r2_pool: R2WorkerPool | None,
-    db_pool: DBWorkerPool | None,
-    checkpoint: PipelineCheckpoint,
-) -> dict:
-    """Process a single place through all pipeline stages.
+# ── Worker initializer (called once per process) ──
+def _worker_init() -> None:
+    """Initialize worker process: preload argos models.
 
-    Called by worker threads. Returns timing dict on success, or error info on failure.
+    Called once when each process starts (spawn method).
+    Each process loads its own models — no shared state, no deadlock.
+    """
+    preload_models()
+
+
+# ── Worker function (must be top-level for pickling) ──
+def _worker_process_place(
+    raw_place: dict,
+    photos: list[dict],
+) -> dict:
+    """Process a single place in a separate worker process.
+
+    Each process gets its own argos-translate instance (no contention).
+    Does: extract → download → fetch reviews → translate → normalize
+    Returns place data + timing (R2/DB enqueueing done by main process).
     """
     place_id = int(raw_place.get("id") or 0)
     place_start = time.time()
@@ -398,12 +407,14 @@ def _process_single_place(
 
     # ── Stage 1b: Download images ─
     t0 = time.time()
-    place["_raw_photos"] = raw_photos.get(place_id, [])
+    place["_raw_photos"] = photos
+    downloader = ImageDownloader()
     place = download_images(place, downloader)
     download_time = time.time() - t0
 
     # ── Stage 1c: Fetch reviews ─
     t0 = time.time()
+    api = Park4NightAPI()
     place["reviews"] = api.get_reviews(place_id)
     fetch_time = time.time() - t0
 
@@ -412,25 +423,12 @@ def _process_single_place(
     place = stage_translate(place)
     translate_time = time.time() - t0
 
-    # ── Stage 3: Enqueue R2 ─
-    t0 = time.time()
-    place = stage_enqueue_r2(place, r2_pool)
-    r2_time = time.time() - t0
-
-    # ── Stage 4: Normalize ─
+    # ── Stage 3: Normalize ─
     t0 = time.time()
     place = stage_normalize(place)
     normalize_time = time.time() - t0
     if not place:
         return {"error": f"Failed to normalize place {place_id}"}
-
-    # ── Stage 5: Enqueue DB ─
-    t0 = time.time()
-    stage_enqueue_db(place, db_pool)
-    db_time = time.time() - t0
-
-    # ── Checkpoint ─
-    checkpoint._save()
 
     place_elapsed = time.time() - place_start
     return {
@@ -440,9 +438,8 @@ def _process_single_place(
         "download": download_time,
         "fetch": fetch_time,
         "translate": translate_time,
-        "r2": r2_time,
         "normalize": normalize_time,
-        "db": db_time,
+        "place": place,  # return normalized place for main process
     }
 
 
@@ -452,13 +449,12 @@ def run_pipeline(
     limit: int | None = None,
     num_workers: int = 16,
 ) -> None:
-    """Run the parallel per-place pipeline.
+    """Run the parallel per-place pipeline using ProcessPoolExecutor.
 
-    Multiple places processed simultaneously by worker threads.
-    Each worker runs the full pipeline for one place.
+    Each worker process gets its own argos-translate instance (no contention).
+    Workers: extract → download → fetch reviews → translate → normalize
+    Main process: enqueue R2 → enqueue DB → checkpoint
     """
-    downloader = ImageDownloader()
-
     # Setup R2 worker pool (async queue-based uploads)
     r2_pool: R2WorkerPool | None = None
     if _r2_config is not None:
@@ -484,25 +480,23 @@ def run_pipeline(
     if not total_places:
         return
 
-    # Build photos lookup for parallel access
-    raw_photos_map = {int(p["id"]): p.get("photos", []) for p in places_to_process}
-
     with create_progress("Pipeline", total=total_places) as progress:
         task = progress.add_task("Processing", total=total_places)
         place_num = 0
         errors = 0
 
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        # Use spawn (not fork) to avoid inheriting argos locks
+        # Each worker preloads models once via initializer
+        multiprocessing.set_start_method("spawn", force=True)
+        with ProcessPoolExecutor(
+            max_workers=num_workers,
+            initializer=_worker_init,
+        ) as executor:
             futures = {
                 executor.submit(
-                    _process_single_place,
+                    _worker_process_place,
                     raw_place,
-                    raw_photos_map,
-                    api,
-                    downloader,
-                    r2_pool,
-                    db_pool,
-                    checkpoint,
+                    raw_place.get("photos", []),
                 ): raw_place
                 for raw_place in places_to_process
             }
@@ -519,13 +513,28 @@ def run_pipeline(
                         console.print(f"  [red]✗ {result['error']}[/red]")
                         errors += 1
                     else:
+                        place = result.pop("place")
+
+                        # Main process: enqueue R2
+                        t0 = time.time()
+                        place = stage_enqueue_r2(place, r2_pool)
+                        r2_time = time.time() - t0
+
+                        # Main process: enqueue DB
+                        t0 = time.time()
+                        stage_enqueue_db(place, db_pool)
+                        db_time = time.time() - t0
+
+                        # Main process: checkpoint
+                        checkpoint._save()
                         with _stats_lock:
                             _stats["places_processed"] += 1
 
                         rate = place_num / result["elapsed"] if result["elapsed"] > 0 else 0
                         console.print(
-                            f"  [bold green]✓ Place {result['place_id']} complete "
-                            f"({result['elapsed']:.2f}s, {rate:.1f} places/s)[/bold green]"
+                            f"  [bold green]✓ Place {result['place_id']} "
+                            f"complete ({result['elapsed']:.2f}s, "
+                            f"{rate:.1f} places/s)[/bold green]"
                         )
 
                         logger.info(
@@ -534,9 +543,9 @@ def run_pipeline(
                             f"extract={result['extract']:.3f}s, "
                             f"download={result['download']:.3f}s, "
                             f"translate={result['translate']:.3f}s, "
-                            f"r2={result['r2']:.3f}s, "
+                            f"r2={r2_time:.3f}s, "
                             f"normalize={result['normalize']:.3f}s, "
-                            f"db={result['db']:.3f}s | "
+                            f"db={db_time:.3f}s | "
                             f"rate={rate:.2f} places/s"
                         )
 
