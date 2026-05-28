@@ -1,19 +1,19 @@
-# Park4Night Google Maps - PWA
+# Park4Night Google Maps — PWA
 
-A modern progressive web app that replicates Park4Night functionality with deep Google Maps integration, providing a user-friendly interface for finding, rating, and managing campsites and parking spots.
+A Progressive Web App that shows camping and parking spaces on Google Maps. Browse places, read reviews, see photos, filter by services and activities, favourite places, and write your own reviews — all with Google login.
+
+**The Python scripts in `scripts/` are just data collection** — they scrape, translate, and upload place data to the database. The product is the web app.
 
 ## Features
 
 - **Progressive Web App (PWA)**: Installable on mobile and desktop with offline support
-- **Google Maps Integration**: Deep integration with Google Maps for location-based services
+- **Google Maps Integration**: Browse places on an interactive map
 - **Google Authentication**: Sign in with your Google account
-- **Offline Capabilities**: Cache parking data locally for offline access
-- **Advanced Search**: Filter, sort, and search parking spots by various criteria
-- **User Favorites**: Save and manage your favorite parking locations
-- **Reviews & Ratings**: Read and write reviews for parking spots
-- **GPS Tracking**: Automatically record visited locations based on GPS
-- **Easy Point Addition**: Add parking spots directly to your Google Maps account
-- **Responsive Design**: Works seamlessly on mobile, tablet, and desktop
+- **Place Details**: Photos, descriptions, services, activities, pricing, access info
+- **Reviews & Ratings**: Read and write reviews for places
+- **Favorites**: Save and manage your favorite spots
+- **Advanced Search**: Filter by services, activities, vehicle types, and more
+- **Responsive Design**: Works on mobile, tablet, and desktop
 
 ## Tech Stack
 

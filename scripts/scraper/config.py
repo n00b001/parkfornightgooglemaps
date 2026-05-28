@@ -24,17 +24,88 @@ REQUEST_TIMEOUT = 30  # seconds per request
 MAX_RETRIES = 3  # retries on failure
 RETRY_DELAY = 2  # seconds between retries
 
-# ── Geographic Grid ────────────────────────────────────────────────
-# Europe bounding box (covers UK, Ireland, France, Spain, Portugal,
-# Italy, Germany, Netherlands, Belgium, Scandinavia, etc.)
-GRID = {
-    "lat_min": 35.0,  # Southern Spain/Portugal
-    "lat_max": 71.0,  # Northern Norway
-    "lng_min": -25.0,  # Azores / Western Ireland
-    "lng_max": 40.0,  # Eastern Europe
-    "step": 2.0,  # degrees between query points (~222km)
-    "radius": 200,  # km radius per query
-}
+# ── Geographic Grid (Global) ───────────────────────────────────────
+# Regional grids with appropriate step sizes for landmass coverage.
+# Each region: lat_min, lat_max, lng_min, lng_max, step (degrees)
+# Step ~2.0° ≈ 222km; 200km radius per query ensures overlap.
+REGIONS = [
+    # Europe (existing - already scraped, will be skipped by checkpoint)
+    {
+        "name": "Europe",
+        "lat_min": 35.0,
+        "lat_max": 71.0,
+        "lng_min": -25.0,
+        "lng_max": 40.0,
+        "step": 2.0,
+    },
+    # North America (Canada, USA, Mexico)
+    {
+        "name": "North America",
+        "lat_min": 25.0,
+        "lat_max": 72.0,
+        "lng_min": -170.0,
+        "lng_max": -50.0,
+        "step": 3.0,  # Larger area, coarser step
+    },
+    # South America
+    {
+        "name": "South America",
+        "lat_min": 10.0,
+        "lat_max": -56.0,
+        "lng_min": -82.0,
+        "lng_max": -34.0,
+        "step": 3.0,
+    },
+    # Africa
+    {
+        "name": "Africa",
+        "lat_min": 38.0,
+        "lat_max": -35.0,
+        "lng_min": -20.0,
+        "lng_max": 52.0,
+        "step": 3.0,
+    },
+    # Middle East / Central Asia
+    {
+        "name": "Middle East",
+        "lat_min": 12.0,
+        "lat_max": 42.0,
+        "lng_min": 35.0,
+        "lng_max": 75.0,
+        "step": 3.0,
+    },
+    # East Asia (Japan, Korea, China coastal)
+    {
+        "name": "East Asia",
+        "lat_min": 20.0,
+        "lat_max": 50.0,
+        "lng_min": 110.0,
+        "lng_max": 150.0,
+        "step": 3.0,
+    },
+    # Southeast Asia
+    {
+        "name": "Southeast Asia",
+        "lat_min": 15.0,
+        "lat_max": -12.0,
+        "lng_min": 95.0,
+        "lng_max": 140.0,
+        "step": 3.0,
+    },
+    # Oceania (Australia, NZ)
+    {
+        "name": "Oceania",
+        "lat_min": -45.0,
+        "lat_max": -10.0,
+        "lng_min": 135.0,
+        "lng_max": 180.0,
+        "step": 3.0,
+    },
+]
+
+# Legacy single-grid config (for backward compatibility)
+GRID = REGIONS[0]  # Europe as default
+GRID["radius"] = 200
 
 # ── Output Configuration ───────────────────────────────────────────
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
@@ -42,6 +113,17 @@ PLACES_FILE = os.path.join(DATA_DIR, "places.jsonl")
 REVIEWS_FILE = os.path.join(DATA_DIR, "reviews.jsonl")
 CHECKPOINT_FILE = os.path.join(DATA_DIR, "checkpoint.json")
 LOG_FILE = os.path.join(DATA_DIR, "scraper.log")
+
+# ── Image Download Configuration ───────────────────────────────────
+IMAGES_DIR = os.path.join(DATA_DIR, "images")
+PLACE_IMAGES_DIR = os.path.join(IMAGES_DIR, "places")
+ICON_IMAGES_DIR = os.path.join(IMAGES_DIR, "icons")
+IMAGE_REQUEST_DELAY = 0.1  # seconds between image downloads per worker
+IMAGE_REQUEST_TIMEOUT = 30  # seconds per image download
+IMAGE_MAX_RETRIES = 3  # retries on failure
+IMAGE_RETRY_DELAY = 2  # seconds between retries
+IMAGE_WORKERS = 32  # parallel image download workers
+IMAGE_MIN_SIZE = 1024  # minimum file size in bytes (skip tiny/broken images)
 
 # ── Multiprocessing ────────────────────────────────────────────────
 WORKERS = 4  # number of parallel workers

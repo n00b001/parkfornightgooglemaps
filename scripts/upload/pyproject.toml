@@ -1,0 +1,25 @@
+[project]
+name = "park4night-upload"
+version = "1.0.0"
+description = "Upload normalised Park4Night data to Cloudflare R2 and Supabase"
+requires-python = ">=3.12"
+dependencies = [
+  "rich>=13.0.0",
+  "boto3>=1.34.0",
+  "psycopg2-binary>=2.9.0",
+  "python-dotenv>=1.0.0",
+  "Pillow>=10.0.0",
+]
+
+[project.scripts]
+upload = "upload:main"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[dependency-groups]
+dev = []
