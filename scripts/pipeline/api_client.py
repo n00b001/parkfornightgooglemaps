@@ -41,6 +41,7 @@ from config import (  # type: ignore[import-not-found]
     REQUEST_DELAY,
     REQUEST_TIMEOUT,
     RETRY_DELAY,
+    REVIEWS_ENDPOINT,
 )
 
 logger = logging.getLogger("pipeline")
@@ -157,7 +158,10 @@ class Park4NightAPI:
                 return cached
 
         # Fetch from API
-        data = self._get(PLACES_ENDPOINT, {"lieu_id": place_id})
+        # Why REVIEWS_ENDPOINT (commGet.php): this is the dedicated reviews endpoint.
+        # PLACES_ENDPOINT (lieuxGetFilter.php) returns place data, not reviews.
+        # Using the wrong endpoint means reviews are never fetched.
+        data = self._get(REVIEWS_ENDPOINT, {"lieu_id": place_id})
         if data and data.get("status") == "OK":
             reviews = data.get("commentaires", [])
             # Cache the response
