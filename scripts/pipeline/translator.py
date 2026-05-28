@@ -131,15 +131,22 @@ def _ensure_packages_installed() -> None:
         _PACKAGES_INITIALIZED = True
 
 
+def ensure_packages_installed() -> None:
+    """Ensure all required language packages are installed.
+
+    Call this ONCE in the main process BEFORE spawning workers.
+    Packages are installed globally (shared across processes).
+    """
+    _ensure_packages_installed()
+
+
 def preload_models() -> None:
     """Preload all translation models into memory.
 
-    Call this ONCE in the main process BEFORE forking workers.
-    On Linux, fork() uses copy-on-write so child processes inherit
-    the loaded models without reloading from disk.
+    Call this in each worker process (spawn method).
+    Packages must already be installed by the main process.
     """
-    _ensure_packages_installed()
-    logger.info("Preloading translation models (once, inherited by forked workers)...")
+    logger.info("Preloading translation models...")
     for lang_code in REQUIRED_SOURCE_LANGUAGES:
         try:
             argos_translate.translate(

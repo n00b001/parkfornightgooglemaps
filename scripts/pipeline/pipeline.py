@@ -41,6 +41,7 @@ from datetime import UTC, datetime
 # Ensure pipeline package is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+
 from api_client import Park4NightAPI  # type: ignore[import-not-found]
 from checkpoint import PipelineCheckpoint  # type: ignore[import-not-found]
 from config import (  # type: ignore[import-not-found]
@@ -57,6 +58,7 @@ from normalizer import (  # type: ignore[import-not-found]
 )
 from r2_worker import R2WorkerPool  # type: ignore[import-not-found]
 from translator import (  # type: ignore[import-not-found]
+    ensure_packages_installed,
     get_cache_size,
     preload_models,
     translate_batch,
@@ -363,6 +365,7 @@ def place_source(api: Park4NightAPI, checkpoint: PipelineCheckpoint, limit: int 
         checkpoint.mark_grid_point_done(lat, lng)
 
 
+# ── Convert existing mode ──────────────────────────
 # ── Signal Handling ────────────────────────────────
 def _handle_signal(signum, frame) -> None:
     """Handle SIGINT/SIGTERM gracefully."""
@@ -467,6 +470,11 @@ def run_pipeline(
         db_pool = DBWorkerPool()
         if db_pool is not None:
             db_pool.start()
+
+    # Install translation packages once in main process before spawning workers.
+    # With spawn, each worker starts fresh — packages are installed globally
+    # (shared across processes), so this only needs to happen once.
+    ensure_packages_installed()
 
     # Progress tracking
     limit_label = f" (limit {limit})" if limit else ""
@@ -600,7 +608,6 @@ def main() -> None:
         default=8,
         help="Number of parallel worker threads (default: 8)",
     )
-
     args = parser.parse_args()
 
     # Setup logging

@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 import requests
+from PIL import Image
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -90,11 +91,59 @@ class ImageDownloader:
             time.sleep(IMAGE_REQUEST_DELAY - elapsed)
         self._last_request_time = time.time()
 
-    def _download_file(self, url: str, save_path: Path) -> bool:
-        """Download a single file with rate limiting and size check."""
+    def _download_simple(self, url: str, save_path: Path) -> bool:
+        """Download a single file without conversion (for icons, etc.)."""
         if save_path.exists():
             self._stats["skipped_exists"] += 1
-            return True  # Already downloaded
+            return True
+
+        self._rate_limit()
+        try:
+            response = self.session.get(url, timeout=IMAGE_REQUEST_TIMEOUT, stream=True)
+            response.raise_for_status()
+
+            content_length = response.headers.get("Content-Length")
+            if content_length and int(content_length) < IMAGE_MIN_SIZE:
+                self._stats["skipped_small"] += 1
+                return False
+
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(save_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            actual_size = save_path.stat().st_size
+            if actual_size < IMAGE_MIN_SIZE:
+                save_path.unlink()
+                self._stats["skipped_small"] += 1
+                return False
+
+            self._stats["downloaded"] += 1
+            self._stats["total_bytes"] += actual_size
+            return True
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to download {url}: {e}")
+            self._stats["failed"] += 1
+            return False
+        except OSError as e:
+            logger.error(f"Failed to save {save_path}: {e}")
+            self._stats["failed"] += 1
+            return False
+
+    def _download_file(self, url: str, save_path: Path, webp_path: Path) -> bool:
+        """Download a single file, convert to WebP, and save.
+
+        Downloads as .jpg (temporary), converts to .webp (quality=85),
+        then deletes the .jpg. Returns True if .webp file exists at end.
+        """
+        # Skip if .webp already exists
+        if webp_path.exists():
+            self._stats["skipped_exists"] += 1
+            # Clean up leftover .jpg if any
+            if save_path.exists():
+                save_path.unlink()
+            return True
 
         self._rate_limit()
         try:
@@ -129,17 +178,44 @@ class ImageDownloader:
                 logger.debug(f"Downloaded file too small: {url} ({actual_size} bytes)")
                 return False
 
+            # Convert to WebP (quality=85)
+            try:
+                with Image.open(save_path) as img:
+                    # Convert RGBA/P to RGB for WebP lossy
+                    if img.mode in ("RGBA", "P"):
+                        background = Image.new("RGB", img.size, (255, 255, 255))
+                        if img.mode == "P":
+                            img = img.convert("RGBA")
+                        background.paste(img, mask=img.split()[3])
+                        img = background
+                    elif img.mode != "RGB":
+                        img = img.convert("RGB")
+                    img.save(webp_path, "WEBP", quality=85, method=6)
+            except Exception as e:
+                logger.error(f"Failed to convert {save_path} to WebP: {e}")
+                save_path.unlink()
+                self._stats["failed"] += 1
+                return False
+
+            # Delete temporary .jpg
+            save_path.unlink()
+
             self._stats["downloaded"] += 1
-            self._stats["total_bytes"] += actual_size
+            self._stats["total_bytes"] += webp_path.stat().st_size
             return True
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to download {url}: {e}")
             self._stats["failed"] += 1
+            # Clean up partial download
+            if save_path.exists():
+                save_path.unlink()
             return False
         except OSError as e:
             logger.error(f"Failed to save {save_path}: {e}")
             self._stats["failed"] += 1
+            if save_path.exists():
+                save_path.unlink()
             return False
 
     def download_place_photo(
@@ -159,11 +235,13 @@ class ImageDownloader:
         """
         place_dir = Path(PLACE_IMAGES_DIR) / str(place_id)
 
-        thumb_path = place_dir / f"{photo_id}_thumb.jpg"
-        large_path = place_dir / f"{photo_id}_large.jpg"
+        thumb_jpg = place_dir / f"{photo_id}_thumb.jpg"
+        thumb_webp = place_dir / f"{photo_id}_thumb.webp"
+        large_jpg = place_dir / f"{photo_id}_large.jpg"
+        large_webp = place_dir / f"{photo_id}_large.webp"
 
-        thumb_ok = self._download_file(url_thumb, thumb_path)
-        large_ok = self._download_file(url_large, large_path)
+        thumb_ok = self._download_file(url_thumb, thumb_jpg, thumb_webp)
+        large_ok = self._download_file(url_large, large_jpg, large_webp)
 
         result = {
             "id": photo_id,
@@ -172,9 +250,9 @@ class ImageDownloader:
         }
 
         if thumb_ok:
-            result["path_thumb"] = f"images/places/{place_id}/{photo_id}_thumb.jpg"
+            result["path_thumb"] = f"images/places/{place_id}/{photo_id}_thumb.webp"
         if large_ok:
-            result["path_large"] = f"images/places/{place_id}/{photo_id}_large.jpg"
+            result["path_large"] = f"images/places/{place_id}/{photo_id}_large.webp"
 
         return result
 
@@ -219,7 +297,7 @@ class ImageDownloader:
             url = f"{self.CDN_BASE}/{filename}?v={self.CDN_VERSION}"
             save_path = Path(ICON_IMAGES_DIR) / filename
 
-            if self._download_file(url, save_path):
+            if self._download_simple(url, save_path):
                 result[code] = f"images/icons/{filename}"
                 logger.info(f"Downloaded vehicle icon: {code} -> {filename}")
             else:
@@ -229,13 +307,13 @@ class ImageDownloader:
 
     def get_stats(self) -> dict:
         """Return download statistics."""
-        stats = self._stats.copy()
+        stats = dict(self._stats)
         if stats["total_bytes"] > 1024 * 1024:
-            stats["total_size"] = f"{stats['total_bytes'] / (1024 * 1024):.1f} MB"
+            stats["total_size_str"] = f"{stats['total_bytes'] / (1024 * 1024):.1f} MB"
         elif stats["total_bytes"] > 1024:
-            stats["total_size"] = f"{stats['total_bytes'] / 1024:.1f} KB"
+            stats["total_size_str"] = f"{stats['total_bytes'] / 1024:.1f} KB"
         else:
-            stats["total_size"] = f"{stats['total_bytes']} bytes"
+            stats["total_size_str"] = f"{stats['total_bytes']} bytes"
         return stats
 
     def reset_stats(self) -> None:

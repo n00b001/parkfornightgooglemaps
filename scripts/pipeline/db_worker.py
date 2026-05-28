@@ -337,7 +337,16 @@ class DBWorkerPool:
                     access, contact, descriptions, "isPublic", "onlineBooking",
                     "lastFetched"
                 ) VALUES %s
-                ON CONFLICT (id) DO NOTHING
+                ON CONFLICT (id) DO UPDATE SET
+                    photos = EXCLUDED.photos,
+                    rating = EXCLUDED.rating,
+                    "reviewCount" = EXCLUDED."reviewCount",
+                    "photoCount" = EXCLUDED."photoCount",
+                    pricing = EXCLUDED.pricing,
+                    access = EXCLUDED.access,
+                    contact = EXCLUDED.contact,
+                    descriptions = EXCLUDED.descriptions,
+                    "lastFetched" = EXCLUDED."lastFetched"
                 """,
                 [
                     (

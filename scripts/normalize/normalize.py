@@ -41,6 +41,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import logging
 import os
@@ -54,6 +55,13 @@ import argostranslate.package as argos_package
 import argostranslate.translate as argos_translate
 from langdetect import LangDetectException, detect
 from rich.console import Console
+
+# Suppress stanza MWT warnings (benign — stanza auto-adds MWT for languages
+# that need it, e.g. Estonian. argostranslate 1.11.0 has a partial fix
+# (get_stanza_processors) but doesn't call it in lazy_pipeline().
+# See: https://github.com/argosopentech/argos-translate/issues/400
+if importlib.util.find_spec("stanza") is not None:
+    logging.getLogger("stanza").setLevel(logging.ERROR)
 from rich.logging import RichHandler
 from rich.progress import (
     BarColumn,

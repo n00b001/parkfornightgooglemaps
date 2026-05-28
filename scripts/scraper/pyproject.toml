@@ -3,7 +3,7 @@ name = "park4night-scraper"
 version = "1.0.0"
 description = "Park4Night location data scraper"
 requires-python = ">=3.12"
-dependencies = ["requests>=2.31.0", "rich>=13.0.0"]
+dependencies = ["requests>=2.31.0", "rich>=13.0.0", "Pillow>=10.0.0"]
 
 [project.scripts]
 scrape = "scraper:main"

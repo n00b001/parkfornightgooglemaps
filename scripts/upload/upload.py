@@ -228,23 +228,22 @@ def collect_images(places: list[dict], images_base_dir: str) -> list[dict]:
                     continue
 
                 # Try to find the file in images directory
-                # Path format: images/places/{place_id}/{photo_id}_thumb.jpg
+                # Prefer .webp, fall back to .jpg (deprecated)
                 local_path = os.path.join(
-                    images_base_dir, "places", str(place_id), f"{photo_id}_{img_type}.jpg"
+                    images_base_dir, "places", str(place_id), f"{photo_id}_{img_type}.webp"
                 )
-
-                # Also try .webp
                 if not os.path.exists(local_path):
-                    local_path_webp = local_path.replace(".jpg", ".webp")
-                    if os.path.exists(local_path_webp):
-                        local_path = local_path_webp
+                    local_path_jpg = os.path.join(
+                        images_base_dir, "places", str(place_id), f"{photo_id}_{img_type}.jpg"
+                    )
+                    if os.path.exists(local_path_jpg):
+                        local_path = local_path_jpg
 
                 if not os.path.exists(local_path):
                     continue
 
-                # Build R2 key
-                ext = os.path.splitext(local_path)[1] or ".jpg"
-                r2_key = f"places/{place_id}/{photo_id}_{img_type}{ext}"
+                # Build R2 key — always .webp
+                r2_key = f"places/{place_id}/{photo_id}_{img_type}.webp"
 
                 images.append(
                     {
@@ -287,7 +286,7 @@ def upload_image_to_r2(r2, image: dict, bucket: str) -> str | None:
         except r2.exceptions.ClientError:
             pass  # Object doesn't exist, proceed with upload
 
-        content_type = "image/webp" if local_path.endswith(".webp") else "image/jpeg"
+        content_type = "image/webp"  # Always WebP
 
         r2.put_object(
             Bucket=bucket,

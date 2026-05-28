@@ -22,11 +22,10 @@ logger = logging.getLogger("pipeline")
 
 
 def _find_local_image(place_id: int, photo_id: str, img_type: str) -> str | None:
-    """Find a local image file (jpg or webp)."""
-    for ext in (".jpg", ".webp"):
-        path = os.path.join(IMAGES_DIR, "places", str(place_id), f"{photo_id}_{img_type}{ext}")
-        if os.path.exists(path):
-            return path
+    """Find a local WebP image file. Only returns .webp paths."""
+    path = os.path.join(IMAGES_DIR, "places", str(place_id), f"{photo_id}_{img_type}.webp")
+    if os.path.exists(path):
+        return path
     return None
 
 
@@ -40,7 +39,7 @@ def _upload_single(r2: Any, local_path: str, r2_key: str, config: dict) -> str |
         except r2.exceptions.ClientError:
             pass
 
-        content_type = "image/webp" if local_path.endswith(".webp") else "image/jpeg"
+        content_type = "image/webp"  # Always WebP
         r2.put_object(
             Bucket=config["bucket"],
             Key=r2_key,
@@ -191,8 +190,7 @@ class R2WorkerPool:
                 if not local_path:
                     continue
 
-                ext = os.path.splitext(local_path)[1] or ".jpg"
-                r2_key = f"places/{place_id}/{photo_id}_{img_type}{ext}"
+                r2_key = f"places/{place_id}/{photo_id}_{img_type}.webp"  # Always .webp
                 url = _upload_single(r2, local_path, r2_key, self.config)
                 if url:
                     photo[r2_field] = url

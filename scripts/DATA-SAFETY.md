@@ -29,6 +29,12 @@ The data in `scripts/data/` is accumulated over days of scraping. **It is never 
 - `cd scripts/pipeline && uv run python pipeline.py --limit 100` — limited to 100 places
 - `cd scripts/pipeline && uv run python pipeline.py --dry-run` — preview without changes
 
+### Pipeline Architecture (for agents)
+- Uses `ProcessPoolExecutor` with **spawn** (not fork) to avoid inheriting argos-translate locks.
+- Each worker starts fresh — no shared state with the main process.
+- **Translation packages** are installed **once in the main process** before workers spawn. Workers only preload models.
+- **Stanza MWT warnings** (e.g. `Language et package default expects mwt`) are **expected and harmless** — do NOT suppress them.
+
 ### Commands that are DANGEROUS (NEVER run without explicit user approval)
 | Command | Why | Safe Alternative |
 |---------|-----|----------------|
