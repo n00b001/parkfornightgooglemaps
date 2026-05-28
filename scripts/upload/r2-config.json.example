@@ -1,7 +1,7 @@
 {
-  "accessKeyId": "YOUR_R2_ACCESS_KEY_ID",
-  "secretAccessKey": "YOUR_R2_SECRET_ACCESS_KEY",
-  "endpoint": "https://YOUR_ACCOUNT_HASH.r2.cloudflarestorage.com",
+  "endpoint": "https://ACCOUNT-ID.r2.cloudflarestorage.com",
+  "accessKeyId": "YOUR-ACCESS-KEY-ID",
+  "secretAccessKey": "YOUR-SECRET-ACCESS-KEY",
   "region": "auto",
-  "bucket": "p4n-images"
+  "bucket": "park4night-images"
 }
