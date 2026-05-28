@@ -25,6 +25,7 @@ All caches are thread-safe (file locks for concurrent access).
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -222,20 +223,63 @@ class TranslationCache:
             self._data = {}
 
     def _save(self) -> None:
-        """Save translation cache to disk."""
+        """Save translation cache to disk with file lock + merge.
+
+        Why file lock + merge:
+          Multiple worker processes (spawn via ProcessPoolExecutor) each load
+          the cache from disk at startup, translate different strings, then
+          save periodically. Without merging, the last writer wins and other
+          workers' translations are silently lost.
+
+        Strategy:
+          1. Acquire exclusive file lock (fcntl.flock) so only one process
+             writes at a time.
+          2. Read current file from disk (may have been written by another
+             worker since we loaded).
+          3. Merge: our in-memory entries overwrite disk entries.
+          4. Write merged result atomically (tmp file + os.replace).
+          5. Release lock.
+
+        This ensures no translations are lost when 16 workers save concurrently.
+        """
         _ensure_dirs()
+        lock_path = self._cache_file + ".lock"
         tmp_path = self._cache_file + ".tmp"
+        lock_fd: int = -1
         try:
+            # Acquire exclusive lock (blocks until another writer finishes)
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+            # Read current state from disk (may have new entries from other workers)
+            disk_data: dict[str, str] = {}
+            if os.path.exists(self._cache_file):
+                try:
+                    with open(self._cache_file, encoding="utf-8") as f:
+                        disk_data = json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    disk_data = {}
+
+            # Merge: our in-memory entries overwrite disk entries
+            merged = {**disk_data, **self._data}
+
             # Atomic write: write to temp file, then rename
             with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False)
+                json.dump(merged, f, ensure_ascii=False)
             os.replace(tmp_path, self._cache_file)
-            logger.info(f"Saved translation cache: {len(self._data):,} entries")
+            logger.info(f"Saved translation cache: {len(merged):,} entries")
         except OSError as e:
             logger.error(f"Failed to save translation cache: {e}")
-            # Clean up temp file
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
+        finally:
+            # Release lock and close file descriptor
+            if lock_fd >= 0:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    os.close(lock_fd)
+                except OSError:
+                    pass
 
     def get(self, text: str) -> str | None:
         """Get cached translation. Returns None if not cached."""

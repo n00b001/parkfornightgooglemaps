@@ -69,9 +69,10 @@ from config import (  # type: ignore[import-not-found]
 from db_worker import DBWorkerPool  # type: ignore[import-not-found]
 from image_downloader import ImageDownloader  # type: ignore[import-not-found]
 from logging_setup import (  # type: ignore[import-not-found]
+    StageTimer,
     console,
     create_progress,
-    log_progress,
+    print_timing_report,
     setup_logging,
 )
 from normalizer import (  # type: ignore[import-not-found]
@@ -101,7 +102,13 @@ _stats: dict[str, int] = {
     "db_inserts": 0,
     "cache_hits": 0,
     "cache_misses": 0,
+    "errors": 0,
 }
+
+# Per-stage timing accumulators (for aggregate timing report at end).
+# Why: each worker returns per-place timing; main process accumulates here
+# to show which stage is the bottleneck when the pipeline takes hours.
+_stage_timers: dict[str, StageTimer] = {}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -534,8 +541,13 @@ def run_pipeline(
     Disk cache ensures idempotency:
       - Re-running with same --limit: all stages find cached output → skip
       - --no-cache: bypass all caches → re-process everything
+
+    Progress tracking:
+      - Per-place progress bar (console + log file)
+      - Per-stage timing accumulators (for end-of-run report)
+      - Log progress every place (not every 10) for file visibility
     """
-    global _no_cache_global
+    global _no_cache_global, _stage_timers
     _no_cache_global = no_cache
 
     # 16 workers: half of 32 cores. Translation (argos) is CPU-bound,
@@ -582,10 +594,23 @@ def run_pipeline(
             db_pool.shutdown()
         return
 
-    # Collect all places to process (pre-fetch from generator)
-    # Each item is: (raw_place_dict, grid_point)
-    places_to_process = list(place_source(Park4NightAPI(no_cache=no_cache), limit=limit))
+    # ── Phase 1: Extract (collect places from API) ─────────────────
+    # Collect all places to process (pre-fetch from generator).
+    # Each item is: (raw_place_dict, grid_point).
+    # This phase shows a progress bar for grid points scanned.
+    console.print("\n[bold]Phase 1: Extract[/bold] — scanning grid points for places...")
+    extract_start = time.time()
+    places_to_process = list(
+        place_source(Park4NightAPI(no_cache=no_cache), limit=limit)
+    )
+    extract_elapsed = time.time() - extract_start
     total_places = len(places_to_process)
+    console.print(
+        f"  [green]✓ Found {total_places} places" f" in {extract_elapsed:.1f}s[/green]"
+    )
+    logger.info(
+        f"Extract phase: {total_places} places found in {extract_elapsed:.1f}s"
+    )
 
     if not total_places:
         console.print("[yellow]No places to process.[/yellow]")
@@ -595,8 +620,23 @@ def run_pipeline(
             db_pool.shutdown()
         return
 
+    # Initialize per-stage timing accumulators.
+    # Why: each worker returns per-place timing; main process accumulates
+    # here to produce the aggregate timing report at the end.
+    _stage_timers = {
+        "extract": StageTimer("Extract"),
+        "download": StageTimer("Download"),
+        "reviews": StageTimer("Reviews"),
+        "translate": StageTimer("Translate"),
+        "normalize": StageTimer("Normalize"),
+        "r2_upload": StageTimer("R2 Upload"),
+        "db_insert": StageTimer("DB Insert"),
+    }
+
+    # ── Phase 2: Process (extract → download → translate → normalize) ─
+    console.print("\n[bold]Phase 2: Process[/bold] — extract, download, translate, normalize...")
     pipeline_start = time.time()
-    with create_progress("Pipeline", total=total_places) as progress:
+    with create_progress("Processing places", total=total_places) as progress:
         task = progress.add_task("Processing", total=total_places)
         place_num = 0
         errors = 0
@@ -629,37 +669,60 @@ def run_pipeline(
                     if "error" in result:
                         console.print(f"  [red]✗ {result['error']}[/red]")
                         errors += 1
+                        with _stats_lock:
+                            _stats["errors"] += 1
                     else:
                         place = result.pop("place")
 
-                        # Main process: enqueue R2 upload
+                        # Accumulate per-stage timing from worker.
+                        # Why: these times are per-place; we sum them to show
+                        # total time spent in each stage across all places.
+                        with _stats_lock:
+                            _stage_timers["extract"].add(result["extract"])
+                            _stage_timers["download"].add(result["download"])
+                            _stage_timers["reviews"].add(result["fetch"])
+                            _stage_timers["translate"].add(result["translate"])
+                            _stage_timers["normalize"].add(result["normalize"])
+
+                        # Main process: enqueue R2 upload (non-blocking)
                         t0 = time.time()
                         place = stage_enqueue_r2(place, r2_pool)
                         r2_time = time.time() - t0
 
-                        # Main process: enqueue DB insert
+                        # Main process: enqueue DB insert (non-blocking)
                         t0 = time.time()
                         stage_enqueue_db(place, db_pool)
                         db_time = time.time() - t0
 
                         with _stats_lock:
                             _stats["places_processed"] += 1
+                            _stage_timers["r2_upload"].add(r2_time)
+                            _stage_timers["db_insert"].add(db_time)
 
-                        rate = place_num / result["elapsed"] if result["elapsed"] > 0 else 0
+                        rate = (
+                            place_num / result["elapsed"]
+                            if result["elapsed"] > 0
+                            else 0
+                        )
                         console.print(
                             f"  [bold green]✓ Place {result['place_id']} "
                             f"complete ({result['elapsed']:.2f}s, "
                             f"{rate:.1f} places/s)[/bold green]"
                         )
 
+                        # Log every place to file (not every 10) for visibility.
+                        # Why: when running in tmux/cron, the log file is the
+                        # only monitoring surface. Every place logged = easy tail.
                         logger.info(
-                            f"Place {place_num} ({result['place_id']}): "
+                            f"Place {place_num}/{total_places} "
+                            f"({result['place_id']}): "
                             f"total={result['elapsed']:.3f}s | "
                             f"extract={result['extract']:.3f}s, "
                             f"download={result['download']:.3f}s, "
+                            f"reviews={result['fetch']:.3f}s, "
                             f"translate={result['translate']:.3f}s, "
-                            f"r2={r2_time:.3f}s, "
                             f"normalize={result['normalize']:.3f}s, "
+                            f"r2={r2_time:.3f}s, "
                             f"db={db_time:.3f}s | "
                             f"rate={rate:.2f} places/s"
                         )
@@ -667,30 +730,46 @@ def run_pipeline(
                 except Exception as e:
                     console.print(f"  [red]✗ Place {place_id} crashed: {e}[/red]")
                     errors += 1
+                    with _stats_lock:
+                        _stats["errors"] += 1
 
                 progress.update(task, completed=place_num)
-                # Log progress to file every 10 places
-                if place_num % 10 == 0:
-                    elapsed = time.time() - pipeline_start
-                    rate = place_num / elapsed if elapsed > 0 else 0
-                    log_progress(
-                        "Pipeline",
-                        place_num,
-                        total_places,
-                        f"{rate:.1f}/s",
-                    )
 
-    # Cleanup: wait for all uploads/inserts to finish, then shut down
+    # ── Phase 3: Wait for async uploads/inserts ─────────────────────
+    console.print("\n[bold]Phase 3: Finalize[/bold] — waiting for async uploads...")
+    finalize_start = time.time()
+
     if r2_pool is not None:
-        console.print("\n[dim]Waiting for R2 uploads to complete...[/dim]")
         r2_pool.shutdown()
 
     if db_pool is not None:
-        console.print("[dim]Waiting for DB inserts to complete...[/dim]")
         db_pool.shutdown()
+
+    finalize_elapsed = time.time() - finalize_start
+    console.print(f"  [green]✓ Finalize complete in {finalize_elapsed:.1f}s[/green]")
+    logger.info(f"Finalize phase: {finalize_elapsed:.1f}s")
 
     # Save translation cache to disk
     save_cache()
+
+    # ── Summary Report ──────────────────────────────────────────────
+    total_elapsed = time.time() - pipeline_start
+    console.print("\n[bold green]✓ Pipeline complete:[/bold green]")
+    console.print(
+        f"  Places: [green]{_stats['places_processed']}[/green] processed, "
+        f"[red]{_stats.get('errors', 0)}[/red] errors"
+    )
+    console.print(
+        f"  Images: [green]{_stats['images_downloaded']}[/green] downloaded"
+    )
+    console.print(
+        f"  Cache: [green]{_stats['cache_hits']}[/green] hits, "
+        f"[yellow]{_stats['cache_misses']}[/yellow] misses"
+    )
+    console.print(f"  Total time: [cyan]{total_elapsed:.1f}s[/cyan]")
+
+    # Print aggregate timing report (shows bottleneck stage)
+    print_timing_report(_stage_timers, total_elapsed, total_places)
 
     if errors:
         console.print(f"\n[bold red]{errors} places had errors[/bold red]")
