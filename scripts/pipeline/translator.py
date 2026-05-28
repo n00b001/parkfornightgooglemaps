@@ -175,10 +175,19 @@ def preload_models() -> None:
 
 
 def _get_cache(no_cache: bool = False) -> TranslationCache:
-    """Get or create the global translation cache instance."""
+    """Get or create the global translation cache instance.
+
+    Why check no_cache every call: if the caller passes no_cache=True
+    on a subsequent call (e.g., --no-cache mode), we must recreate the
+    cache as empty instead of returning the cached (populated) instance.
+    """
     global _translate_cache
     if _translate_cache is None:
         _translate_cache = TranslationCache(no_cache=no_cache)
+    elif no_cache:
+        # Recreate cache as empty when no_cache is requested.
+        # Why: --no-cache mode should bypass all caches, including translation.
+        _translate_cache = TranslationCache(no_cache=True)
     return _translate_cache
 
 
