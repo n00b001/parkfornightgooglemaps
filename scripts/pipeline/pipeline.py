@@ -600,17 +600,11 @@ def run_pipeline(
     # This phase shows a progress bar for grid points scanned.
     console.print("\n[bold]Phase 1: Extract[/bold] — scanning grid points for places...")
     extract_start = time.time()
-    places_to_process = list(
-        place_source(Park4NightAPI(no_cache=no_cache), limit=limit)
-    )
+    places_to_process = list(place_source(Park4NightAPI(no_cache=no_cache), limit=limit))
     extract_elapsed = time.time() - extract_start
     total_places = len(places_to_process)
-    console.print(
-        f"  [green]✓ Found {total_places} places" f" in {extract_elapsed:.1f}s[/green]"
-    )
-    logger.info(
-        f"Extract phase: {total_places} places found in {extract_elapsed:.1f}s"
-    )
+    console.print(f"  [green]✓ Found {total_places} places in {extract_elapsed:.1f}s[/green]")
+    logger.info(f"Extract phase: {total_places} places found in {extract_elapsed:.1f}s")
 
     if not total_places:
         console.print("[yellow]No places to process.[/yellow]")
@@ -759,9 +753,7 @@ def run_pipeline(
         f"  Places: [green]{_stats['places_processed']}[/green] processed, "
         f"[red]{_stats.get('errors', 0)}[/red] errors"
     )
-    console.print(
-        f"  Images: [green]{_stats['images_downloaded']}[/green] downloaded"
-    )
+    console.print(f"  Images: [green]{_stats['images_downloaded']}[/green] downloaded")
     console.print(
         f"  Cache: [green]{_stats['cache_hits']}[/green] hits, "
         f"[yellow]{_stats['cache_misses']}[/yellow] misses"
