@@ -1,4 +1,5 @@
 const prisma = require("../config/db");
+const park4night = require("../services/park4night");
 const LRUCache = require("../services/lruCache");
 
 const MAX_PLACES_LIMIT = 200;
@@ -26,7 +27,7 @@ const getPlaces = async (req, res) => {
 		MAX_PLACES_LIMIT,
 	);
 
-	// Check cache first
+	// Check memory cache first
 	const key = cacheKey(lat, lng, type, minRating, sortBy, maxLimit);
 	const cached = placesCache.get(key);
 	if (cached !== undefined) {
@@ -34,6 +35,9 @@ const getPlaces = async (req, res) => {
 	}
 
 	try {
+		// Define "fresh" as updated in the last 24 hours
+		const freshThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
 		const where = {
 			latitude: { gte: lat - 0.5, lte: lat + 0.5 },
 			longitude: { gte: lng - 0.5, lte: lng + 0.5 },
@@ -42,14 +46,59 @@ const getPlaces = async (req, res) => {
 		if (type) where.type = type;
 		if (minRating) where.rating = { gte: parseFloat(minRating) };
 
-		const orderBy = {};
-		if (sortBy === "rating") orderBy.rating = "desc";
-
-		// Fetch from DB, sort by distance, take closest N
-		let places = await prisma.place.findMany({
-			where,
-			orderBy: Object.keys(orderBy).length > 0 ? orderBy : undefined,
+		// Count fresh places in this bounding box
+		const freshCount = await prisma.place.count({
+			where: { ...where, lastFetched: { gte: freshThreshold } },
 		});
+
+		let places;
+		if (freshCount < 10) {
+			console.log(`Insufficient fresh data (${freshCount} spots), fetching from Park4Night...`);
+			try {
+				const livePlaces = await park4night.getPlaces(lat, lng);
+
+				// Upsert live data to Prisma to update cache
+				const upsertPromises = livePlaces.map((p) =>
+					prisma.place.upsert({
+						where: { id: p.id },
+						update: {
+							name: p.name,
+							latitude: p.latitude,
+							longitude: p.longitude,
+							type: p.type,
+							description: p.description,
+							address: p.address,
+							rating: p.rating,
+							rawData: p.rawData,
+							lastFetched: new Date(),
+						},
+						create: {
+							id: p.id,
+							name: p.name,
+							latitude: p.latitude,
+							longitude: p.longitude,
+							type: p.type,
+							description: p.description,
+							address: p.address,
+							rating: p.rating,
+							rawData: p.rawData,
+							lastFetched: new Date(),
+						},
+					}),
+				);
+
+				await Promise.allSettled(upsertPromises);
+
+				// Re-fetch from DB after upsert to get fully merged/normalized results
+				places = await prisma.place.findMany({ where });
+			} catch (liveError) {
+				console.error("Live fetch failed, falling back to DB only:", liveError.message);
+				places = await prisma.place.findMany({ where });
+			}
+		} else {
+			// Fetch from DB
+			places = await prisma.place.findMany({ where });
+		}
 
 		// Sort by distance from query point (closest first)
 		places.sort(

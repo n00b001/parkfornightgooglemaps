@@ -10,6 +10,8 @@ import {
 	getPendingReviews,
 	removePendingReview,
 	savePendingFavorite,
+	savePlaces,
+	getCachedPlaces,
 } from "./services/db";
 import {
 	Heart,
@@ -58,47 +60,69 @@ const App: React.FC = () => {
 	useEffect(() => {
 		const handleOnline = async () => {
 			setIsOnline(true);
+			if (!user) return; // Must be logged in to sync
+
+			console.log("Back online, starting synchronization...");
+
 			// Sync pending visits
 			const pendingVisits = await getPendingVisits();
-			for (const visit of pendingVisits) {
-				try {
-					await axios.post("/api/visits", { placeId: visit.placeId });
-					await removePendingVisit(visit.placeId);
-					setVisited((prev) => [...prev, visit.placeId]);
-				} catch (err) {
-					console.error("Failed to sync visit", err);
+			if (pendingVisits.length > 0) {
+				console.log(`Syncing ${pendingVisits.length} visits...`);
+				for (const visit of pendingVisits) {
+					try {
+						await axios.post("/api/visits", { placeId: visit.placeId });
+						await removePendingVisit(visit.placeId);
+						setVisited((prev) => {
+							if (prev.includes(visit.placeId)) return prev;
+							return [...prev, visit.placeId];
+						});
+					} catch (err) {
+						console.error(`Failed to sync visit for place ${visit.placeId}`, err);
+					}
 				}
 			}
 
 			// Sync pending favorites
 			const pendingFavs = await getPendingFavorites();
-			for (const fav of pendingFavs) {
-				try {
-					if (fav.action === "add") {
-						await axios.post("/api/favorites", { placeId: fav.placeId });
-					} else {
-						await axios.delete(`/api/favorites/${fav.placeId}`);
+			if (pendingFavs.length > 0) {
+				console.log(`Syncing ${pendingFavs.length} favorites...`);
+				for (const fav of pendingFavs) {
+					try {
+						if (fav.action === "add") {
+							await axios.post("/api/favorites", { placeId: fav.placeId });
+							setFavorites((prev) => {
+								if (prev.includes(fav.placeId)) return prev;
+								return [...prev, fav.placeId];
+							});
+						} else {
+							await axios.delete(`/api/favorites/${fav.placeId}`);
+							setFavorites((prev) => prev.filter((id) => id !== fav.placeId));
+						}
+						await removePendingFavorite(fav.placeId);
+					} catch (err) {
+						console.error(`Failed to sync favorite for place ${fav.placeId}`, err);
 					}
-					await removePendingFavorite(fav.placeId);
-				} catch (err) {
-					console.error("Failed to sync favorite", err);
 				}
 			}
 
 			// Sync pending reviews
 			const pendingReviews = await getPendingReviews();
-			for (const review of pendingReviews) {
-				try {
-					await axios.post("/api/reviews", {
-						placeId: review.placeId,
-						content: review.content,
-						rating: review.rating,
-					});
-					await removePendingReview(review.id);
-				} catch (err) {
-					console.error("Failed to sync review", err);
+			if (pendingReviews.length > 0) {
+				console.log(`Syncing ${pendingReviews.length} reviews...`);
+				for (const review of pendingReviews) {
+					try {
+						await axios.post("/api/reviews", {
+							placeId: review.placeId,
+							content: review.content,
+							rating: review.rating,
+						});
+						await removePendingReview(review.id);
+					} catch (err) {
+						console.error(`Failed to sync review for place ${review.placeId}`, err);
+					}
 				}
 			}
+			console.log("Synchronization complete.");
 		};
 		const handleOffline = () => setIsOnline(false);
 		window.addEventListener("online", handleOnline);
@@ -116,15 +140,26 @@ const App: React.FC = () => {
 			const cached = placesCache.get(key);
 			if (cached !== undefined) return cached;
 
-			const res = await axios.get("/api/places", {
-				params: {
-					lat: lastFetchedCenter.lat,
-					lng: lastFetchedCenter.lng,
-					limit: 150,
-				},
-			});
-			placesCache.set(key, res.data);
-			return res.data;
+			try {
+				const res = await axios.get("/api/places", {
+					params: {
+						lat: lastFetchedCenter.lat,
+						lng: lastFetchedCenter.lng,
+						limit: 150,
+					},
+				});
+				placesCache.set(key, res.data);
+				// Save to IndexedDB for offline persistent use
+				await savePlaces(res.data);
+				return res.data;
+			} catch (err) {
+				if (!navigator.onLine) {
+					console.log("Offline: loading places from IndexedDB");
+					const localPlaces = await getCachedPlaces();
+					if (localPlaces.length > 0) return localPlaces;
+				}
+				throw err;
+			}
 		},
 		staleTime: 5 * 60 * 1000, // 5 minutes — prevent aggressive refetches
 		refetchOnWindowFocus: false,
