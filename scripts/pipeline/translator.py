@@ -8,21 +8,33 @@ All source languages are known from data structure:
   - Descriptions: keys are language codes (fr, de, es, etc.)
   - Pricing: always French
   - Reviews: always French (Park4Night is a French site)
+
+Translation cache: persistent disk cache (scripts/data/cache/translations.json)
+loaded at startup and saved periodically. This ensures re-running the pipeline
+does not re-translate already-translated strings (argos-translate is slow:
+~100ms per string, so 10,000 strings = ~17 minutes without cache).
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import argostranslate.package as argos_package
 import argostranslate.translate as argos_translate
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from cache import TranslationCache  # type: ignore[import-not-found]
+
 logger = logging.getLogger("pipeline")
 
 # ── Shared state ──────────────────────────────────────────────────────
-_TRANSLATE_CACHE: dict[str, str] = {}
+# Persistent translation cache (loaded from disk at startup).
+_translate_cache: TranslationCache | None = None
 _PACKAGES_INITIALIZED = False
 _PACKAGES_LOCK = threading.Lock()
 
@@ -162,6 +174,14 @@ def preload_models() -> None:
 # ── Translation ───────────────────────────────────────────────────────
 
 
+def _get_cache(no_cache: bool = False) -> TranslationCache:
+    """Get or create the global translation cache instance."""
+    global _translate_cache
+    if _translate_cache is None:
+        _translate_cache = TranslationCache(no_cache=no_cache)
+    return _translate_cache
+
+
 def _translate_single(text: str, src_lang: str) -> tuple[str, str]:
     """Translate a single text to English using argos-translate.
 
@@ -200,25 +220,33 @@ def _translate_single(text: str, src_lang: str) -> tuple[str, str]:
 def translate_batch(
     texts: list[tuple[str, str]],
     max_workers: int = 8,
+    no_cache: bool = False,
 ) -> dict[str, str]:
-    """Translate a batch of texts to English using parallel argos-translate calls.
+    """Translate a batch of texts to English using parallel argos-translate.
+
+    Uses persistent disk cache: already-translated strings are loaded from
+    disk at startup and saved periodically. Re-running the pipeline does not
+    re-translate cached strings.
 
     Args:
         texts: List of (text, src_lang) tuples.
         max_workers: Number of parallel threads.
+        no_cache: Bypass disk cache (re-translate everything).
 
-    Returns {original_text: translated_text} for all inputs.
-    Already-cached entries are returned immediately.
-    Offline translation means no rate limits — can use high concurrency.
+    Returns:
+        {original_text: translated_text} for all inputs.
     """
     # Ensure packages are installed before any translation
     _ensure_packages_installed()
 
+    cache = _get_cache(no_cache=no_cache)
+
     # Filter out already-cached texts
-    uncached = [(t, lang) for t, lang in texts if t not in _TRANSLATE_CACHE]
+    uncached = [(t, lang) for t, lang in texts if cache.get_or_none(t) is None]
 
     if not uncached:
-        return {t: _TRANSLATE_CACHE[t] for t, _ in texts}
+        # All cached — return immediately
+        return {t: cache.get_or_none(t) or t for t, _ in texts}
 
     # Translate uncached texts in parallel
     results: dict[str, str] = {}
@@ -230,11 +258,11 @@ def translate_batch(
             original, translated = future.result()
             results[original] = translated
 
-    # Update cache
-    _TRANSLATE_CACHE.update(results)
+    # Update persistent cache
+    cache.bulk_set(results)
 
     # Return results for all inputs (cached + newly translated)
-    return {t: _TRANSLATE_CACHE[t] for t, _ in texts}
+    return {t: (cache.get_or_none(t) or t) for t, _ in texts}
 
 
 def translate_text(text: str, src_lang: str) -> str:
@@ -244,21 +272,32 @@ def translate_text(text: str, src_lang: str) -> str:
         text: Text to translate.
         src_lang: ISO 639-1 source language code.
 
-    Uses in-memory cache for repeated strings.
+    Uses persistent disk cache for repeated strings.
     Returns the original text if already English or empty.
     """
     if not text or not text.strip():
         return text
 
     stripped = text.strip()
-    if stripped in _TRANSLATE_CACHE:
-        return _TRANSLATE_CACHE[stripped]
+    cache = _get_cache()
+
+    cached = cache.get_or_none(stripped)
+    if cached is not None:
+        return cached
 
     _, translated = _translate_single(stripped, src_lang)
-    _TRANSLATE_CACHE[stripped] = translated
+    cache.set(stripped, translated)
     return translated
 
 
 def get_cache_size() -> int:
     """Return the number of entries in the translation cache."""
-    return len(_TRANSLATE_CACHE)
+    if _translate_cache is not None:
+        return _translate_cache.size
+    return 0
+
+
+def save_cache() -> None:
+    """Force save translation cache to disk. Call on shutdown."""
+    if _translate_cache is not None:
+        _translate_cache.save()
