@@ -69,6 +69,7 @@ from config import (  # type: ignore[import-not-found]
 from db_worker import DBWorkerPool  # type: ignore[import-not-found]
 from image_downloader import ImageDownloader  # type: ignore[import-not-found]
 from logging_setup import (  # type: ignore[import-not-found]
+    ProgressTracker,
     StageTimer,
     console,
     create_progress,
@@ -321,20 +322,21 @@ def stage_translate(place: dict, no_cache: bool = False) -> dict:
 
 
 # ── Stage 5: Normalize ───────────────────────────────────────────────
-def stage_normalize(place: dict) -> dict | None:
+def stage_normalize(place: dict) -> tuple[dict | None, bool]:
     """Normalize place + reviews into clean DB-ready records.
 
     No translation — all text must be pre-translated by stage_translate.
     Uses disk cache: if normalized output exists on disk, returns cached.
-    Returns fully normalized place ready for DB insert, or None on failure.
+    Returns (normalized_place, cache_hit) where cache_hit indicates whether
+    the result came from disk cache. The caller (main process) tracks
+    cache_hits/cache_misses stats — this function runs in a worker process
+    (spawn) where threading.Lock does not work across processes.
     """
     place_id = place["id"]
 
     # Check normalization cache
     cached = norm_cache_get(place_id)
     if cached is not None:
-        with _stats_lock:
-            _stats["cache_hits"] += 1
         # Still need to normalize reviews (they're not cached separately)
         normalized_reviews = []
         for review in place.get("reviews", []):
@@ -342,14 +344,11 @@ def stage_normalize(place: dict) -> dict | None:
             if nr:
                 normalized_reviews.append(nr)
         cached["reviews"] = normalized_reviews
-        return cached
-
-    with _stats_lock:
-        _stats["cache_misses"] += 1
+        return cached, True  # cache hit
 
     normalized = normalize_place(place)
     if not normalized:
-        return None
+        return None, False  # cache miss
 
     # Normalize reviews
     normalized_reviews = []
@@ -362,7 +361,7 @@ def stage_normalize(place: dict) -> dict | None:
     # Cache normalized data
     norm_cache_set(place_id, normalized)
 
-    return normalized
+    return normalized, False  # cache miss
 
 
 # ── Stage 6: Enqueue R2 upload (non-blocking) ────────────────────────
@@ -545,7 +544,7 @@ def _worker_process_place(
 
     # ── Stage 5: Normalize ─
     t0 = time.time()
-    place = stage_normalize(place)
+    place, cache_hit = stage_normalize(place)
     normalize_time = time.time() - t0
     if not place:
         return {"error": f"Failed to normalize place {place_id}"}
@@ -559,6 +558,7 @@ def _worker_process_place(
         "fetch": fetch_time,
         "translate": translate_time,
         "normalize": normalize_time,
+        "cache_hit": cache_hit,  # for main process to track cache stats
         "place": place,  # return normalized place for main process
     }
 
@@ -635,9 +635,16 @@ def run_pipeline(
     # Collect all places to process (pre-fetch from generator).
     # Each item is: (raw_place_dict, grid_point).
     # This phase shows a progress bar for grid points scanned.
+    # ProgressTracker logs to file at regular intervals so you can
+    # tail the log and see progress when running in tmux/cron.
     console.print("\n[bold]Phase 1: Extract[/bold] — scanning grid points for places...")
     extract_start = time.time()
-    places_to_process = list(place_source(Park4NightAPI(no_cache=no_cache), limit=limit))
+    extract_tracker = ProgressTracker("Extracting places", total=limit or 0)
+    places_to_process = []
+    for place, grid_point in place_source(Park4NightAPI(no_cache=no_cache), limit=limit):
+        places_to_process.append((place, grid_point))
+        extract_tracker.update(len(places_to_process))
+    extract_tracker.finish()
     extract_elapsed = time.time() - extract_start
     total_places = len(places_to_process)
     console.print(f"  [green]✓ Found {total_places} places in {extract_elapsed:.1f}s[/green]")
@@ -667,6 +674,9 @@ def run_pipeline(
     # ── Phase 2: Process (extract → download → translate → normalize) ─
     console.print("\n[bold]Phase 2: Process[/bold] — extract, download, translate, normalize...")
     pipeline_start = time.time()
+    # ProgressTracker logs to file at regular intervals so you can
+    # tail the log and see progress when running in tmux/cron.
+    process_tracker = ProgressTracker("Processing places", total=total_places)
     with create_progress("Processing places", total=total_places) as progress:
         task = progress.add_task("Processing", total=total_places)
         place_num = 0
@@ -717,6 +727,12 @@ def run_pipeline(
                             _stage_timers["reviews"].add(result["fetch"])
                             _stage_timers["translate"].add(result["translate"])
                             _stage_timers["normalize"].add(result["normalize"])
+                            # Track cache stats from worker result (spawn processes
+                            # can't share _stats via threading.Lock).
+                            if result.get("cache_hit"):
+                                _stats["cache_hits"] += 1
+                            else:
+                                _stats["cache_misses"] += 1
 
                         # Main process: enqueue R2 upload, then wait for it to finish
                         # before enqueuing DB insert. Why: the R2 worker updates the
@@ -745,11 +761,7 @@ def run_pipeline(
                             _stage_timers["r2_upload"].add(r2_time)
                             _stage_timers["db_insert"].add(db_time)
 
-                        rate = (
-                            place_num / result["elapsed"]
-                            if result["elapsed"] > 0
-                            else 0
-                        )
+                        rate = place_num / result["elapsed"] if result["elapsed"] > 0 else 0
                         console.print(
                             f"  [bold green]✓ Place {result['place_id']} "
                             f"complete ({result['elapsed']:.2f}s, "
@@ -780,6 +792,12 @@ def run_pipeline(
                         _stats["errors"] += 1
 
                 progress.update(task, completed=place_num)
+                # Log progress to file at regular intervals (not every place).
+                # Why: ProgressTracker throttles log writes to avoid spamming
+                # the log file — it logs every `interval` seconds.
+                process_tracker.update(place_num)
+
+    process_tracker.finish()
 
     # ── Phase 3: Wait for async uploads/inserts ─────────────────────
     console.print("\n[bold]Phase 3: Finalize[/bold] — waiting for async uploads...")
@@ -815,12 +833,8 @@ def run_pipeline(
                 )
             # Log progress to file every 5 seconds
             if logger:
-                r2_done, r2_total = (
-                    r2_pool.get_progress() if r2_pool is not None else (0, 0)
-                )
-                db_done, db_total = (
-                    db_pool.get_progress() if db_pool is not None else (0, 0)
-                )
+                r2_done, r2_total = r2_pool.get_progress() if r2_pool is not None else (0, 0)
+                db_done, db_total = db_pool.get_progress() if db_pool is not None else (0, 0)
                 logger.info(
                     f"[Finalize] R2: {r2_done}/{r2_total} • "
                     f"DB: {db_done}/{db_total} • "
