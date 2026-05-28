@@ -70,6 +70,7 @@ from cache import (  # type: ignore[import-not-found]
     get_cache_stats,
     norm_cache_clear,
     norm_cache_get,
+    norm_cache_list,
     norm_cache_set,
     scrape_cache_clear,
     scrape_cache_get,
@@ -417,10 +418,7 @@ def stage_enqueue_db(
     This allows the pipeline to run locally for testing without a DB.
     """
     if db_pool is None:
-        logger.warning(
-            f"Skipping DB insert for place {place.get('id')}: "
-            "DATABASE_URL not set"
-        )
+        logger.warning(f"Skipping DB insert for place {place.get('id')}: DATABASE_URL not set")
         return
     reviews = place.get("reviews") or []
     db_pool.enqueue(place, reviews)
@@ -930,8 +928,7 @@ def run_normalize_stage(
                     with _stats_lock:
                         _stats["places_processed"] += 1
                     console.print(
-                        f"  [bold yellow]✓ Place {place_id} "
-                        f"cached (skipped)[/bold yellow]"
+                        f"  [bold yellow]✓ Place {place_id} cached (skipped)[/bold yellow]"
                     )
                     logger.info(
                         f"Normalize place {place_num}/{len(scraped_ids)} "
@@ -1069,21 +1066,7 @@ def run_upload_stage(
         return
 
     # Get list of normalized place IDs
-    normalized_ids = []
-    norm_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "data",
-        "cache",
-        "normalized",
-    )
-    if os.path.exists(norm_dir):
-        for filename in os.listdir(norm_dir):
-            if filename.endswith(".json"):
-                try:
-                    normalized_ids.append(int(filename.removesuffix(".json")))
-                except ValueError:
-                    pass
-    normalized_ids.sort()
+    normalized_ids = norm_cache_list()
 
     if not normalized_ids:
         console.print(
@@ -1440,12 +1423,10 @@ def run_full_pipeline(
 
                     place_num += 1
                     console.print(
-                        f"  [bold yellow]✓ Place {place_id} "
-                        f"cached (R2+DB only)[/bold yellow]"
+                        f"  [bold yellow]✓ Place {place_id} cached (R2+DB only)[/bold yellow]"
                     )
                     logger.info(
-                        f"Place {place_num}/{total_places} "
-                        f"({place_id}): cached (R2+DB only)"
+                        f"Place {place_num}/{total_places} ({place_id}): cached (R2+DB only)"
                     )
                     progress.update(task, completed=place_num)
                     process_tracker.update(place_num)

@@ -243,6 +243,24 @@ def norm_cache_set(place_id: int, data: dict) -> None:
         logger.error(f"Failed to write norm cache {path}: {e}")
 
 
+def norm_cache_list() -> list[int]:
+    """List all cached normalized place IDs.
+
+    Used by the upload stage to find places that have been normalized
+    but not yet uploaded.
+    """
+    _ensure_dirs()
+    place_ids: list[int] = []
+    if os.path.exists(NORM_CACHE_DIR):
+        for filename in os.listdir(NORM_CACHE_DIR):
+            if filename.endswith(".json"):
+                try:
+                    place_ids.append(int(filename.removesuffix(".json")))
+                except ValueError:
+                    pass
+    return sorted(place_ids)
+
+
 def norm_cache_clear() -> int:
     """Clear all normalization cache files. Returns number of files deleted."""
     count = 0
