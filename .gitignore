@@ -95,3 +95,6 @@ scripts/upload/r2-config.json
 # Firebase credentials
 firebase-credentials.json
 server/firebase-credentials.json
+
+# Pipeline cache
+scripts/data/cache/

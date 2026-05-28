@@ -33,6 +33,7 @@ from rich.progress import (
 from rich.progress import (
     Progress as RichProgress,
 )
+from rich.table import Table
 
 # Force terminal rendering even when piped
 console = Console(force_terminal=True, soft_wrap=False)
@@ -222,3 +223,110 @@ class ProgressTracker:
         log_progress(self.phase, self.completed, self.total, rate_str)
         if logger:
             logger.info(f"✓ {self.phase} complete: {self.completed:,} items in {elapsed:.1f}s")
+
+
+class StageTimer:
+    """Track cumulative timing for a pipeline stage.
+
+    Accumulates time spent in a specific stage across all places.
+    Used to produce the aggregate timing report at the end of the pipeline.
+
+    Why this exists:
+      The pipeline processes places in parallel (16 workers). Each worker
+      returns per-place timing for each stage. The main process accumulates
+      these timings here to produce a summary at the end showing which
+      stage is the bottleneck.
+
+    Example:
+        timers = {"extract": StageTimer("Extract"), "download": StageTimer("Download")}
+        for result in results:
+            timers["extract"].add(result["extract"])
+            timers["download"].add(result["download"])
+        print_timing_report(timers)
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.total_time: float = 0.0
+        self.count: int = 0
+
+    def add(self, elapsed: float) -> None:
+        """Add elapsed time for one item."""
+        self.total_time += elapsed
+        self.count += 1
+
+    @property
+    def average(self) -> float:
+        """Average time per item."""
+        return self.total_time / self.count if self.count else 0.0
+
+
+def print_timing_report(
+    timers: dict[str, StageTimer],
+    total_elapsed: float,
+    total_places: int,
+) -> None:
+    """Print aggregate timing report at end of pipeline.
+
+    Shows total time, average per place, and percentage of total time
+    for each stage. Identifies the bottleneck stage.
+
+    Why this exists:
+      When the pipeline takes hours, you need to know which stage is slow.
+      This report shows exactly where time is spent so you can optimize.
+
+    Args:
+        timers: Dict of stage name → StageTimer with accumulated times.
+        total_elapsed: Total wall-clock time of the pipeline run.
+        total_places: Total number of places processed.
+    """
+    if not timers:
+        return
+
+    table = Table(title="Pipeline Timing Report", show_edge=True)
+    table.add_column("Stage", justify="left", style="cyan")
+    table.add_column("Total", justify="right", style="green")
+    table.add_column("Avg/Place", justify="right", style="yellow")
+    table.add_column("% Time", justify="right", style="magenta")
+    table.add_column("Count", justify="right")
+
+    # Sort by total time descending (bottleneck first)
+    sorted_timers = sorted(timers.values(), key=lambda t: t.total_time, reverse=True)
+
+    for timer in sorted_timers:
+        total_str = f"{timer.total_time:.2f}s"
+        avg_str = f"{timer.average * 1000:.1f}ms"
+        pct = (timer.total_time / total_elapsed * 100) if total_elapsed > 0 else 0
+        pct_str = f"{pct:5.1f}%"
+        table.add_row(timer.name, total_str, avg_str, pct_str, str(timer.count))
+
+    # Summary row
+    table.add_row(
+        "[bold]TOTAL[/bold]",
+        f"[bold]{total_elapsed:.2f}s[/bold]",
+        f"[bold]{(total_elapsed / total_places * 1000) if total_places else 0:.1f}ms[/bold]",
+        "100.0%",
+        str(total_places),
+    )
+
+    console.print()
+    console.print(table)
+
+    # Log to file too
+    if logger:
+        logger.info("=" * 60)
+        logger.info("Pipeline Timing Report")
+        logger.info("=" * 60)
+        for timer in sorted_timers:
+            pct = (timer.total_time / total_elapsed * 100) if total_elapsed > 0 else 0
+            logger.info(
+                f"  {timer.name:<15} total={timer.total_time:>8.2f}s  "
+                f"avg={timer.average * 1000:>7.1f}ms  {pct:5.1f}%  "
+                f"count={timer.count}"
+            )
+        logger.info(
+            f"  {'TOTAL':<15} total={total_elapsed:>8.2f}s  "
+            f"avg={(total_elapsed / total_places * 1000) if total_places else 0:>7.1f}ms  "
+            f"100.0%  count={total_places}"
+        )
+        logger.info("=" * 60)

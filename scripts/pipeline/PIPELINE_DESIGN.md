@@ -1,8 +1,6 @@
 # Unified Pipeline Design
 
-## Why This Exists
-
-Previous agents implemented, unimplemented, and re-implemented the same pipeline patterns multiple times because design decisions were not documented. This file is the **single source of truth** for the pipeline's architecture. Read it before making changes.
+> **Single source of truth for the pipeline's architecture.** Read before making changes.
 
 ## Core Philosophy: Disk Cache, Not Checkpointing
 
@@ -31,13 +29,13 @@ Each long-running function checks if its **output file exists** before doing wor
 
 ### How `--no-cache` works
 
-Every cache check has a `bypass` flag. When `--no-cache` is set:
-- API cache: Delete the file before fetching (re-download from Park4Night)
-- Image cache: Delete the file before downloading (re-download from CDN)
-- Translation cache: Clear the in-memory dict (re-translate everything)
-- Normalization cache: Delete the file before normalizing (re-run pure function)
-- R2 upload: Skip `head_object` check (force re-upload, overwrites existing)
-- DB insert: Uses `ON CONFLICT DO UPDATE` (always updates, never creates duplicates)
+Every cache check has a `no_cache` flag. When `--no-cache` is set:
+- API cache: Skip cache read → re-download from Park4Night
+- Image cache: Skip file existence check → re-download from CDN
+- Translation cache: Empty cache at startup → re-translate everything
+- Normalization cache: Delete cache files → re-run pure function
+- R2 upload: Skip `head_object` check → force re-upload (overwrites existing)
+- DB insert: Uses `ON CONFLICT DO UPDATE` → always updates, never creates duplicates
 
 ## Architecture Overview
 
@@ -47,34 +45,34 @@ Every cache check has a `bypass` flag. When `--no-cache` is set:
 │                                                                 │
 │  ┌──────────┐    ┌───────────┐    ┌──────────────────────────┐  │
 │  │ Grid     │───▶│ Place     │───▶│ ProcessPoolExecutor      │  │
-│  │ Iterator │    │ Generator │    │ (spawn, N workers)       │  │
+│  │ Iterator │    │ Generator │    │ (spawn, 16 workers)      │  │
 │  └──────────┘    └───────────┘    └──────────┬───────────────┘  │
 │                                              │                   │
-│                              Each worker does per place:         │
-│                              ┌───────────────▼───────────────┐   │
-│                              │ 1. Extract (API cache)         │   │
-│                              │ 2. Download images (disk cache)│   │
-│                              │ 3. Fetch reviews (API cache)   │   │
-│                              │ 4. Translate (disk cache)      │   │
-│                              │ 5. Normalize (disk cache)      │   │
-│                              └───────────────┬───────────────┘   │
+│  Each worker does per place (in order):      │                   │
+│  ┌───────────────────────────────────────────▼─────────────────┐│
+│  │ 1. Extract (pure function, no I/O)                          ││
+│  │ 2. Download images (disk cache: .webp file exists?)         ││
+│  │ 3. Fetch reviews (API cache: JSON file exists?)             ││
+│  │ 4. Translate (disk cache: translations.json key exists?)    ││
+│  │ 5. Normalize (disk cache: normalized/{id}.json exists?)     ││
+│  └───────────────────────────────────────────┬─────────────────┘│
 │                                              │                   │
-│                              Main process collects results:      │
-│                              ┌───────────────▼───────────────┐   │
-│                              │ 6. Enqueue R2 upload (async)   │   │
-│                              │ 7. Enqueue DB insert (async)   │   │
-│                              └───────────────┬───────────────┘   │
+│  Main process collects results:              │                   │
+│  ┌───────────────────────────────────────────▼─────────────────┐│
+│  │ 6. Enqueue R2 upload (async, 32 threads)                    ││
+│  │ 7. Enqueue DB insert (async, 8 threads)                     ││
+│  └───────────────────────────────────────────┬─────────────────┘│
 │                                              │                   │
-│  ┌──────────────────────┐  ┌────────────────▼───────────────┐   │
-│  │ R2 Worker Pool       │  │ DB Worker Pool                 │   │
-│  │ (32 threads, queue)  │  │ (8 threads, queue)             │   │
-│  └──────────────────────┘  └────────────────────────────────┘   │
+│  ┌──────────────────────┐  ┌────────────────▼─────────────────┐ │
+│  │ R2 Worker Pool       │  │ DB Worker Pool                    │ │
+│  │ (32 threads, queue)  │  │ (8 threads, queue)                │ │
+│  └──────────────────────┘  └──────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Why Worker Pools Are KEPT (Not Removed)
 
-The R2 upload pool (32 threads) and DB insert pool (8 threads) were added because **the script was very slow without them**. Here's why:
+The R2 upload pool (32 threads) and DB insert pool (8 threads) were added because **the script was very slow without them**.
 
 ### R2 Upload Pool (32 threads)
 - Each image upload is a network round-trip to Cloudflare (~50-200ms)
@@ -91,13 +89,14 @@ The R2 upload pool (32 threads) and DB insert pool (8 threads) were added becaus
 - **The queue provides backpressure**: if DB is slow, the pipeline waits
 
 ### Why NOT remove them
-Removing worker pools and going sequential would make the pipeline 5-10x slower. The queues are the RIGHT abstraction — they decouple the fast stages (extract, normalize) from the slow stages (upload, insert). If you remove them, you're trading correctness for speed without gaining anything.
+Removing worker pools and going sequential would make the pipeline 5-10x slower. The queues are the RIGHT abstraction — they decouple the fast stages (extract, normalize) from the slow stages (upload, insert).
 
 ## File Structure
 
 ```
 scripts/pipeline/
 ├── PIPELINE_DESIGN.md      # This file — read before making changes
+├── PIPELINE_REVIEW.md      # Current review and improvement plan
 ├── pipeline.py             # Unified entry point (merged scraper+normalizer+uploader)
 ├── config.py               # Configuration (API endpoints, rate limits, grid)
 ├── cache.py                # Disk cache primitives (API, translation, normalization)
@@ -108,8 +107,17 @@ scripts/pipeline/
 ├── r2_worker.py            # R2 upload worker pool (32 threads, queue-based)
 ├── db_worker.py            # DB insert worker pool (8 threads, queue-based)
 ├── logging_setup.py        # Rich console + file logging with progress bars
+├── cleanup_r2.py           # One-time utility: delete non-WebP files from R2
 └── pyproject.toml          # Dependencies (managed by uv)
 ```
+
+### Deleted Files (No Longer Used)
+
+| File | Deleted | Reason |
+|------|---------|--------|
+| `checkpoint.py` | 2026-05-28 | Disk cache replaces checkpointing |
+| `r2_uploader.py` | 2026-05-28 | Replaced by `r2_worker.py` (async pool) |
+| `supabase_uploader.py` | 2026-05-28 | Replaced by `db_worker.py` (async pool) |
 
 ## Cache Directory Structure
 
@@ -123,22 +131,47 @@ scripts/data/cache/
 │   ├── 12345.json                # Place ID → normalized place dict
 │   └── ...
 └── translations.json             # {original_text: translated_text} dict
+    translations.json.lock        # File lock for concurrent writes
 ```
+
+### Translation Cache Race Condition Fix (2026-05-28)
+
+**Problem**: Multiple worker processes (spawn via ProcessPoolExecutor) each load the translation cache from disk at startup, translate different strings, then save periodically. Without merging, the last writer wins — other workers' translations are silently lost.
+
+**Fix**: `TranslationCache._save()` now uses `fcntl.flock()` for file locking + merge-before-write:
+1. Acquire exclusive file lock (blocks until another writer finishes)
+2. Read current file from disk (may have new entries from other workers)
+3. Merge: our in-memory entries overwrite disk entries
+4. Write merged result atomically (tmp file + `os.replace`)
+5. Release lock
+
+This ensures no translations are lost when 16 workers save concurrently.
 
 ## Logging Design
 
 ### Console Output (Rich)
 - Colored output with progress bars, spinners, and ETA
-- Progress bars for each major phase (extract, download, translate, normalize, upload, insert)
+- Per-phase progress bars: Extract → Process → Finalize
 - Per-place progress bar showing overall completion
+- Aggregate timing report at end (shows bottleneck stage)
 
 ### Log File
 - Plain text with timestamps: `2024-01-15 14:30:22 [INFO    ] Processing place 12345`
-- Progress updates written periodically (every N places or every 5 seconds)
+- Progress updates written every place (not every 10)
+- Aggregate timing report written to file too
 - Log file path printed at startup
 
 ### Why progress bars must be in the log file too
 When running the pipeline in the background (e.g., via tmux or cron), you can't see the Rich progress bars. The log file is the only way to monitor progress. Every `logger.info()` call goes to both console and file.
+
+### Stage Timing Report
+At the end of each run, the pipeline prints a table showing:
+- Total time spent in each stage (extract, download, reviews, translate, normalize, R2, DB)
+- Average time per place for each stage
+- Percentage of total time (identifies bottleneck)
+- Count of places processed through each stage
+
+This helps identify which stage needs optimization when the pipeline takes hours.
 
 ## Translation Cache Design
 
@@ -148,12 +181,12 @@ The old pipeline kept translations in RAM only. This meant:
 - With 10,000 unique strings: ~17 minutes of translation time on every run
 - The translation cache could grow to 50-100MB in RAM
 
-### New design
+### Current design
 - `translations.json` file in cache directory
 - Loaded at startup into an in-memory dict (fast lookups)
 - Saved to disk every 1000 new translations (or on shutdown)
 - Thread-safe: `threading.Lock` protects writes
-- Process-safe: only one process writes at a time (main process handles saves)
+- Process-safe: `fcntl.flock()` + merge prevents data loss from concurrent writers
 
 ### Why argos-translate (not Google Translate)
 - **Offline**: No internet required after initial package download
@@ -199,31 +232,10 @@ The old pipeline kept translations in RAM only. This meant:
 2. Next M-N places: Process normally
 3. **No duplicate work** for first N places
 
-## Testing Strategy
-
-### Small-scale testing (required before any PR)
-```bash
-# First run: should process 10 places end-to-end
-cd scripts/pipeline && uv run python pipeline.py --limit 10
-
-# Second run: should complete instantly (all cached)
-cd scripts/pipeline && uv run python pipeline.py --limit 10
-
-# No-cache run: should take same time as first run
-cd scripts/pipeline && uv run python pipeline.py --limit 10 --no-cache
-```
-
-### Verification checklist
-- [ ] 10 places appear in Supabase (`SELECT COUNT(*) FROM "Place"`)
-- [ ] Images appear in R2 bucket (check via Cloudflare dashboard)
-- [ ] Re-run completes in < 5 seconds (all cached)
-- [ ] No duplicate records after re-run
-- [ ] `--no-cache` run produces same record count (not double)
-
 ## Anti-Patterns (DO NOT DO)
 
 1. **DO NOT use checkpoint files** — disk cache is simpler and more reliable
-2. **DO NOT remove worker pools** — they exist for performance, removing them makes the pipeline 5-10x slower
+2. **DO NOT remove worker pools** — they exist for performance (5-10x speedup)
 3. **DO NOT use `pip`** — use `uv add` and `uv run` exclusively
 4. **DO NOT delete data files** — the entire pipeline is append-only with cache-based skip logic
 5. **DO NOT use Park4Night CDN URLs** — all images must come from local paths only
