@@ -10,6 +10,7 @@ require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const prisma = require("../config/db");
+const { normalizePlace } = require("./normalization");
 
 const DATA_DIR = path.join(__dirname, "..", "..", "..", "scripts", "data");
 
@@ -53,60 +54,14 @@ async function seed() {
 	const BATCH = 500;
 	for (let i = 0; i < places.length; i += BATCH) {
 		const batch = places.slice(i, i + BATCH);
-		const upserts = batch.map((p) =>
-			prisma.place.upsert({
-				where: { id: p.id },
-				update: {
-					name: p.name || p.title || "",
-					latitude: p.latitude,
-					longitude: p.longitude,
-					type: p.type?.code || p.type || "",
-					description: p.description,
-					address:
-						typeof p.address === "object"
-							? [
-									p.address.street,
-									p.address.city,
-									p.address.zipcode,
-									p.address.country,
-								]
-									.filter(Boolean)
-									.join(", ")
-							: p.address,
-					rating: p.rating,
-					reviewCount: p.review_count || 0,
-					photoCount: p.photo_count || 0,
-					photos: p.photos || [],
-					rawData: p,
-					lastFetched: new Date(),
-				},
-				create: {
-					id: p.id,
-					name: p.name || p.title || "",
-					latitude: p.latitude,
-					longitude: p.longitude,
-					type: p.type?.code || p.type || "",
-					description: p.description,
-					address:
-						typeof p.address === "object"
-							? [
-									p.address.street,
-									p.address.city,
-									p.address.zipcode,
-									p.address.country,
-								]
-									.filter(Boolean)
-									.join(", ")
-							: p.address,
-					rating: p.rating,
-					reviewCount: p.review_count || 0,
-					photoCount: p.photo_count || 0,
-					photos: p.photos || [],
-					rawData: p,
-					lastFetched: new Date(),
-				},
-			}),
-		);
+		const upserts = batch.map((p) => {
+			const normalized = normalizePlace(p);
+			return prisma.place.upsert({
+				where: { id: normalized.id },
+				update: normalized,
+				create: normalized,
+			});
+		});
 
 		await Promise.allSettled(upserts);
 		console.log(`  Seeded ${Math.min(i + BATCH, places.length)}/${places.length}`);

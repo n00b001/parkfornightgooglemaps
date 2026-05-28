@@ -165,7 +165,7 @@ const App: React.FC = () => {
 			const q = searchQuery.toLowerCase();
 			filtered = filtered.filter(
 				(p: any) =>
-					(p.title || "").toLowerCase().includes(q) ||
+					(p.name || p.title || "").toLowerCase().includes(q) ||
 					(p.address || "").toLowerCase().includes(q),
 			);
 		}

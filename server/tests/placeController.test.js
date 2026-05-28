@@ -24,7 +24,13 @@ jest.mock("../src/services/lruCache", () => {
 	return LRUCache;
 });
 
+jest.mock("../src/services/park4night", () => ({
+	getPlaces: jest.fn(),
+	getReviews: jest.fn(),
+}));
+
 const placeController = require("../src/controllers/placeController");
+const park4night = require("../src/services/park4night");
 
 describe("placeController", () => {
 	let req, res;
@@ -52,17 +58,26 @@ describe("placeController", () => {
 
 		it("should return places from Prisma sorted by distance", async () => {
 			req.query = { lat: "48.8566", lng: "2.3522" };
-			const mockPlaces = [
-				{ id: 1, name: "Far", latitude: 49.0, longitude: 3.0 },
-				{ id: 2, name: "Close", latitude: 48.86, longitude: 2.36 },
-			];
+			// Mock many fresh places so it doesn't try to fetch live data
+			// Close: distance ~0.01 (48.86 - 48.8566)
+			// Far: distance ~1 (49.0 - 48.8566)
+			// Others: distance 0
+			const mockPlaces = Array.from({ length: 25 }, (_, i) => ({
+				id: i,
+				name: i === 0 ? "Far" : (i === 1 ? "Close" : `Place ${i}`),
+				latitude: i === 0 ? 49.0 : (i === 1 ? 48.86 : 48.8566),
+				longitude: i === 0 ? 3.0 : (i === 1 ? 2.36 : 2.3522),
+				lastFetched: new Date()
+			}));
 			prisma.place.findMany.mockResolvedValue(mockPlaces);
 
 			await placeController.getPlaces(req, res);
 			expect(prisma.place.findMany).toHaveBeenCalled();
 			const returned = res.json.mock.calls[0][0];
-			expect(returned[0].name).toBe("Close");
-			expect(returned[1].name).toBe("Far");
+			// The ones at distance 0 should come first
+			expect(returned[0].name).toMatch(/Place \d/);
+			expect(returned[returned.length - 2].name).toBe("Close");
+			expect(returned[returned.length - 1].name).toBe("Far");
 		});
 
 		it("should respect the limit parameter", async () => {
@@ -150,22 +165,27 @@ describe("placeController", () => {
 	});
 
 	describe("getPlaceReviews", () => {
-		it("should return reviews from DB", async () => {
+		it("should return reviews from Park4night API", async () => {
 			req.params = { id: "123" };
-			const mockReviews = [{ id: "1", content: "Great!", rating: 5 }];
-			prisma.review.findMany.mockResolvedValue(mockReviews);
+			const mockP4nReviews = [{ auteur: "User", commentaire: "Great!", note: 5, date_creation: "2023-01-01" }];
+			park4night.getReviews.mockResolvedValue(mockP4nReviews);
 
 			await placeController.getPlaceReviews(req, res);
-			expect(prisma.review.findMany).toHaveBeenCalledWith({
-				where: { placeId: 123 },
-				orderBy: { createdAt: "desc" },
+			expect(park4night.getReviews).toHaveBeenCalledWith(123);
+			expect(res.json).toHaveBeenCalledWith({
+				reviews: [{
+					author: "User",
+					content: "Great!",
+					rating: 5,
+					date: "2023-01-01",
+					needsTranslation: undefined
+				}]
 			});
-			expect(res.json).toHaveBeenCalledWith({ reviews: mockReviews });
 		});
 
 		it("should return empty reviews when none exist", async () => {
 			req.params = { id: "123" };
-			prisma.review.findMany.mockResolvedValue([]);
+			park4night.getReviews.mockResolvedValue([]);
 
 			await placeController.getPlaceReviews(req, res);
 			expect(res.json).toHaveBeenCalledWith({ reviews: [] });

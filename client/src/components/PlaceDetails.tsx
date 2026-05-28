@@ -142,7 +142,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
 
   const addToGoogleMaps = () => {
     const googlePlaceId = googleDetails?.place_id || place.google_place_id || place.rawData?.google_place_id;
-    const query = encodeURIComponent(`${place.title || place.name} ${place.address || ''}`);
+    const query = encodeURIComponent(`${place.name || place.title} ${place.address || ''}`);
     const url = googlePlaceId
       ? `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${googlePlaceId}`
       : `https://www.google.com/maps/search/?api=1&query=${query}`;
@@ -158,8 +158,8 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
     const url = new URL(window.location.origin);
     url.searchParams.set('place', place.id.toString());
     const shareData = {
-      title: place.title || place.name,
-      text: `Check out this parking spot on Park4Night: ${place.title || place.name}`,
+      title: place.name || place.title,
+      text: `Check out this parking spot on Park4Night: ${place.name || place.title}`,
       url: url.toString(),
     };
     if (navigator.share) {
@@ -209,7 +209,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
           <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full uppercase mb-2 ${TYPE_COLORS[place.type || ''] || 'bg-gray-100 text-gray-600'}`}>
             {TYPE_NAMES[place.type || ''] || 'Spot'}
           </span>
-          <h2 className="text-2xl font-bold leading-tight">{place.title || place.name}</h2>
+          <h2 className="text-2xl font-bold leading-tight">{place.name || place.title}</h2>
         </div>
         <div className="flex gap-2">
           <button onClick={sharePlace} className="p-1 text-gray-500 hover:text-blue-600 transition-colors">
