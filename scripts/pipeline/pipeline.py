@@ -2,26 +2,37 @@
 """
 Park4Night Unified ETL Pipeline
 
-Parallel per-place pipeline:
-  Multiple places processed simultaneously by worker threads.
-  Each place flows through ALL stages:
+Single script that merges scraper + normalizer + uploader into one pipeline.
+Each place flows through all stages end-to-end:
 
-    extract → download → fetch reviews → translate → enqueue R2 → normalize → enqueue DB
+    extract (API) → download images → fetch reviews → translate →
+    normalize → upload R2 → insert DB
 
-  Workers share:
-    - Translation cache (thread-safe dict with lock)
-    - R2 upload pool (async queue-based)
-    - DB insert pool (async queue-based)
+Idempotency via disk cache (NOT checkpointing):
+  Each stage checks if its output file exists before doing work.
+  Re-running with the same --limit completes instantly (all cached).
+  --no-cache bypasses all caches (force re-process everything).
 
-  --limit N means process N places (in parallel, not serial).
-  Checkpoint saved periodically for resume capability.
+Why disk cache over checkpointing:
+  - Simpler: file existence check vs. complex state machine
+  - More reliable: no central authority to get out of sync
+  - Easier to debug: ls the cache directory to see what's cached
+  - Harder to get wrong: can't forget to update the checkpoint
 
-Parallelism:
-  - 16 worker threads (one per CPU core)
-  - Each worker runs full pipeline for one place
-  - argos-translate uses 2 internal threads per worker = 32 threads total
-  - R2 pool: 32 threads for uploads
-  - DB pool: 8 threads for inserts
+Usage:
+    cd scripts/pipeline && uv run python pipeline.py --limit 10
+    cd scripts/pipeline && uv run python pipeline.py --limit 10 --no-cache
+    cd scripts/pipeline && uv run python pipeline.py --dry-run
+
+Architecture:
+  - ProcessPoolExecutor (spawn) for main pipeline workers
+    Each worker does: extract → download → reviews → translate → normalize
+  - R2 worker pool (32 threads, queue-based) for async image uploads
+  - DB worker pool (8 threads, queue-based) for async database inserts
+  - Worker pools are KEPT because removing them makes the pipeline 5-10x slower
+    (see PIPELINE_DESIGN.md for detailed explanation)
+
+Author: Generated following PIPELINE_DESIGN.md
 """
 
 from __future__ import annotations
@@ -37,13 +48,19 @@ import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, datetime
+from typing import Any
 
 # Ensure pipeline package is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-
 from api_client import Park4NightAPI  # type: ignore[import-not-found]
-from checkpoint import PipelineCheckpoint  # type: ignore[import-not-found]
+from cache import (  # type: ignore[import-not-found]
+    api_cache_clear,
+    get_cache_stats,
+    norm_cache_clear,
+    norm_cache_get,
+    norm_cache_set,
+)
 from config import (  # type: ignore[import-not-found]
     ACTIVITY_CODES,
     PLACE_TYPE_CODES,
@@ -51,7 +68,12 @@ from config import (  # type: ignore[import-not-found]
 )
 from db_worker import DBWorkerPool  # type: ignore[import-not-found]
 from image_downloader import ImageDownloader  # type: ignore[import-not-found]
-from logging_setup import console, create_progress
+from logging_setup import (  # type: ignore[import-not-found]
+    console,
+    create_progress,
+    log_progress,
+    setup_logging,
+)
 from normalizer import (  # type: ignore[import-not-found]
     normalize_place,
     normalize_review,
@@ -61,15 +83,15 @@ from translator import (  # type: ignore[import-not-found]
     ensure_packages_installed,
     get_cache_size,
     preload_models,
+    save_cache,
     translate_batch,
 )
 
 logger = logging.getLogger("pipeline")
 
-
-# ── Globals (for signal handling) ─────────────────
-_checkpoint: PipelineCheckpoint | None = None
+# ── Globals (for signal handling) ─────────────────────────────────────
 _r2_config: dict | None = None
+_no_cache_global = False
 _stats_lock = threading.Lock()
 _stats: dict[str, int] = {
     "places_processed": 0,
@@ -77,29 +99,24 @@ _stats: dict[str, int] = {
     "images_uploaded_r2": 0,
     "translations_cached": 0,
     "db_inserts": 0,
-}
-_timing: dict[str, float] = {
-    "extract": 0.0,
-    "translate": 0.0,
-    "normalize": 0.0,
-    "upload_r2": 0.0,
-    "insert_db": 0.0,
-    "total": 0.0,
+    "cache_hits": 0,
+    "cache_misses": 0,
 }
 
 
-# ── Helpers ────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────
 
 
-def _str(value) -> str:
+def _str(value: Any) -> str:
+    """Safely convert a value to string, handling None."""
     return str(value).strip() if value is not None else ""
 
 
-# ── Stage 1: Extract (structure raw API data) ─
+# ── Stage 1: Extract (structure raw API data) ────────────────────────
 def extract_place_data(place: dict) -> dict | None:
     """Structure raw API data into a clean place dict.
 
-    Pure function: no I/O, no checkpoint, no side effects.
+    Pure function: no I/O, no cache, no side effects.
     Returns structured place dict ready for image download, or None on failure.
     """
     place_id = int(place.get("id") or 0)
@@ -179,29 +196,46 @@ def extract_place_data(place: dict) -> dict | None:
     }
 
 
-# ── Stage 1b: Download images ─
+# ── Stage 2: Download images ─────────────────────────────────────────
 def download_images(place: dict, downloader: ImageDownloader) -> dict:
     """Download photos for a place. Updates place["photos"] in-place.
 
-    Returns the same place dict with photos populated.
+    Disk cache: images are saved to data/images/places/{id}/.
+    If .webp file already exists, download is skipped (unless no_cache).
     """
     place_id = place["id"]
     raw_photos = place.get("_raw_photos", [])
     photos = downloader.download_place_photos(place_id, raw_photos)
     place["photos"] = photos
-    _stats["images_downloaded"] += len(photos)
+    with _stats_lock:
+        _stats["images_downloaded"] += len(photos)
     return place
 
 
-# ── Stage 2: Translate (translate strings for this place) ─
-def stage_translate(place: dict) -> dict:
+# ── Stage 3: Fetch reviews ───────────────────────────────────────────
+def fetch_reviews(place: dict, api: Park4NightAPI) -> dict:
+    """Fetch reviews for a place from API (with disk cache).
+
+    If reviews are cached on disk, returns immediately without HTTP request.
+    """
+    place_id = place["id"]
+    reviews = api.get_reviews(place_id)
+    place["reviews"] = reviews
+    return place
+
+
+# ── Stage 4: Translate ───────────────────────────────────────────────
+def stage_translate(place: dict, no_cache: bool = False) -> dict:
     """Translate all non-English strings for a single place + reviews.
+
+    Uses persistent disk cache: already-translated strings are loaded
+    from disk at startup. Re-running the pipeline does not re-translate
+    cached strings.
 
     Applies translations directly to the place dict:
       - descriptions["translated"] = English translation
       - pricing values translated in-place
       - review text translated: {"default": English, "_original": original}
-    Uses in-memory cache — repeated strings across places are instant.
     """
     # Collect (text, src_lang) pairs to translate
     texts_to_translate: list[tuple[str, str]] = []
@@ -216,8 +250,14 @@ def stage_translate(place: dict) -> dict:
     if isinstance(raw_pricing, dict):
         for value in raw_pricing.values():
             val = (str(value) or "").strip().lower()
-            if val and val not in ("free", "paid", "on request", "gratuit", "payant"):
-                texts_to_translate.append((val, "fr"))  # pricing is always French
+            if val and val not in (
+                "free",
+                "paid",
+                "on request",
+                "gratuit",
+                "payant",
+            ):
+                texts_to_translate.append((val, "fr"))
 
     # Collect review text to translate (always French)
     reviews = place.get("reviews", [])
@@ -226,10 +266,11 @@ def stage_translate(place: dict) -> dict:
         if text and str(text).strip():
             texts_to_translate.append((str(text).strip(), "fr"))
 
-    # Translate (parallel, uses cache for already-seen strings)
+    # Translate (parallel, uses persistent disk cache)
     if texts_to_translate:
-        translations = translate_batch(texts_to_translate, max_workers=8)
-        _stats["translations_cached"] = get_cache_size()
+        translations = translate_batch(texts_to_translate, max_workers=8, no_cache=no_cache)
+        with _stats_lock:
+            _stats["translations_cached"] = get_cache_size()
 
         # Apply translations to descriptions
         if isinstance(raw_desc, dict):
@@ -264,13 +305,33 @@ def stage_translate(place: dict) -> dict:
     return place
 
 
-# ── Stage 4: Normalize (clean tables, no translation) ─
+# ── Stage 5: Normalize ───────────────────────────────────────────────
 def stage_normalize(place: dict) -> dict | None:
     """Normalize place + reviews into clean DB-ready records.
 
     No translation — all text must be pre-translated by stage_translate.
+    Uses disk cache: if normalized output exists on disk, returns cached.
     Returns fully normalized place ready for DB insert, or None on failure.
     """
+    place_id = place["id"]
+
+    # Check normalization cache
+    cached = norm_cache_get(place_id)
+    if cached is not None:
+        with _stats_lock:
+            _stats["cache_hits"] += 1
+        # Still need to normalize reviews (they're not cached separately)
+        normalized_reviews = []
+        for review in place.get("reviews", []):
+            nr = normalize_review(review)
+            if nr:
+                normalized_reviews.append(nr)
+        cached["reviews"] = normalized_reviews
+        return cached
+
+    with _stats_lock:
+        _stats["cache_misses"] += 1
+
     normalized = normalize_place(place)
     if not normalized:
         return None
@@ -283,11 +344,17 @@ def stage_normalize(place: dict) -> dict | None:
             normalized_reviews.append(normalized_review)
     normalized["reviews"] = normalized_reviews
 
+    # Cache normalized data
+    norm_cache_set(place_id, normalized)
+
     return normalized
 
 
-# ── Stage 4: Enqueue R2 upload (non-blocking) ─
-def stage_enqueue_r2(place: dict, r2_pool: R2WorkerPool | None) -> dict:
+# ── Stage 6: Enqueue R2 upload (non-blocking) ────────────────────────
+def stage_enqueue_r2(
+    place: dict,
+    r2_pool: R2WorkerPool | None,
+) -> dict:
     """Enqueue images for async R2 upload. Non-blocking.
 
     Worker threads dequeue and upload in parallel, then update DB with URLs.
@@ -302,7 +369,7 @@ def stage_enqueue_r2(place: dict, r2_pool: R2WorkerPool | None) -> dict:
     return place
 
 
-# ── Stage 5: Insert DB (place + reviews into Supabase) ─
+# ── Stage 7: Enqueue DB insert (non-blocking) ────────────────────────
 def stage_enqueue_db(
     place: dict,
     db_pool: DBWorkerPool | None,
@@ -314,85 +381,41 @@ def stage_enqueue_db(
     """
     if db_pool is None:
         raise RuntimeError("DB worker pool is None — pipeline misconfigured")
-    reviews = place.get("reviews") or []  # empty list is valid (no reviews for this place)
-
-    # Enqueue place + pre-normalized reviews for async insert
+    reviews = place.get("reviews") or []
     db_pool.enqueue(place, reviews)
-    _stats["db_inserts"] += 1
+    with _stats_lock:
+        _stats["db_inserts"] += 1
 
 
-# ── Generator: yield raw places from API ──────────
+# ── Generator: yield places from grid points ─────────────────────────
 def place_source(
     api: Park4NightAPI,
-    checkpoint: PipelineCheckpoint,
     limit: int | None = None,
-    no_cache: bool = False,
-):
-    """Generator that yields place tuples from the Park4Night API.
+) -> Any:
+    """Generator that yields raw places from the Park4Night API.
 
-    Yields (place_or_marker, grid_point, is_cached) tuples:
-      - place_or_marker: raw place dict, or {"id": ..., "_cached": True} for cached
-      - grid_point: (lat, lng) tuple, or None for cached markers
-      - is_cached: True if this is a cached marker (skip pipeline)
+    Iterates through all grid points, fetches places from each point,
+    and yields unique places (deduplicated by ID).
 
-    Two phases:
-      Phase 1: Already-processed places (from checkpoint)
-        - Cache mode: yield cached markers (skip pipeline)
-        - no-cache mode: re-fetch from API, yield raw place
-      Phase 2: New places from remaining grid points
-        - Skip already-processed places
-        - Yield raw places
+    Disk cache: API responses are cached per grid point. Re-running
+    the pipeline finds cached responses and skips HTTP requests.
 
-    Respects `limit` across both phases.
+    Args:
+        api: Park4NightAPI client (with disk cache).
+        limit: Maximum number of places to yield (None = no limit).
+
+    Yields:
+        (place_dict, grid_point) tuples where grid_point is (lat, lng).
     """
-    total_yielded = 0
-
-    # ── Phase 1: Already-processed places ──────────────────────
-    processed_ids = checkpoint.get_processed_place_ids(limit)
-    if processed_ids:
-        cache_label = "[dim]cached[/dim]" if not no_cache else "[yellow]re-fetching[/yellow]"
-        console.print(
-            f"  [bold blue]{len(processed_ids)}[/bold blue] processed places ({cache_label})"
-        )
-
-    for place_id in processed_ids:
-        if limit is not None and total_yielded >= limit:
-            break
-
-        if no_cache:
-            # Re-fetch from API using stored grid point
-            grid_point = checkpoint.get_place_grid_point(place_id)
-            if grid_point:
-                lat, lng = grid_point
-                place = api.get_place_by_grid_point(place_id, lat, lng)
-                if place:
-                    yield (place, (lat, lng), False)
-                    total_yielded += 1
-                    continue
-            console.print(f"  [yellow]⚠ Place {place_id} not found in API, skipping[/yellow]")
-        else:
-            # Cache mode: yield marker to skip pipeline
-            yield ({"id": place_id, "_cached": True}, None, True)
-            total_yielded += 1
-
-    # ── Phase 2: New places from grid points ───────────────────
     grid_points = Park4NightAPI.generate_grid_points()
-    remaining = checkpoint.get_remaining_grid_points(grid_points)
-
-    if not remaining:
-        if not processed_ids:
-            console.print("  [yellow]All grid points already processed.[/yellow]")
-        return
+    total_yielded = 0
+    seen_ids: set[int] = set()
 
     limit_msg = f" (limit: {limit} places)" if limit else ""
-    already = total_yielded
-    new_limit = (limit - already) if (limit is not None and limit > already) else None
-    if new_limit:
-        limit_msg = f" (limit: {new_limit} new places)"
-    console.print(f"  [bold blue]{len(remaining)}[/bold blue] grid points remaining{limit_msg}")
+    console.print(f"  [bold blue]{len(grid_points)}[/bold blue] grid points to scan{limit_msg}")
 
-    for lat, lng in remaining:
-        if new_limit is not None and (total_yielded - already) >= new_limit:
+    for lat, lng in grid_points:
+        if limit is not None and total_yielded >= limit:
             break
 
         places = api.get_places(lat, lng)
@@ -400,32 +423,27 @@ def place_source(
             continue
 
         for place in places:
-            if new_limit is not None and (total_yielded - already) >= new_limit:
+            if limit is not None and total_yielded >= limit:
                 break
 
             place_id = int(place.get("id") or 0)
-
-            # Skip already-processed places
-            if checkpoint.is_place_processed(place_id):
-                continue
-
-            yield (place, (lat, lng), False)
-            total_yielded += 1
+            if place_id and place_id not in seen_ids:
+                seen_ids.add(place_id)
+                yield (place, (lat, lng))
+                total_yielded += 1
 
 
-# ── Convert existing mode ──────────────────────────
-# ── Signal Handling ────────────────────────────────
-def _handle_signal(signum, frame) -> None:
-    """Handle SIGINT/SIGTERM gracefully."""
+# ── Signal Handling ──────────────────────────────────────────────────
+def _handle_signal(signum: int, frame: Any) -> None:
+    """Handle SIGINT/SIGTERM gracefully: save caches and exit."""
     sig_name = signal.Signals(signum).name
-    console.print(f"\n[bold yellow]Received {sig_name}, saving checkpoint...[/bold yellow]")
-    if _checkpoint is not None:
-        _checkpoint._save()
-        console.print("[bold green]✓ Checkpoint saved.[/bold green]")
+    console.print(f"\n[bold yellow]Received {sig_name}, saving caches...[/bold yellow]")
+    save_cache()  # Save translation cache to disk
+    console.print("[bold green]✓ Caches saved.[/bold green]")
     sys.exit(0)
 
 
-# ── Worker initializer (called once per process) ──
+# ── Worker initializer (called once per process) ─────────────────────
 def _worker_init() -> None:
     """Initialize worker process: preload argos models.
 
@@ -435,7 +453,7 @@ def _worker_init() -> None:
     preload_models()
 
 
-# ── Worker function (must be top-level for pickling) ──
+# ── Worker function (must be top-level for pickling) ─────────────────
 def _worker_process_place(
     raw_place: dict,
     photos: list[dict],
@@ -446,6 +464,12 @@ def _worker_process_place(
     Each process gets its own argos-translate instance (no contention).
     Does: extract → download → fetch reviews → translate → normalize
     Returns place data + timing (R2/DB enqueueing done by main process).
+
+    Disk cache is used at every stage:
+      - API responses cached per grid point
+      - Images cached as .webp files on disk
+      - Translations cached in translations.json
+      - Normalized data cached per place ID
     """
     place_id = int(raw_place.get("id") or 0)
     place_start = time.time()
@@ -457,25 +481,25 @@ def _worker_process_place(
     if not place:
         return {"error": f"Failed to extract place {place_id}"}
 
-    # ── Stage 1b: Download images ─
+    # ── Stage 2: Download images ─
     t0 = time.time()
     place["_raw_photos"] = photos
     downloader = ImageDownloader(no_cache=no_cache)
     place = download_images(place, downloader)
     download_time = time.time() - t0
 
-    # ── Stage 1c: Fetch reviews ─
+    # ── Stage 3: Fetch reviews ─
     t0 = time.time()
-    api = Park4NightAPI()
-    place["reviews"] = api.get_reviews(place_id)
+    api = Park4NightAPI(no_cache=no_cache)
+    place = fetch_reviews(place, api)
     fetch_time = time.time() - t0
 
-    # ── Stage 2: Translate ─
+    # ── Stage 4: Translate ─
     t0 = time.time()
-    place = stage_translate(place)
+    place = stage_translate(place, no_cache=no_cache)
     translate_time = time.time() - t0
 
-    # ── Stage 3: Normalize ─
+    # ── Stage 5: Normalize ─
     t0 = time.time()
     place = stage_normalize(place)
     normalize_time = time.time() - t0
@@ -495,33 +519,52 @@ def _worker_process_place(
     }
 
 
+# ── Main Pipeline ────────────────────────────────────────────────────
 def run_pipeline(
-    api: Park4NightAPI,
-    checkpoint: PipelineCheckpoint,
     limit: int | None = None,
-    num_workers: int = 16,
     no_cache: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """Run the parallel per-place pipeline using ProcessPoolExecutor.
 
     Each worker process gets its own argos-translate instance (no contention).
     Workers: extract → download → fetch reviews → translate → normalize
-    Main process: enqueue R2 → enqueue DB → checkpoint
+    Main process: enqueue R2 → enqueue DB → save caches
+
+    Disk cache ensures idempotency:
+      - Re-running with same --limit: all stages find cached output → skip
+      - --no-cache: bypass all caches → re-process everything
     """
+    global _no_cache_global
+    _no_cache_global = no_cache
+
+    # 16 workers: half of 32 cores. Translation (argos) is CPU-bound,
+    # so we don't saturate all cores — leaves room for I/O workers.
+    num_workers = 16
+
+    # Clear caches if --no-cache
+    if no_cache:
+        console.print("[yellow]Clearing disk caches (--no-cache mode)...[/yellow]")
+        api_cache_clear()
+        norm_cache_clear()
+
     # Setup R2 worker pool (async queue-based uploads)
+    # KEPT because removing it makes the pipeline 5-10x slower.
+    # 32 threads for parallel uploads to Cloudflare R2.
     r2_pool: R2WorkerPool | None = None
     if _r2_config is not None:
         r2_pool = R2WorkerPool(_r2_config, no_cache=no_cache)
         r2_pool.start()
 
     # Setup DB worker pool (async queue-based inserts)
+    # KEPT because removing it makes the pipeline 5-10x slower.
+    # 8 threads for parallel inserts to Supabase PostgreSQL.
     db_pool: DBWorkerPool | None = None
     if os.environ.get("DATABASE_URL"):
         db_pool = DBWorkerPool()
-        if db_pool is not None:
-            db_pool.start()
+        db_pool.start()
 
-    # Install translation packages once in main process before spawning workers.
+    # Install translation packages once in main process before spawning.
     # With spawn, each worker starts fresh — packages are installed globally
     # (shared across processes), so this only needs to happen once.
     ensure_packages_installed()
@@ -531,118 +574,113 @@ def run_pipeline(
     workers_label = f" with {num_workers} workers"
     console.print(f"\n[bold cyan]Starting pipeline{limit_label}{workers_label}...[/bold cyan]\n")
 
+    if dry_run:
+        console.print("[bold yellow]=== DRY RUN — stopping here ===[/bold yellow]")
+        if r2_pool is not None:
+            r2_pool.shutdown()
+        if db_pool is not None:
+            db_pool.shutdown()
+        return
+
     # Collect all places to process (pre-fetch from generator)
-    # Each item is: (place_or_marker, grid_point, is_cached)
-    places_to_process = list(place_source(api, checkpoint, limit, no_cache))
+    # Each item is: (raw_place_dict, grid_point)
+    places_to_process = list(place_source(Park4NightAPI(no_cache=no_cache), limit=limit))
     total_places = len(places_to_process)
 
     if not total_places:
+        console.print("[yellow]No places to process.[/yellow]")
+        if r2_pool is not None:
+            r2_pool.shutdown()
+        if db_pool is not None:
+            db_pool.shutdown()
         return
 
+    pipeline_start = time.time()
     with create_progress("Pipeline", total=total_places) as progress:
         task = progress.add_task("Processing", total=total_places)
         place_num = 0
         errors = 0
 
-        # Separate cached markers from real work
-        cached_count = sum(1 for _, _, is_cached in places_to_process if is_cached)
-        real_places = [
-            (place_or_marker, grid_point)
-            for place_or_marker, grid_point, is_cached in places_to_process
-            if not is_cached
-        ]
+        # Use spawn (not fork) to avoid inheriting argos locks.
+        # Each worker preloads models once via initializer.
+        multiprocessing.set_start_method("spawn", force=True)
+        with ProcessPoolExecutor(
+            max_workers=num_workers,
+            initializer=_worker_init,
+        ) as executor:
+            futures = {
+                executor.submit(
+                    _worker_process_place,
+                    raw_place,
+                    raw_place.get("photos", []),
+                    no_cache,
+                ): (raw_place, grid_point)
+                for raw_place, grid_point in places_to_process
+            }
 
-        # Print cached summary
-        if cached_count:
-            console.print(f"  [dim]✓ {cached_count} place(s) cached, skipping pipeline[/dim]")
-            place_num += cached_count
-            with _stats_lock:
-                _stats["places_processed"] += cached_count
-            progress.update(task, completed=place_num)
+            for future in as_completed(futures):
+                place_num += 1
+                raw_place, grid_point = futures[future]
+                place_id = int(raw_place.get("id") or 0)
 
-        # Process real places
-        if real_places:
-            # Use spawn (not fork) to avoid inheriting argos locks
-            # Each worker preloads models once via initializer
-            multiprocessing.set_start_method("spawn", force=True)
-            with ProcessPoolExecutor(
-                max_workers=num_workers,
-                initializer=_worker_init,
-            ) as executor:
-                futures = {
-                    executor.submit(
-                        _worker_process_place,
-                        raw_place,
-                        raw_place.get("photos", []),
-                        no_cache,
-                    ): (raw_place, grid_point)
-                    for raw_place, grid_point in real_places
-                }
+                try:
+                    result = future.result()
 
-                for future in as_completed(futures):
-                    place_num += 1
-                    raw_place, grid_point = futures[future]
-                    place_id = int(raw_place.get("id") or 0)
-
-                    try:
-                        result = future.result()
-
-                        if "error" in result:
-                            console.print(f"  [red]✗ {result['error']}[/red]")
-                            errors += 1
-                        else:
-                            place = result.pop("place")
-
-                            # Main process: enqueue R2
-                            t0 = time.time()
-                            place = stage_enqueue_r2(place, r2_pool)
-                            r2_time = time.time() - t0
-
-                            # Main process: enqueue DB
-                            t0 = time.time()
-                            stage_enqueue_db(place, db_pool)
-                            db_time = time.time() - t0
-
-                            # Main process: mark place processed + save checkpoint
-                            if grid_point:
-                                checkpoint.mark_place_processed(
-                                    place_id, grid_point[0], grid_point[1]
-                                )
-                            with _stats_lock:
-                                _stats["places_processed"] += 1
-
-                            rate = (
-                                place_num / result["elapsed"]
-                                if result["elapsed"] > 0
-                                else 0
-                            )
-                            console.print(
-                                f"  [bold green]✓ Place {result['place_id']} "
-                                f"complete ({result['elapsed']:.2f}s, "
-                                f"{rate:.1f} places/s)[/bold green]"
-                            )
-
-                            logger.info(
-                                f"Place {place_num} ({result['place_id']}): "
-                                f"total={result['elapsed']:.3f}s | "
-                                f"extract={result['extract']:.3f}s, "
-                                f"download={result['download']:.3f}s, "
-                                f"translate={result['translate']:.3f}s, "
-                                f"r2={r2_time:.3f}s, "
-                                f"normalize={result['normalize']:.3f}s, "
-                                f"db={db_time:.3f}s | "
-                                f"rate={rate:.2f} places/s"
-                            )
-
-                    except Exception as e:
-                        console.print(
-                            f"  [red]✗ Place {place_id} crashed: {e}[/red]"
-                        )
+                    if "error" in result:
+                        console.print(f"  [red]✗ {result['error']}[/red]")
                         errors += 1
+                    else:
+                        place = result.pop("place")
 
-                    progress.update(task, completed=place_num)
+                        # Main process: enqueue R2 upload
+                        t0 = time.time()
+                        place = stage_enqueue_r2(place, r2_pool)
+                        r2_time = time.time() - t0
 
-    # Cleanup: wait for all uploads/inserts to finish, then shut down workers
+                        # Main process: enqueue DB insert
+                        t0 = time.time()
+                        stage_enqueue_db(place, db_pool)
+                        db_time = time.time() - t0
+
+                        with _stats_lock:
+                            _stats["places_processed"] += 1
+
+                        rate = place_num / result["elapsed"] if result["elapsed"] > 0 else 0
+                        console.print(
+                            f"  [bold green]✓ Place {result['place_id']} "
+                            f"complete ({result['elapsed']:.2f}s, "
+                            f"{rate:.1f} places/s)[/bold green]"
+                        )
+
+                        logger.info(
+                            f"Place {place_num} ({result['place_id']}): "
+                            f"total={result['elapsed']:.3f}s | "
+                            f"extract={result['extract']:.3f}s, "
+                            f"download={result['download']:.3f}s, "
+                            f"translate={result['translate']:.3f}s, "
+                            f"r2={r2_time:.3f}s, "
+                            f"normalize={result['normalize']:.3f}s, "
+                            f"db={db_time:.3f}s | "
+                            f"rate={rate:.2f} places/s"
+                        )
+
+                except Exception as e:
+                    console.print(f"  [red]✗ Place {place_id} crashed: {e}[/red]")
+                    errors += 1
+
+                progress.update(task, completed=place_num)
+                # Log progress to file every 10 places
+                if place_num % 10 == 0:
+                    elapsed = time.time() - pipeline_start
+                    rate = place_num / elapsed if elapsed > 0 else 0
+                    log_progress(
+                        "Pipeline",
+                        place_num,
+                        total_places,
+                        f"{rate:.1f}/s",
+                    )
+
+    # Cleanup: wait for all uploads/inserts to finish, then shut down
     if r2_pool is not None:
         console.print("\n[dim]Waiting for R2 uploads to complete...[/dim]")
         r2_pool.shutdown()
@@ -651,15 +689,24 @@ def run_pipeline(
         console.print("[dim]Waiting for DB inserts to complete...[/dim]")
         db_pool.shutdown()
 
+    # Save translation cache to disk
+    save_cache()
+
     if errors:
         console.print(f"\n[bold red]{errors} places had errors[/bold red]")
 
 
-# ── CLI ────────────────────────────────────────────
+# ── CLI ───────────────────────────────────────────────────────────────
 def main() -> None:
-    global _checkpoint, logger, _r2_config
+    global _r2_config
 
-    parser = argparse.ArgumentParser(description="Park4Night Unified ETL Pipeline")
+    parser = argparse.ArgumentParser(
+        description="Park4Night Unified ETL Pipeline\n\n"
+        "Single script: scrape → normalize → translate → upload R2 → insert DB\n\n"
+        "Idempotent: re-running with same --limit completes instantly (disk cache).\n"
+        "Use --no-cache to bypass all caches and re-process everything.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--limit",
         type=int,
@@ -682,24 +729,15 @@ def main() -> None:
         help="Path to .env file",
     )
     parser.add_argument(
-        "--workers",
-        type=int,
-        default=8,
-        help="Number of parallel worker threads (default: 8)",
-    )
-    parser.add_argument(
         "--no-cache",
         action="store_true",
-        help="Bypass disk cache — re-download all images (useful for testing speed)",
+        help="Bypass all disk caches — re-download, re-translate, re-upload",
     )
     args = parser.parse_args()
 
-    # Setup logging
+    # Setup logging (dual output: Rich console + timestamped log file)
     log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
-    from logging_setup import setup_logging
-
     logger, log_file = setup_logging(log_dir)
-    _checkpoint = PipelineCheckpoint()
 
     console.print("\n[bold cyan]╔═══════════════════════════════╗[/bold cyan]")
     console.print("[bold cyan]║  Park4Night Unified Pipeline ║[/bold cyan]")
@@ -708,10 +746,12 @@ def main() -> None:
     console.print(f"  Log file: [cyan]{log_file}[/cyan]")
     if args.limit:
         console.print(f"  Limit: [yellow]{args.limit} places[/yellow]")
+    if args.no_cache:
+        console.print("  [yellow]Cache disabled — all data will be re-processed[/yellow]")
 
     # Load environment
     if args.env and os.path.exists(args.env):
-        from dotenv import load_dotenv
+        from dotenv import load_dotenv  # type: ignore[import-not-found]
 
         load_dotenv(args.env)
 
@@ -720,52 +760,22 @@ def main() -> None:
     if args.r2_config and os.path.exists(args.r2_config):
         with open(args.r2_config, encoding="utf-8") as f:
             _r2_config = json.load(f)
+        console.print(f"  R2 config: [cyan]{args.r2_config}[/cyan]")
 
-    # Signal handling
+    # Signal handling (save caches on Ctrl+C)
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    # Store no_cache globally for worker access
-    globals()["_no_cache"] = args.no_cache
-    if args.no_cache:
-        console.print("  [yellow]Cache disabled — all images will be re-downloaded[/yellow]")
+    # Show cache stats
+    cache_stats = get_cache_stats()
+    console.print(f"  Cache: [cyan]{cache_stats}[/cyan]")
 
-    start_time = time.time()
-
-    # ── Run pipeline ───────────────────────
-    api = Park4NightAPI()
+    # Run the pipeline
     run_pipeline(
-        api, _checkpoint, limit=args.limit, num_workers=args.workers, no_cache=args.no_cache
+        limit=args.limit,
+        no_cache=args.no_cache,
+        dry_run=args.dry_run,
     )
-
-    elapsed = time.time() - start_time
-
-    # ── Summary ───────────────────────────
-    summary = _checkpoint.get_summary()
-    total_places = _stats["places_processed"]
-    rate = total_places / elapsed if elapsed > 0 else 0
-
-    console.print("\n[bold green]╔═══════════════════════╗[/bold green]")
-    console.print("[bold green]║  Pipeline complete!  ║[/bold green]")
-    console.print("[bold green]╚═══════════════════════╝[/bold green]")
-    console.print(f"  Time: [cyan]{elapsed:.1f}s[/cyan]")
-    console.print(f"  Grid points: [cyan]{summary['grid_points_done']}[/cyan]")
-    console.print(f"  Places processed: [cyan]{total_places}[/cyan] ({rate:.1f} places/s)")
-    console.print(f"  Stats: {_stats}")
-
-    # Extrapolation for 200,000 places
-    eta_hours = 0.0
-    if rate > 0:
-        eta_seconds = 200_000 / rate
-        eta_hours = eta_seconds / 3600
-        console.print("\n[yellow]Extrapolation for 200,000 places:[/yellow]")
-        console.print(
-            f"  At {rate:.1f} places/s → ~{eta_hours:.1f} hours ({eta_seconds / 60:.0f} minutes)"
-        )
-
-    logger.info(f"Pipeline complete in {elapsed:.1f}s")
-    logger.info(f"Rate: {rate:.2f} places/s")
-    logger.info(f"Extrapolation 200k places: ~{eta_hours:.1f} hours at {rate:.1f} places/s")
 
 
 if __name__ == "__main__":
