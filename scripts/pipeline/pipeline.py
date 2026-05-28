@@ -667,11 +667,7 @@ def run_pipeline(
                             with _stats_lock:
                                 _stats["places_processed"] += 1
 
-                            rate = (
-                                place_num / result["elapsed"]
-                                if result["elapsed"] > 0
-                                else 0
-                            )
+                            rate = place_num / result["elapsed"] if result["elapsed"] > 0 else 0
                             console.print(
                                 f"  [bold green]✓ Place {result['place_id']} "
                                 f"complete ({result['elapsed']:.2f}s, "
@@ -691,9 +687,7 @@ def run_pipeline(
                             )
 
                     except Exception as e:
-                        console.print(
-                            f"  [red]✗ Place {place_id} crashed: {e}[/red]"
-                        )
+                        console.print(f"  [red]✗ Place {place_id} crashed: {e}[/red]")
                         errors += 1
 
                     progress.update(task, completed=place_num)

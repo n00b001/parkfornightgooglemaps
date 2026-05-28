@@ -210,9 +210,7 @@ class R2WorkerPool:
                     continue
 
                 r2_key = f"places/{place_id}/{photo_id}_{img_type}.webp"  # Always .webp
-                url = _upload_single(
-                    r2, local_path, r2_key, self.config, no_cache=self._no_cache
-                )
+                url = _upload_single(r2, local_path, r2_key, self.config, no_cache=self._no_cache)
                 if url:
                     photo[r2_field] = url
                     uploaded += 1
