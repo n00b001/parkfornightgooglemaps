@@ -82,6 +82,7 @@ def _ensure_lookup_entry(
     except Exception as e:
         conn.rollback()
         logger.error(f"Failed to upsert {table} {code}: {e}")
+        raise  # propagate — caller must handle missing lookup entry
     finally:
         cur.close()
 
@@ -257,9 +258,9 @@ class DBWorkerPool:
         place: dict,
     ) -> None:
         """Upsert lookup table entries for this place."""
-        # Place type
-        type_code = place.get("type", {}).get("code", "")
-        type_label = place.get("type", {}).get("label", "")
+        # Place type (normalized data uses flat keys: type_code, type_label)
+        type_code = place.get("type_code", "")
+        type_label = place.get("type_label", "")
         if type_code:
             _ensure_lookup_entry(
                 conn,
@@ -319,7 +320,13 @@ class DBWorkerPool:
         """Insert a single place into the database."""
         cur = conn.cursor()
         try:
-            type_code = place.get("type", {}).get("code", "")
+            type_code = place.get("type_code", "")
+            type_id = type_map.get(type_code)
+            if type_id is None:
+                raise KeyError(
+                    f"Place {place.get('id')}: type_code '{type_code}' "
+                    f"not in PlaceType table — upsert may have failed"
+                )
 
             execute_values(
                 cur,
@@ -338,7 +345,7 @@ class DBWorkerPool:
                         place.get("name") or place.get("title") or "",
                         place["latitude"],
                         place["longitude"],
-                        type_map.get(type_code, 1),
+                        type_id,
                         json.dumps(place.get("address", {})),
                         place.get("rating"),
                         place.get("review_count", 0),
@@ -387,6 +394,7 @@ class DBWorkerPool:
         except Exception as e:
             conn.rollback()
             logger.error(f"Failed to insert place {place.get('id')}: {e}")
+            raise  # propagate to _worker for proper stats tracking
         finally:
             cur.close()
 
@@ -441,5 +449,6 @@ class DBWorkerPool:
         except Exception as e:
             conn.rollback()
             logger.error(f"Failed to insert reviews: {e}")
+            raise  # propagate to _worker for proper stats tracking
         finally:
             cur.close()
