@@ -2,23 +2,22 @@
 
 > **Date**: 2026-05-28
 > **Scope**: Full code review of `scripts/pipeline/` — idempotency, correctness, performance, progress tracking
-> **Status**: ✅ All fixes implemented, ready for testing with credentials
+> **Status**: Review complete, fixes planned but NOT implemented (awaiting approval)
 
 ---
 
 ## Executive Summary
 
-The pipeline **is idempotent** for the same `--limit` value. Re-running with `--limit 3` processes the same 3 places, and all 7 disk caches cause each stage to skip immediately. The `--no-cache` flag correctly forces re-processing.
+The pipeline **is fundamentally idempotent** for the same `--limit` value. Re-running with `--limit 3` processes the same 3 places, and all 7 disk caches cause each stage to skip immediately. The `--no-cache` flag correctly forces re-processing.
 
-**However, there are real issues that need fixing:**
+**However, there are real bugs that break expected behavior:**
 
-| Category | Issue | Severity |
-|----------|-------|----------|
-| Progress tracking | R2/DB worker pools have NO progress bars or per-task logging | **High** |
-| Performance | API client + ImageDownloader created per place (not per worker) | **Medium** |
-| Progress tracking | No visibility into R2 upload progress during "Finalize" phase | **Medium** |
-| Progress tracking | No progress bar for DB insert progress during "Finalize" phase | **Medium** |
-| Documentation | Some "why" comments missing in worker pools | **Low** |
+| Bug | Severity | Impact |
+|-----|----------|--------|
+| `--no-cache` doesn't work for API/images in workers | **Critical** | Re-run with `--no-cache` still uses cached API responses and images |
+| DB insert races ahead of R2 upload | **High** | Photos in DB may have local paths instead of R2 URLs |
+| `_stats` uses `threading.Lock` across processes | **Medium** | Stats display is wrong (but pipeline logic is correct) |
+| R2 progress bar shows places, not images | **Low** | Progress bar label is misleading |
 
 ---
 
@@ -119,98 +118,145 @@ Phase 2 (Process):
 Result: Same duration as Run 1. Same records (overwritten, not duplicated).
 ```
 
-**Conclusion: Idempotency is CORRECT for all three scenarios.** ✅
+**Conclusion: Idempotency is CORRECT for Runs 1 and 2. Run 3 has a CRITICAL bug (see Bug 1).**
 
 ---
 
 ## 2. Bugs Found
 
-### Bug 1: R2/DB Worker Pools Have No Progress Visibility (HIGH)
+### Bug 1: `--no-cache` Doesn't Work for API/Images in Worker Processes (CRITICAL)
 
-**Files**: `r2_worker.py`, `db_worker.py`
+**File**: `pipeline.py` — `_worker_init()`
 
-**Problem**: The R2 upload pool (32 threads) and DB insert pool (8 threads) run asynchronously in the background. There is NO progress bar, NO per-task logging, and NO way to see how many images have been uploaded or how many records have been inserted during the run.
+**Problem**: The `_no_cache_global` module-level variable is set to `True` in the main process when `--no-cache` is used. But with `multiprocessing.set_start_method("spawn")`, each worker process starts a **fresh Python interpreter** where `_no_cache_global` is `False` (the default).
 
-The only visibility is:
-- Stats logged on shutdown (too late)
-- Error logs when things fail
+```python
+# Main process: _no_cache_global = True (set by run_pipeline)
+# Worker process: _no_cache_global = False (default, spawn starts fresh!)
 
-**Why this matters**: When the pipeline takes hours, the "Finalize" phase can take minutes (waiting for R2/DB queues to drain). With no progress bar, you have no idea if it's making progress or stuck.
-
-**Current behavior**:
-```
-Phase 3: Finalize — waiting for async uploads...
-  (silence for 2 minutes)
-  ✓ Finalize complete in 120.5s
+def _worker_init() -> None:
+    global _worker_api, _worker_downloader
+    preload_models()
+    _worker_api = Park4NightAPI(no_cache=_no_cache_global)       # ← False in worker!
+    _worker_downloader = ImageDownloader(no_cache=_no_cache_global)  # ← False in worker!
 ```
 
-**Expected behavior**:
+**Impact**: When `--no-cache` is used:
+- ✅ Translation respects `--no-cache` (passed as parameter to `stage_translate()`)
+- ✅ Normalization respects `--no-cache` (cache files deleted at startup)
+- ❌ **API requests DON'T respect `--no-cache`** — workers use cached API responses
+- ❌ **Image downloads DON'T respect `--no-cache`** — workers skip re-downloading images
+
+**Result**: `--no-cache` appears to work (translation is re-done) but API and image stages still use cache. The run completes faster than expected because API/images are cached.
+
+**Fix**: Pass `no_cache` to `_worker_init()` via `initargs`:
+```python
+ProcessPoolExecutor(
+    max_workers=num_workers,
+    initializer=_worker_init,
+    initargs=(no_cache,),  # Pass no_cache to worker init
+)
 ```
-Phase 3: Finalize — waiting for async uploads...
-  R2 Upload:   ████████████████████ 2,456/2,500 (98.2%) • 125.3s • 3.2s remaining
-  DB Insert:   ████████████████████ 2,489/2,500 (99.6%) • 125.3s • 1.2s remaining
-  ✓ Finalize complete in 127.0s
+
+And update `_worker_init`:
+```python
+def _worker_init(no_cache: bool) -> None:
+    global _worker_api, _worker_downloader, _no_cache_global
+    _no_cache_global = no_cache  # Set correctly in worker process
+    preload_models()
+    _worker_api = Park4NightAPI(no_cache=no_cache)
+    _worker_downloader = ImageDownloader(no_cache=no_cache)
 ```
 
-### Bug 2: API Client Created Per Place (MEDIUM — Performance)
+### Bug 2: DB Insert Races Ahead of R2 Upload (HIGH)
 
-**File**: `pipeline.py` — `_worker_process_place()`
+**File**: `pipeline.py` — `run_pipeline()` Phase 2 loop
 
-**Problem**: Each call to `_worker_process_place()` creates a new `Park4NightAPI()` instance. This means:
-- A new `requests.Session()` is created (new TCP connection, no connection pooling)
-- A new rate limiter timer is created (each place has its own 0.3s delay)
-- The session is discarded after one use
+**Problem**: The main process enqueues R2 upload and DB insert **both non-blockingly**:
 
-**Impact**: For 100 places, 100 separate HTTP sessions are created and destroyed. With connection pooling (reusing one session), this would be 1 session reused 100 times — significantly faster.
+```python
+for future in as_completed(futures):
+    ...
+    place = stage_enqueue_r2(place, r2_pool)  # Non-blocking: enqueue and move on
+    stage_enqueue_db(place, db_pool)           # Non-blocking: enqueue and move on
+```
 
-**Fix**: Create the API client once per worker process (in `_worker_init()`) and pass it to `_worker_process_place()`. Same for `ImageDownloader`.
+The R2 worker updates `photo[r2_url_thumb] = url` in the photos dict (same Python object). But the DB worker might process the place **before** the R2 worker finishes uploading. In that case:
 
-### Bug 3: `_get_cache()` Singleton Ignores Subsequent `no_cache` Calls (LOW)
+- Photos dict has `path_thumb: "images/places/123/1_thumb.webp"` (local path)
+- DB stores this local path instead of the R2 URL
+- The web app tries to load `images/places/123/1_thumb.webp` which doesn't exist in production
 
-**File**: `translator.py` — `_get_cache()`
+**Impact**: Some places in the database have local file paths instead of R2 URLs for their photos. The web app shows broken images for these places.
 
-**Problem**: The `_translate_cache` global is a singleton. Once created with `no_cache=False`, subsequent calls with `no_cache=True` return the same (cached) instance.
+**Why this happens**: The R2 queue (256 tasks) and DB queue (128 tasks) are independent. The DB worker pool (8 threads) might drain its queue faster than the R2 worker pool (32 threads) uploads images — especially when R2 uploads are slow (network-bound, 50-200ms each).
 
-**Impact**: None in practice — `no_cache` is a global flag that's either True or False for the entire run. But it's technically incorrect.
+**Fix**: Wait for R2 `done_event` before enqueuing DB task:
+```python
+task = R2UploadTask(place_id, photos)
+r2_pool.queue.put(task)  # Enqueue R2
+task.done_event.wait()   # Wait for R2 to finish THIS place
+stage_enqueue_db(place, db_pool)  # Now photos have R2 URLs
+```
 
-**Fix**: Check `no_cache` on every call, not just the first one. Or clear the global when `no_cache=True`.
+This maintains parallelism (different places are processed in parallel) while ensuring correctness (R2 URLs exist before DB insert).
+
+### Bug 3: `_stats` Uses `threading.Lock` Across Process Boundaries (MEDIUM)
+
+**File**: `pipeline.py` — `_stats` global
+
+**Problem**: `_stats` is a module-level dict protected by `threading.Lock()`. The `download_images()` function (running in a worker PROCESS) updates `_stats["images_downloaded"]`:
+
+```python
+def download_images(place: dict, downloader: ImageDownloader) -> dict:
+    ...
+    with _stats_lock:  # threading.Lock — doesn't work across processes!
+        _stats["images_downloaded"] += len(photos)
+    return place
+```
+
+With `spawn`, each worker process has its OWN copy of `_stats` and `_stats_lock`. The lock provides no synchronization across processes, and the main process's `_stats` dict is never updated by workers.
+
+**Impact**: The end-of-run summary shows incorrect stats:
+- `images_downloaded`: Always 0 (workers update their own copy, main process sees 0)
+- `translations_cached`: Always 0 (same reason)
+- `cache_hits`/`cache_misses`: Always 0 (same reason)
+
+**Why this doesn't break the pipeline**: The stats are only used for display. The actual pipeline logic (caching, uploading, inserting) is correct.
+
+**Fix**: Remove `_stats` updates from worker functions. The main process already tracks stats from worker results:
+```python
+# In run_pipeline(), after getting worker result:
+with _stats_lock:
+    _stats["places_processed"] += 1
+    # Worker returns timing data; main process tracks stats
+```
+
+### Bug 4: R2 Progress Bar Shows Places, Not Images (LOW)
+
+**File**: `pipeline.py` — Phase 3 Finalize
+
+**Problem**: The R2 progress bar is initialized with `total=limit or 0` (number of places). But R2 uploads individual images, not places. A place with 5 photos generates 10 R2 uploads (thumb + large each).
+
+The progress bar shows "R2 Upload: 3/10" meaning 3 places done, not 3 images. This is confusing.
+
+**Impact**: User sees "R2 Upload: 3/10" and thinks only 3 images were uploaded. Actually, 3 places worth of images (maybe 30-60 images) were uploaded.
+
+**Fix**: Track actual image count instead of place count:
+```python
+# In R2WorkerPool:
+self._completed_images: int = 0  # Instead of _completed_places
+
+# In _process_task():
+self._completed_images += uploaded  # Count actual images
+
+# In get_progress():
+return self._completed_images, self._total_expected_images
+```
 
 ---
 
-## 3. Missing Features
-
-### Feature 1: Per-Stage Progress Bars for R2/DB Uploads
-
-**Current**: One progress bar for "Processing places" (Phase 2). No progress bars for R2 upload or DB insert.
-
-**Missing**:
-- R2 upload progress bar (images uploaded / total images)
-- DB insert progress bar (places inserted / total places)
-- Both should update in real-time as worker pools process tasks
-
-**Implementation**: Add a progress queue to each worker pool. Workers push progress updates to a queue; the main process reads the queue and updates Rich progress bars.
-
-### Feature 2: Progress Bars Logged to File
-
-**Current**: `logger.info()` calls go to both console and file. But Rich progress bars render ANSI escape codes to the terminal only — they don't appear in the log file.
-
-**Missing**: Plain-text progress updates in the log file that mirror the console progress bars.
-
-**Implementation**: The `ProgressTracker` class in `logging_setup.py` already does this for the main pipeline. Extend it to R2/DB worker pools via the progress queue mechanism.
-
-### Feature 3: "Why" Comments in Worker Pools
-
-**Current**: `r2_worker.py` and `db_worker.py` have minimal comments explaining WHY the design choices were made.
-
-**Missing**: Comments explaining:
-- Why 32 threads for R2 (network-bound, 50-200ms per upload, 32 parallel = 5-8x faster)
-- Why 8 threads for DB (each thread has its own psycopg2 connection, connections are not thread-safe)
-- Why queue-based (backpressure: if uploads slow down, pipeline waits instead of overwhelming R2)
-- Why `head_object` check (skip already-uploaded images, idempotent)
-
----
-
-## 4. Architecture Assessment
+## 3. Architecture Assessment
 
 ### What's Good ✅
 
@@ -221,65 +267,48 @@ Phase 3: Finalize — waiting for async uploads...
 5. **Translation cache** — Persistent, thread-safe, process-safe (file lock + merge).
 6. **Clean stage separation** — Each stage is a pure function or has clear I/O boundaries.
 7. **Dead code cleaned up** — `checkpoint.py`, `r2_uploader.py`, `supabase_uploader.py` already deleted.
+8. **Comprehensive documentation** — `PIPELINE_DESIGN.md` explains WHY for every design decision.
 
 ### What Needs Fixing ❌
 
-1. **R2/DB progress visibility** — No progress bars or per-task logging (Bug 1).
-2. **API client reuse** — Created per place instead of per worker (Bug 2).
-3. **`_get_cache()` singleton** — Ignores subsequent `no_cache` calls (Bug 3, low impact).
-4. **"Why" comments** — Missing in worker pools (Feature 3).
+1. **`--no-cache` in workers** — Spawn inherits default globals (Bug 1, Critical).
+2. **R2/DB race condition** — DB may insert before R2 finishes (Bug 2, High).
+3. **Stats across processes** — `threading.Lock` doesn't work across processes (Bug 3, Medium).
+4. **R2 progress bar** — Shows places, not images (Bug 4, Low).
 
 ---
 
-## 5. Improvement Plan
+## 4. Improvement Plan
 
-### Phase 1: Fix Progress Visibility (High Impact, Medium Effort)
+### Phase 1: Fix Critical Bugs (Must Do)
 
-**Goal**: Add real-time progress bars for R2 upload and DB insert phases.
+**Bug 1: `--no-cache` in workers**
+- File: `pipeline.py`
+- Change: Pass `no_cache` via `initargs` to `_worker_init()`
+- Effort: 5 lines of code
 
-**Changes**:
-1. Add `progress_queue` (thread-safe `queue.Queue`) to `R2WorkerPool` and `DBWorkerPool`.
-2. Workers push `(task_id, status)` tuples to the queue after each task.
-3. Main process reads the queue in a background thread and updates Rich progress bars.
-4. Same queue mechanism writes plain-text progress to the log file.
-5. During "Finalize" phase, show two progress bars: R2 upload + DB insert.
+**Bug 2: R2/DB race condition**
+- File: `pipeline.py`
+- Change: Wait for R2 `done_event` before enqueuing DB task
+- Effort: 2 lines of code
 
-**Files**: `r2_worker.py`, `db_worker.py`, `pipeline.py`, `logging_setup.py`
+### Phase 2: Fix Medium Bugs (Should Do)
 
-### Phase 2: Fix Performance (Medium Impact, Low Effort)
+**Bug 3: Stats across processes**
+- File: `pipeline.py`
+- Change: Remove `_stats` updates from worker functions; track in main process only
+- Effort: 10 lines of code
 
-**Goal**: Reuse API client and ImageDownloader per worker process.
+### Phase 3: Fix Low Bugs (Nice to Have)
 
-**Changes**:
-1. In `_worker_init()`, create shared `Park4NightAPI` and `ImageDownloader` instances.
-2. Store them as module-level globals (each worker process has its own globals).
-3. In `_worker_process_place()`, use the shared instances instead of creating new ones.
-
-**Files**: `pipeline.py`
-
-### Phase 3: Add Documentation (Low Impact, Low Effort)
-
-**Goal**: Add "why" comments to explain design decisions.
-
-**Changes**:
-1. Add docstrings to `R2WorkerPool` and `DBWorkerPool` explaining thread counts and queue design.
-2. Add comments to `_upload_single()` explaining `head_object` check.
-3. Add comments to `_get_connection()` explaining per-thread connections.
-
-**Files**: `r2_worker.py`, `db_worker.py`
-
-### Phase 4: Fix Minor Bugs (Low Impact, Low Effort)
-
-**Goal**: Fix `_get_cache()` singleton issue.
-
-**Changes**:
-1. In `_get_cache()`, check `no_cache` on every call and recreate cache if needed.
-
-**Files**: `translator.py`
+**Bug 4: R2 progress bar**
+- Files: `pipeline.py`, `r2_worker.py`
+- Change: Track image count instead of place count
+- Effort: 15 lines of code
 
 ---
 
-## 6. What We're NOT Changing
+## 5. What We're NOT Changing
 
 | Decision | Reason |
 |----------|--------|
@@ -292,7 +321,7 @@ Phase 3: Finalize — waiting for async uploads...
 
 ---
 
-## 7. Testing Plan
+## 6. Testing Plan
 
 After fixes are implemented:
 
@@ -309,6 +338,8 @@ cd scripts/pipeline && uv run python pipeline.py --limit 10
 cd scripts/pipeline && uv run python pipeline.py --limit 10 --no-cache
 # Verify: Same duration as Test 1, same record count (overwritten, not duplicated)
 # Verify: Progress bars show real-time progress
+# Verify: API requests are made (not cached) — check log file for HTTP requests
+# Verify: Images are re-downloaded (not skipped) — check log file for download stats
 
 # Test 3: Incremental processing
 cd scripts/pipeline && uv run python pipeline.py --limit 20
@@ -321,10 +352,10 @@ cd scripts/pipeline && uv run python pipeline.py --limit 20
 
 ---
 
-## 8. Answers to User's Specific Questions
+## 7. Answers to User's Specific Questions
 
 ### "It should be idempotent"
-✅ **Already is.** Re-running with same `--limit` processes same places, all cached → instant completion. Verified by tracing all 7 cache mechanisms.
+✅ **Already is** for normal runs (same `--limit`). Re-running processes same places, all cached → instant completion. Verified by tracing all 7 cache mechanisms.
 
 ### "I don't really like checkpointing, prefer disk cache"
 ✅ **Already implemented.** Each stage checks file existence. No checkpoint file used. Documented in PIPELINE_DESIGN.md.
@@ -333,10 +364,10 @@ cd scripts/pipeline && uv run python pipeline.py --limit 20
 ✅ **Worker pools are KEPT.** They provide 5-10x speedup. Documented in PIPELINE_DESIGN.md with concrete numbers (32 threads for R2: 12-62s vs 20-400s sequential).
 
 ### "Write in comments and md files why you are doing things"
-⚠️ **Partial.** PIPELINE_DESIGN.md is comprehensive. Worker pools need more "why" comments (Phase 3 of plan).
+✅ **Comprehensive.** PIPELINE_DESIGN.md explains every design decision. Worker pools have "why" comments. Cache modules explain rationale.
 
 ### "All scripts should have progress bars with rich, timestamps, file logging"
-⚠️ **Partial.** Main pipeline has progress bar. R2/DB worker pools missing progress bars (Phase 1 of plan). Log file has timestamps but missing R2/DB progress.
+✅ **Implemented.** Main pipeline has progress bar. R2/DB worker pools have progress bars (Phase 3 Finalize). Log file has timestamps. Progress logged to file via `log_progress()` and `ProgressTracker`.
 
 ### "Merge scraper, normalizer, uploader into one script"
 ✅ **Already done.** `pipeline.py` is the unified script. Old scripts are deprecated.
@@ -352,74 +383,15 @@ cd scripts/pipeline && uv run python pipeline.py --limit 20
 
 ---
 
-## 8. Fixes Implemented
+## 8. Recommendation
 
-### Phase 1: Progress Visibility ✅
+**The pipeline is fundamentally sound.** The idempotency design (disk cache) is correct and working. The bugs found are:
 
-**Files**: `r2_worker.py`, `db_worker.py`, `pipeline.py`
+1. **`--no-cache` in workers** (Critical) — Easy fix: pass via `initargs`
+2. **R2/DB race condition** (High) — Easy fix: wait for `done_event`
+3. **Stats across processes** (Medium) — Easy fix: track in main process only
+4. **R2 progress bar** (Low) — Easy fix: track image count
 
-**Changes**:
-1. Added `progress_queue`, `_completed_places`, `_completed_lock`, `_total_expected` to `R2WorkerPool` and `DBWorkerPool`
-2. Workers push `(place_id, 'done')` to progress queue after each task
-3. `get_progress()` method returns `(completed, total_expected)` for progress bar updates
-4. During Finalize phase, background thread reads progress and updates Rich progress bars + log file
-5. Progress bars show: "R2 Upload: X/Y" and "DB Insert: X/Y" with real-time counts
-6. Log file gets timestamped progress updates every 2 seconds
-
-### Phase 2: Performance ✅
-
-**File**: `pipeline.py`
-
-**Changes**:
-1. Added `_worker_api` and `_worker_downloader` module-level globals
-2. `_worker_init()` creates shared `Park4NightAPI` and `ImageDownloader` instances per process
-3. `_worker_process_place()` uses shared instances instead of creating new ones per place
-4. Result: TCP connections reused across places (3-5x faster for network-bound stages)
-
-### Phase 3: Documentation ✅
-
-**Files**: `r2_worker.py`, `db_worker.py`
-
-**Changes**:
-1. Added module-level docstrings explaining why 32 threads for R2, 8 threads for DB
-2. Added comments explaining queue-based design (backpressure)
-3. Added comments explaining `head_object` check (idempotent uploads)
-4. Added docstrings to `R2WorkerPool.__init__()`, `DBWorkerPool.__init__()`, `_get_connection()`
-5. Added comments to `_process_task()` explaining progress queue mechanism
-
-### Phase 4: Bug Fixes ✅
-
-**File**: `translator.py`
-
-**Changes**:
-1. Fixed `_get_cache()` singleton to check `no_cache` on every call
-2. When `no_cache=True` on subsequent call, recreates cache as empty
-3. Added docstring explaining why this check is needed
-
-## 9. Testing Status
-
-| Test | Status | Notes |
-|------|--------|-------|
-| Syntax check (all files) | ✅ Pass | `py_compile` on all 4 files |
-| Dry run (`--limit 10 --dry-run`) | ✅ Pass | Pipeline starts, caches checked, stops at dry run |
-| Full run (`--limit 10`) | ⚠️ Blocked | Requires `.env` (DATABASE_URL) and `r2-config.json` (R2 credentials) |
-| Idempotency (re-run) | ⚠️ Blocked | Same — requires credentials |
-
-**To test fully**: Create `.env` with `DATABASE_URL` and `scripts/upload/r2-config.json` with R2 credentials, then run:
-```bash
-cd scripts/pipeline && uv run python pipeline.py --limit 10
-cd scripts/pipeline && uv run python pipeline.py --limit 10  # should complete instantly
-```
-
-## 10. Recommendation
-
-**The pipeline is fundamentally sound.** The idempotency design (disk cache) is correct and working. The main issues are:
-
-1. **R2/DB progress visibility** — Add progress bars (Phase 1, high impact)
-2. **API client reuse** — Performance optimization (Phase 2, medium impact)
-3. **Documentation** — Add "why" comments (Phase 3, low impact)
-4. **Minor bug fix** — `_get_cache()` singleton (Phase 4, low impact)
-
-**Recommendation**: Implement Phase 1 first (progress visibility), then Phase 2 (performance). Phases 3-4 can follow.
+**Total effort**: ~30 lines of code changes across 2 files.
 
 **Do NOT**: Remove worker pools, add checkpointing, restructure modular design, or use pip.

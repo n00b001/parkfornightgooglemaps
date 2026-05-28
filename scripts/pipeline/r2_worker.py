@@ -133,11 +133,17 @@ class R2WorkerPool:
         self._stats_lock = threading.Lock()
         self._no_cache = no_cache
 
-        # Progress tracking: thread-safe queue for workers to push completion events.
-        # The main process reads this queue in a background thread to update
+        # Progress tracking: thread-safe counters for real-time progress bars.
+        # The main process reads these in a background thread to update
         # Rich progress bars and log file during the Finalize phase.
+        #
+        # Why track images instead of places: a place has 2-10 photos,
+        # each with thumb + large = 4-20 uploads per place. Showing
+        # "R2 Upload: 3/10" (places) is misleading — user thinks only
+        # 3 images uploaded. Tracking actual images gives accurate progress.
         self.progress_queue: Queue[tuple[int, str]] = Queue()
-        self._completed_places: set[int] = set()
+        self._completed_images: int = 0
+        self._total_images: int = 0
         self._completed_lock = threading.Lock()
         self._total_expected = total_expected
 
@@ -151,14 +157,22 @@ class R2WorkerPool:
             f"R2 worker pool started: {self.num_workers} workers, queue size {self.queue_size}"
         )
 
-    def enqueue(self, place_id: int, photos: list[dict]) -> None:
-        """Enqueue a place's images for upload. Non-blocking."""
+    def enqueue(self, place_id: int, photos: list[dict]) -> R2UploadTask | None:
+        """Enqueue a place's images for upload. Non-blocking.
+
+        Returns the R2UploadTask so the caller can wait for done_event
+        before proceeding to DB insert (ensures R2 URLs exist in photos dict).
+        """
         if not photos:
-            return
+            return None
         task = R2UploadTask(place_id, photos)
         self.queue.put(task)  # blocks only if queue is full (backpressure)
         with self._stats_lock:
             self._stats["enqueued"] += 1
+        # Track total images for progress bar (each photo has thumb + large = 2 images)
+        with self._completed_lock:
+            self._total_images += len(photos) * 2
+        return task
 
     def wait_all(self, timeout: float = 300.0) -> bool:
         """Wait for all enqueued tasks to complete. Returns True if all done."""
@@ -259,13 +273,14 @@ class R2WorkerPool:
         # to update Rich progress bars and log file during Finalize.
         self.progress_queue.put((place_id, "done"))
         with self._completed_lock:
-            self._completed_places.add(place_id)
+            self._completed_images += uploaded
 
     def get_progress(self) -> tuple[int, int]:
-        """Return (completed, total_expected) for progress bar updates.
+        """Return (completed_images, total_images) for progress bar updates.
 
         Called by the main process's background thread during Finalize
         to update Rich progress bars and log file.
+        Tracks actual image count (not place count) for accurate progress.
         """
         with self._completed_lock:
-            return len(self._completed_places), self._total_expected
+            return self._completed_images, self._total_images
