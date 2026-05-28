@@ -79,10 +79,9 @@ from normalizer import (  # type: ignore[import-not-found]
     normalize_place,
     normalize_review,
 )
-from r2_worker import R2WorkerPool  # type: ignore[import-not-found]
+from r2_worker import R2UploadTask, R2WorkerPool  # type: ignore[import-not-found]
 from translator import (  # type: ignore[import-not-found]
     ensure_packages_installed,
-    get_cache_size,
     preload_models,
     save_cache,
     translate_batch,
@@ -216,13 +215,15 @@ def download_images(place: dict, downloader: ImageDownloader) -> dict:
 
     Disk cache: images are saved to data/images/places/{id}/.
     If .webp file already exists, download is skipped (unless no_cache).
+
+    Note: does NOT update _stats here — this function runs in a worker
+    process (spawn), and threading.Lock does not work across processes.
+    Stats are tracked by the main process from worker results instead.
     """
     place_id = place["id"]
     raw_photos = place.get("_raw_photos", [])
     photos = downloader.download_place_photos(place_id, raw_photos)
     place["photos"] = photos
-    with _stats_lock:
-        _stats["images_downloaded"] += len(photos)
     return place
 
 
@@ -281,10 +282,10 @@ def stage_translate(place: dict, no_cache: bool = False) -> dict:
             texts_to_translate.append((str(text).strip(), "fr"))
 
     # Translate (parallel, uses persistent disk cache)
+    # Note: do NOT update _stats here — this function runs in a worker process
+    # (spawn) and threading.Lock does not work across processes.
     if texts_to_translate:
         translations = translate_batch(texts_to_translate, max_workers=8, no_cache=no_cache)
-        with _stats_lock:
-            _stats["translations_cached"] = get_cache_size()
 
         # Apply translations to descriptions
         if isinstance(raw_desc, dict):
@@ -368,19 +369,26 @@ def stage_normalize(place: dict) -> dict | None:
 def stage_enqueue_r2(
     place: dict,
     r2_pool: R2WorkerPool | None,
-) -> dict:
+) -> R2UploadTask | None:
     """Enqueue images for async R2 upload. Non-blocking.
 
-    Worker threads dequeue and upload in parallel, then update DB with URLs.
-    Returns the unchanged place dict.
+    Worker threads dequeue and upload in parallel, then update the photos
+    dict with R2 URLs. Returns the R2UploadTask so the caller can wait
+    for the done_event before enqueuing the DB insert.
+
+    Why return the task: the DB insert needs R2 URLs in the photos dict.
+    If we enqueue DB immediately (fire-and-forget), the DB worker might
+    process the place before R2 finishes — resulting in local file paths
+    in the database instead of R2 URLs. Returning the task lets the caller
+    wait for THIS place's upload before proceeding to DB.
     """
     if r2_pool is None:
-        return place
+        return None
 
     photos = place.get("photos", [])
     if photos:
-        r2_pool.enqueue(place["id"], photos)
-    return place
+        return r2_pool.enqueue(place["id"], photos)
+    return None
 
 
 # ── Stage 7: Enqueue DB insert (non-blocking) ────────────────────────
@@ -458,11 +466,18 @@ def _handle_signal(signum: int, frame: Any) -> None:
 
 
 # ── Worker initializer (called once per process) ─────────────────────
-def _worker_init() -> None:
+def _worker_init(no_cache: bool) -> None:
     """Initialize worker process: preload argos models + create shared instances.
 
     Called once when each process starts (spawn method).
     Each process loads its own models — no shared state, no deadlock.
+
+    Args:
+        no_cache: Whether to bypass disk caches (--no-cache mode).
+            This is passed via initargs from the main process because spawn
+            starts a fresh interpreter where module-level globals are reset
+            to their defaults. Without this, --no-cache would be ignored in
+            worker processes (API cache and image cache would still be used).
 
     Why create shared instances here:
       Each worker process has its own globals (spawn method). Creating the
@@ -470,13 +485,11 @@ def _worker_init() -> None:
       (connection pooling) and avoids creating a new requests.Session per place.
       This is 3-5x faster than creating new instances per place.
     """
-    global _worker_api, _worker_downloader
+    global _worker_api, _worker_downloader, _no_cache_global
+    _no_cache_global = no_cache  # Set correctly in worker (spawn resets globals)
     preload_models()
-    # Create shared instances for this worker process.
-    # The no_cache flag is passed via _worker_process_place's no_cache param,
-    # but we create the instances here with the global no_cache setting.
-    _worker_api = Park4NightAPI(no_cache=_no_cache_global)
-    _worker_downloader = ImageDownloader(no_cache=_no_cache_global)
+    _worker_api = Park4NightAPI(no_cache=no_cache)
+    _worker_downloader = ImageDownloader(no_cache=no_cache)
 
 
 # ── Worker function (must be top-level for pickling) ─────────────────
@@ -661,10 +674,13 @@ def run_pipeline(
 
         # Use spawn (not fork) to avoid inheriting argos locks.
         # Each worker preloads models once via initializer.
+        # Pass no_cache via initargs so workers respect --no-cache flag
+        # (spawn starts fresh interpreters where module globals are reset).
         multiprocessing.set_start_method("spawn", force=True)
         with ProcessPoolExecutor(
             max_workers=num_workers,
             initializer=_worker_init,
+            initargs=(no_cache,),
         ) as executor:
             futures = {
                 executor.submit(
@@ -702,18 +718,30 @@ def run_pipeline(
                             _stage_timers["translate"].add(result["translate"])
                             _stage_timers["normalize"].add(result["normalize"])
 
-                        # Main process: enqueue R2 upload (non-blocking)
+                        # Main process: enqueue R2 upload, then wait for it to finish
+                        # before enqueuing DB insert. Why: the R2 worker updates the
+                        # photos dict with R2 URLs (photo["r2_url_thumb"]). If the DB
+                        # worker processes the place before R2 finishes, the photos in
+                        # the database will have local file paths instead of R2 URLs,
+                        # and the web app will show broken images. Waiting for the
+                        # done_event ensures R2 URLs exist before DB insert.
+                        # This still maintains parallelism: different places are processed
+                        # in parallel; we only wait for THIS place's R2 upload.
                         t0 = time.time()
-                        place = stage_enqueue_r2(place, r2_pool)
+                        r2_task = stage_enqueue_r2(place, r2_pool)
+                        if r2_task is not None:
+                            r2_task.done_event.wait()  # Wait for THIS place's R2 upload
                         r2_time = time.time() - t0
 
                         # Main process: enqueue DB insert (non-blocking)
+                        # Safe now: photos dict has R2 URLs from the wait above.
                         t0 = time.time()
                         stage_enqueue_db(place, db_pool)
                         db_time = time.time() - t0
 
                         with _stats_lock:
                             _stats["places_processed"] += 1
+                            _stats["images_downloaded"] += len(place.get("photos", []))
                             _stage_timers["r2_upload"].add(r2_time)
                             _stage_timers["db_insert"].add(db_time)
 
