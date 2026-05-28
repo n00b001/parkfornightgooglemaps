@@ -31,9 +31,9 @@ const FilterModal: React.FC<any> = ({ isOpen, onClose, onApply }) => {
   if (!isOpen) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-md p-6">
-        <div className="flex justify-between mb-4">
-          <h2 className="text-xl font-bold">Filters & Sort</h2>
+      <div className="bg-white rounded-2xl w-full max-w-md p-8 overflow-y-auto max-h-[90vh]">
+        <div className="flex justify-between mb-6">
+          <h2 className="text-2xl font-black uppercase tracking-tighter">Filters</h2>
           <button onClick={onClose}><X size={24} /></button>
         </div>
         <div className="space-y-4 mb-6">
@@ -61,16 +61,16 @@ const FilterModal: React.FC<any> = ({ isOpen, onClose, onApply }) => {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-bold mb-2">Amenities</label>
-            <div className="grid grid-cols-2 gap-2">
+            <label className="block text-sm font-bold mb-3 uppercase tracking-wider text-gray-400">Amenities</label>
+            <div className="grid grid-cols-2 gap-3">
               {AMENITIES_OPTIONS.map(opt => (
                 <button
                   key={opt.key}
                   onClick={() => toggleAmenity(opt.key)}
-                  className={`flex items-center gap-2 p-2 rounded-lg border text-sm transition-colors ${
+                  className={`flex items-center gap-3 p-4 rounded-xl border text-sm font-bold transition-all ${
                     amenities.includes(opt.key)
-                      ? 'bg-blue-50 border-blue-200 text-blue-700'
-                      : 'bg-white border-gray-100 text-gray-600'
+                      ? 'bg-blue-600 border-blue-600 text-white shadow-lg shadow-blue-200 scale-[1.02]'
+                      : 'bg-white border-gray-100 text-gray-600 hover:border-gray-300'
                   }`}
                 >
                   <opt.icon size={16} />

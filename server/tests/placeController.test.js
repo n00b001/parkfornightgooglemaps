@@ -5,6 +5,7 @@ jest.mock("../src/config/db", () => ({
 		findMany: jest.fn(),
 		findUnique: jest.fn(),
 		count: jest.fn(),
+		upsert: jest.fn(),
 	},
 	review: {
 		count: jest.fn(),
@@ -39,6 +40,7 @@ describe("placeController", () => {
 		prisma.place.findMany.mockResolvedValue([]);
 		prisma.place.findUnique.mockResolvedValue(null);
 		prisma.place.count.mockResolvedValue(0);
+		prisma.place.upsert.mockResolvedValue({});
 		prisma.review.findMany.mockResolvedValue([]);
 		prisma.review.count.mockResolvedValue(0);
 	});

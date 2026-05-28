@@ -141,7 +141,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   }, [place]);
 
   const addToGoogleMaps = () => {
-    const googlePlaceId = googleDetails?.place_id || place.google_place_id || place.rawData?.google_place_id;
+    const googlePlaceId = googleDetails?.place_id || place.google_place_id || place.rawData?.google_place_id || place.rawData?.google_id;
     const query = encodeURIComponent(`${place.title || place.name} ${place.address || ''}`);
     const url = googlePlaceId
       ? `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${googlePlaceId}`
@@ -243,7 +243,13 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
       <div className="flex flex-col gap-3">
         <div className="flex gap-2">
           <button
-            onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}`)}
+            onClick={() => {
+              const googlePlaceId = googleDetails?.place_id || place.google_place_id || place.rawData?.google_place_id || place.rawData?.google_id;
+              const dest = googlePlaceId
+                ? `&destination=${encodeURIComponent(place.title || place.name)}&destination_place_id=${googlePlaceId}`
+                : `&destination=${place.latitude},${place.longitude}`;
+              window.open(`https://www.google.com/maps/dir/?api=1${dest}`);
+            }}
             className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-2xl font-bold transition-colors flex items-center justify-center gap-2 shadow-lg shadow-blue-200"
           >
             <Navigation size={18} /> Directions

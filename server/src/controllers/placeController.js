@@ -1,5 +1,6 @@
 const prisma = require("../config/db");
 const LRUCache = require("../services/lruCache");
+const park4night = require("../services/park4night");
 
 const MAX_PLACES_LIMIT = 200;
 
@@ -38,6 +39,52 @@ const getPlaces = async (req, res) => {
 			latitude: { gte: lat - 0.5, lte: lat + 0.5 },
 			longitude: { gte: lng - 0.5, lte: lng + 0.5 },
 		};
+
+		const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+		const recentPlacesCount = await prisma.place.count({
+			where: {
+				...where,
+				lastFetched: { gte: oneDayAgo },
+			},
+		});
+
+		// Fallback to Park4Night API if database has fewer than 10 recent spots in this area
+		if (recentPlacesCount < 10) {
+			try {
+				const livePlaces = await park4night.getPlaces(lat, lng);
+				const upserts = livePlaces.map((p) =>
+					prisma.place.upsert({
+						where: { id: p.id },
+						update: {
+							name: p.name,
+							latitude: p.latitude,
+							longitude: p.longitude,
+							type: p.type,
+							description: p.description,
+							address: p.address,
+							rating: p.rating,
+							rawData: p.rawData,
+							lastFetched: new Date(),
+						},
+						create: {
+							id: p.id,
+							name: p.name,
+							latitude: p.latitude,
+							longitude: p.longitude,
+							type: p.type,
+							description: p.description,
+							address: p.address,
+							rating: p.rating,
+							rawData: p.rawData,
+							lastFetched: new Date(),
+						},
+					}),
+				);
+				await Promise.allSettled(upserts);
+			} catch (err) {
+				console.warn("Failed to fetch live spots from Park4Night:", err.message);
+			}
+		}
 
 		if (type) where.type = type;
 		if (minRating) where.rating = { gte: parseFloat(minRating) };

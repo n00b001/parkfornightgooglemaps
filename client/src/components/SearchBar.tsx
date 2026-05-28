@@ -19,10 +19,10 @@ const SearchBar: React.FC<any> = ({ onSearch, onOpenFilters, onQueryChange }) =>
 
   return (
     <div className="flex-1 max-w-md">
-      <form onSubmit={handleSearch} className="flex items-center bg-gray-100 rounded-full overflow-hidden border border-gray-200">
+      <form onSubmit={handleSearch} className="flex items-center bg-gray-100 rounded-full overflow-hidden border border-gray-200 h-12">
         <div className="pl-4 text-gray-400"><Search size={18} /></div>
         <input
-          className="w-full py-2 px-3 outline-none text-sm bg-transparent"
+          className="w-full py-2 px-4 outline-none text-sm bg-transparent h-full"
           placeholder="Search for a location..."
           value={query}
           onChange={(e) => {
