@@ -122,19 +122,10 @@ class PipelineCheckpoint:
         required_stages = [
             "extracted",
             "normalized",
-            "images_converted",
             "images_uploaded_r2",
             "db_inserted",
         ]
         return all(self.is_place_stage_done(place_id, stage) for stage in required_stages)
-
-    def get_places_needing_conversion(self) -> list[int]:
-        """Get place IDs that have been processed but not yet converted to WebP."""
-        return [
-            int(pid)
-            for pid, record in self.data.get("places", {}).items()
-            if not record.get("stages", {}).get("images_converted", False)
-        ]
 
     # ── Statistics ────────────────────────────────
     def increment_stat(self, key: str, amount: int = 1) -> None:

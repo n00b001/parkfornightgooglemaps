@@ -391,6 +391,7 @@ def _worker_init() -> None:
 def _worker_process_place(
     raw_place: dict,
     photos: list[dict],
+    no_cache: bool = False,
 ) -> dict:
     """Process a single place in a separate worker process.
 
@@ -411,7 +412,7 @@ def _worker_process_place(
     # ── Stage 1b: Download images ─
     t0 = time.time()
     place["_raw_photos"] = photos
-    downloader = ImageDownloader()
+    downloader = ImageDownloader(no_cache=no_cache)
     place = download_images(place, downloader)
     download_time = time.time() - t0
 
@@ -451,6 +452,7 @@ def run_pipeline(
     checkpoint: PipelineCheckpoint,
     limit: int | None = None,
     num_workers: int = 16,
+    no_cache: bool = False,
 ) -> None:
     """Run the parallel per-place pipeline using ProcessPoolExecutor.
 
@@ -505,6 +507,7 @@ def run_pipeline(
                     _worker_process_place,
                     raw_place,
                     raw_place.get("photos", []),
+                    no_cache,
                 ): raw_place
                 for raw_place in places_to_process
             }
@@ -608,6 +611,11 @@ def main() -> None:
         default=8,
         help="Number of parallel worker threads (default: 8)",
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass disk cache — re-download all images (useful for testing speed)",
+    )
     args = parser.parse_args()
 
     # Setup logging
@@ -641,11 +649,18 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
+    # Store no_cache globally for worker access
+    globals()["_no_cache"] = args.no_cache
+    if args.no_cache:
+        console.print("  [yellow]Cache disabled — all images will be re-downloaded[/yellow]")
+
     start_time = time.time()
 
     # ── Run pipeline ───────────────────────
     api = Park4NightAPI()
-    run_pipeline(api, _checkpoint, limit=args.limit, num_workers=args.workers)
+    run_pipeline(
+        api, _checkpoint, limit=args.limit, num_workers=args.workers, no_cache=args.no_cache
+    )
 
     elapsed = time.time() - start_time
 

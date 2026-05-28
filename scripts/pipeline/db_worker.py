@@ -317,11 +317,33 @@ class DBWorkerPool:
         service_map: dict,
         activity_map: dict,
     ) -> None:
-        """Insert a single place into the database."""
+        """Insert a single place into the database.
+
+        Supports partial records (e.g., just photos update from convert-existing mode).
+        If type_code is missing, only updates the photos column.
+        """
         cur = conn.cursor()
         try:
             type_code = place.get("type_code", "")
             type_id = type_map.get(type_code)
+
+            # Partial record (no type_code) — just update photos
+            if type_id is None and not type_code:
+                cur.execute(
+                    """
+                    UPDATE "Place"
+                    SET photos = %s, "photoCount" = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        json.dumps(place.get("photos", [])),
+                        place.get("photo_count", 0),
+                        place["id"],
+                    ),
+                )
+                conn.commit()
+                return
+
             if type_id is None:
                 raise KeyError(
                     f"Place {place.get('id')}: type_code '{type_code}' "

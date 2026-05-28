@@ -35,7 +35,7 @@ logger = logging.getLogger("pipeline")
 class ImageDownloader:
     """Downloads images from Park4Night CDN with retry and rate limiting."""
 
-    def __init__(self) -> None:
+    def __init__(self, no_cache: bool = False) -> None:
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -52,6 +52,7 @@ class ImageDownloader:
         adapter = HTTPAdapter(max_retries=retry)
         self.session.mount("https://", adapter)
         self._last_request_time = 0.0
+        self._no_cache = no_cache
         self._stats = {
             "downloaded": 0,
             "skipped_exists": 0,
@@ -91,20 +92,20 @@ class ImageDownloader:
     def _download_file(self, url: str, save_path: Path, webp_path: Path) -> bool:
         """Download a single file, convert to WebP, and save.
 
-        If .webp already exists, skip.
+        If .webp already exists, skip (unless no_cache).
         If .jpg already exists (from old scraper), convert to .webp (no re-download).
         Otherwise download as .jpg (temporary), convert to .webp, delete .jpg.
         Returns True if .webp file exists at end.
         """
-        # Skip if .webp already exists
-        if webp_path.exists():
+        # Skip if .webp already exists (unless no_cache)
+        if webp_path.exists() and not self._no_cache:
             self._stats["skipped_exists"] += 1
             if save_path.exists():
                 save_path.unlink()
             return True
 
-        # Convert existing .jpg to .webp (no re-download needed)
-        if save_path.exists():
+        # Convert existing .jpg to .webp (no re-download needed, unless no_cache)
+        if save_path.exists() and not self._no_cache:
             if self._convert_jpg_to_webp(save_path, webp_path):
                 self._stats["downloaded"] += 1
                 return True
@@ -161,32 +162,6 @@ class ImageDownloader:
             self._stats["failed"] += 1
             if save_path.exists():
                 save_path.unlink()
-            return False
-
-    def convert_existing_jpg(self, place_id: int, photo_id: str, img_type: str) -> bool:
-        """Convert an existing .jpg to .webp for a place photo (no download).
-
-        Used by --convert-existing mode to process old images without API access.
-        Returns True if .webp exists at end.
-        """
-        place_dir = Path(PLACE_IMAGES_DIR) / str(place_id)
-        jpg_path = place_dir / f"{photo_id}_{img_type}.jpg"
-        webp_path = place_dir / f"{photo_id}_{img_type}.webp"
-
-        if webp_path.exists():
-            self._stats["skipped_exists"] += 1
-            if jpg_path.exists():
-                jpg_path.unlink()
-            return True
-
-        if not jpg_path.exists():
-            return False
-
-        if self._convert_jpg_to_webp(jpg_path, webp_path):
-            self._stats["downloaded"] += 1
-            return True
-        else:
-            self._stats["failed"] += 1
             return False
 
     def download_place_photos(self, place_id: int, photos: list[dict]) -> list[dict]:
