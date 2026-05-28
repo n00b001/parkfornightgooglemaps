@@ -413,10 +413,15 @@ def stage_enqueue_db(
     """Enqueue a place + reviews for async DB insert. Non-blocking.
 
     Place and reviews MUST already be normalized by the caller.
-    Raises if reviews are missing.
+    If db_pool is None (DATABASE_URL not set), logs a warning and skips.
+    This allows the pipeline to run locally for testing without a DB.
     """
     if db_pool is None:
-        raise RuntimeError("DB worker pool is None — pipeline misconfigured")
+        logger.warning(
+            f"Skipping DB insert for place {place.get('id')}: "
+            "DATABASE_URL not set"
+        )
+        return
     reviews = place.get("reviews") or []
     db_pool.enqueue(place, reviews)
     with _stats_lock:
@@ -480,7 +485,7 @@ def _handle_signal(signum: int, frame: Any) -> None:
 
 
 # ── Worker initializer (called once per process) ─────────────────────
-def _worker_init(no_cache: bool) -> None:
+def _worker_init(no_cache: bool, preload_translation: bool = True) -> None:
     """Initialize worker process: preload argos models + create shared instances.
 
     Called once when each process starts (spawn method).
@@ -492,6 +497,9 @@ def _worker_init(no_cache: bool) -> None:
             starts a fresh interpreter where module-level globals are reset
             to their defaults. Without this, --no-cache would be ignored in
             worker processes (API cache and image cache would still be used).
+        preload_translation: Whether to preload argos-translate models.
+            Set to False for the scrape stage (no translation needed) to save
+            ~100 seconds of model loading time per worker process.
 
     Why create shared instances here:
       Each worker process has its own globals (spawn method). Creating the
@@ -501,7 +509,8 @@ def _worker_init(no_cache: bool) -> None:
     """
     global _worker_api, _worker_downloader, _no_cache_global
     _no_cache_global = no_cache  # Set correctly in worker (spawn resets globals)
-    preload_models()
+    if preload_translation:
+        preload_models()
     _worker_api = Park4NightAPI(no_cache=no_cache)
     _worker_downloader = ImageDownloader(no_cache=no_cache)
 
@@ -738,11 +747,41 @@ def run_scrape_stage(
         errors = 0
         cached = 0
 
+        # Check scrape cache BEFORE submitting to executor.
+        # Why: each worker process takes ~100s to spawn (preload_models loads
+        # 30+ argos-translate models). If we submit all places to the executor
+        # and check the cache inside the worker, we waste 100s per worker just
+        # to find out the place is already cached. Checking here means cached
+        # places are handled instantly in the main process with zero spawn cost.
+        to_process = []
+        for raw_place, grid_point in places_to_process:
+            place_id = int(raw_place.get("id") or 0)
+            if not no_cache:
+                cached_data = scrape_cache_get(place_id)
+                if cached_data is not None:
+                    cached += 1
+                    place_num += 1
+                    with _stats_lock:
+                        _stats["places_processed"] += 1
+                        _stats["images_downloaded"] += len(cached_data.get("photos", []))
+                    console.print(
+                        f"  [bold yellow]✓ Place {place_id} cached (skipped)[/bold yellow]"
+                    )
+                    logger.info(
+                        f"Scrape place {place_num}/{total_places} ({place_id}): cached (skipped)"
+                    )
+                    progress.update(task, completed=place_num)
+                    process_tracker.update(place_num)
+                    continue
+            to_process.append((raw_place, grid_point))
+
+        # Only spawn workers for places that actually need work.
+        # Use preload_translation=False because scrape stage doesn't translate.
         multiprocessing.set_start_method("spawn", force=True)
         with ProcessPoolExecutor(
             max_workers=num_workers,
             initializer=_worker_init,
-            initargs=(no_cache,),
+            initargs=(no_cache, False),  # no_cache, preload_translation=False
         ) as executor:
             futures = {
                 executor.submit(
@@ -751,7 +790,7 @@ def run_scrape_stage(
                     raw_place.get("photos", []),
                     no_cache,
                 ): (raw_place, grid_point)
-                for raw_place, grid_point in places_to_process
+                for raw_place, grid_point in to_process
             }
 
             for future in as_completed(futures):
@@ -808,8 +847,7 @@ def run_scrape_stage(
     console.print(f"  Images: [green]{_stats['images_downloaded']}[/green] downloaded")
     console.print(f"  Total time: [cyan]{total_elapsed:.1f}s[/cyan]")
     logger.info(
-        f"Scrape stage complete: {_stats['places_processed']} "
-        f"places in {total_elapsed:.1f}s"
+        f"Scrape stage complete: {_stats['places_processed']} places in {total_elapsed:.1f}s"
     )
 
     if errors:
@@ -879,15 +917,41 @@ def run_normalize_stage(
         errors = 0
         cached = 0
 
+        # Check norm cache BEFORE submitting to executor.
+        # Each worker takes ~100s to spawn (preload_models loads 30+ models).
+        # Checking here means cached places are handled instantly with zero spawn cost.
+        to_process = []
+        for place_id in scraped_ids:
+            if not no_cache:
+                cached_data = norm_cache_get(place_id)
+                if cached_data is not None:
+                    cached += 1
+                    place_num += 1
+                    with _stats_lock:
+                        _stats["places_processed"] += 1
+                    console.print(
+                        f"  [bold yellow]✓ Place {place_id} "
+                        f"cached (skipped)[/bold yellow]"
+                    )
+                    logger.info(
+                        f"Normalize place {place_num}/{len(scraped_ids)} "
+                        f"({place_id}): cached (skipped)"
+                    )
+                    progress.update(task, completed=place_num)
+                    process_tracker.update(place_num)
+                    continue
+            to_process.append(place_id)
+
+        # Only spawn workers for places that actually need work.
         multiprocessing.set_start_method("spawn", force=True)
         with ProcessPoolExecutor(
             max_workers=num_workers,
             initializer=_worker_init,
-            initargs=(no_cache,),
+            initargs=(no_cache, True),  # no_cache, preload_translation=True
         ) as executor:
             futures = {
                 executor.submit(_worker_normalize_place, place_id, no_cache): place_id
-                for place_id in scraped_ids
+                for place_id in to_process
             }
 
             for future in as_completed(futures):
@@ -1164,8 +1228,7 @@ def run_upload_stage(
     )
     console.print(f"  Total time: [cyan]{total_elapsed:.1f}s[/cyan]")
     logger.info(
-        f"Upload stage complete: {_stats['places_processed']} "
-        f"places in {total_elapsed:.1f}s"
+        f"Upload stage complete: {_stats['places_processed']} places in {total_elapsed:.1f}s"
     )
 
     if errors:
@@ -1348,6 +1411,47 @@ def run_full_pipeline(
         place_num = 0
         errors = 0
 
+        # Check norm cache BEFORE submitting to executor.
+        # Each worker takes ~100s to spawn (preload_models loads 30+ models).
+        # Checking here means cached places are handled instantly with zero spawn cost.
+        to_process = []
+        for raw_place, grid_point in places_to_process:
+            place_id = int(raw_place.get("id") or 0)
+            if not no_cache:
+                cached_data = norm_cache_get(place_id)
+                if cached_data is not None:
+                    # Already normalized — enqueue R2 + DB directly, skip worker.
+                    place = cached_data
+                    t0 = time.time()
+                    r2_task = stage_enqueue_r2(place, r2_pool)
+                    if r2_task is not None:
+                        r2_task.done_event.wait()
+                    r2_time = time.time() - t0
+
+                    t0 = time.time()
+                    stage_enqueue_db(place, db_pool)
+                    db_time = time.time() - t0
+
+                    with _stats_lock:
+                        _stats["places_processed"] += 1
+                        _stats["images_downloaded"] += len(place.get("photos", []))
+                        _stage_timers["r2_upload"].add(r2_time)
+                        _stage_timers["db_insert"].add(db_time)
+
+                    place_num += 1
+                    console.print(
+                        f"  [bold yellow]✓ Place {place_id} "
+                        f"cached (R2+DB only)[/bold yellow]"
+                    )
+                    logger.info(
+                        f"Place {place_num}/{total_places} "
+                        f"({place_id}): cached (R2+DB only)"
+                    )
+                    progress.update(task, completed=place_num)
+                    process_tracker.update(place_num)
+                    continue
+            to_process.append((raw_place, grid_point))
+
         # Use spawn (not fork) to avoid inheriting argos locks.
         # Each worker preloads models once via initializer.
         # Pass no_cache via initargs so workers respect --no-cache flag
@@ -1356,7 +1460,7 @@ def run_full_pipeline(
         with ProcessPoolExecutor(
             max_workers=num_workers,
             initializer=_worker_init,
-            initargs=(no_cache,),
+            initargs=(no_cache, True),  # no_cache, preload_translation=True
         ) as executor:
             futures = {
                 executor.submit(
@@ -1365,7 +1469,7 @@ def run_full_pipeline(
                     raw_place.get("photos", []),
                     no_cache,
                 ): (raw_place, grid_point)
-                for raw_place, grid_point in places_to_process
+                for raw_place, grid_point in to_process
             }
 
             for future in as_completed(futures):
