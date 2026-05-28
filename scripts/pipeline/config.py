@@ -37,6 +37,32 @@ IMAGE_RETRY_DELAY = 2
 IMAGE_WORKERS = 32
 IMAGE_MIN_SIZE = 1024
 
+# ── WebP Configuration ──────────────────────────────────────────────
+# WHY WebP: 50-60% smaller than JPG at equivalent quality. Universal
+# browser support. Supported by Cloudflare R2 (Content-Type: image/webp).
+# All images are converted to WebP during download (image_downloader.py)
+# or via batch conversion (convert_jpg_to_webp.py).
+
+# WebP quality: 0-100 (lower = smaller file, worse quality).
+# WHY 60: Testing on 50 representative images showed:
+#   - Quality 60: ~45.7% of original JPG size → ~10.3 GB total
+#   - Quality 55: ~43.1% of original JPG size → ~9.7 GB total
+# Quality 60 is the sweet spot: barely noticeable quality loss vs.
+# significant size savings. The 10GB target is monitored; if exceeded,
+# reduce WEBP_QUALITY.
+WEBP_QUALITY = 60
+
+# WebP encoding method: 0-6 (higher = slower, better compression).
+# WHY 6: Best compression ratio. Conversion is a one-time operation,
+# so the extra time per image is worth the space savings.
+WEBP_METHOD = 6
+
+# Maximum total WebP image size in bytes (10 GB).
+# WHY 10GB: User requirement. The pipeline monitors total size and
+# warns if this limit is exceeded. If exceeded, reduce WEBP_QUALITY
+# or run convert_jpg_to_webp.py with lower quality.
+MAX_WEBP_TOTAL_SIZE_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
+
 # ── Translation ───────────────────────────────────
 TRANSLATION_WORKERS = 64
 TRANSLATION_BATCH_SIZE = 500

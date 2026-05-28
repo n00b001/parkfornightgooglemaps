@@ -417,10 +417,7 @@ def stage_enqueue_db(
     This allows the pipeline to run locally for testing without a DB.
     """
     if db_pool is None:
-        logger.warning(
-            f"Skipping DB insert for place {place.get('id')}: "
-            "DATABASE_URL not set"
-        )
+        logger.warning(f"Skipping DB insert for place {place.get('id')}: DATABASE_URL not set")
         return
     reviews = place.get("reviews") or []
     db_pool.enqueue(place, reviews)
@@ -930,8 +927,7 @@ def run_normalize_stage(
                     with _stats_lock:
                         _stats["places_processed"] += 1
                     console.print(
-                        f"  [bold yellow]✓ Place {place_id} "
-                        f"cached (skipped)[/bold yellow]"
+                        f"  [bold yellow]✓ Place {place_id} cached (skipped)[/bold yellow]"
                     )
                     logger.info(
                         f"Normalize place {place_num}/{len(scraped_ids)} "
@@ -1440,12 +1436,10 @@ def run_full_pipeline(
 
                     place_num += 1
                     console.print(
-                        f"  [bold yellow]✓ Place {place_id} "
-                        f"cached (R2+DB only)[/bold yellow]"
+                        f"  [bold yellow]✓ Place {place_id} cached (R2+DB only)[/bold yellow]"
                     )
                     logger.info(
-                        f"Place {place_num}/{total_places} "
-                        f"({place_id}): cached (R2+DB only)"
+                        f"Place {place_num}/{total_places} ({place_id}): cached (R2+DB only)"
                     )
                     progress.update(task, completed=place_num)
                     process_tracker.update(place_num)
@@ -1770,6 +1764,30 @@ def main() -> None:
     # Show cache stats
     cache_stats = get_cache_stats()
     console.print(f"  Cache: [cyan]{cache_stats}[/cyan]")
+
+    # Check WebP image size (warn if approaching 10GB limit)
+    # WHY: Monitor total image size to ensure we stay under the 10GB target.
+    # If exceeded, the user should run convert_jpg_to_webp.py with lower quality.
+    try:
+        from config import MAX_WEBP_TOTAL_SIZE_BYTES  # type: ignore[import-not-found]
+        from image_downloader import (  # type: ignore[import-not-found]
+            format_size,
+            get_total_webp_size,
+        )
+
+        webp_size = get_total_webp_size()
+        console.print(f"  WebP images: [cyan]{format_size(webp_size)}[/cyan]")
+        if webp_size > MAX_WEBP_TOTAL_SIZE_BYTES:
+            over_by = webp_size - MAX_WEBP_TOTAL_SIZE_BYTES
+            console.print(
+                f"  [bold red]⚠ WebP size exceeds 10 GB by {format_size(over_by)}! "
+                f"Run convert_jpg_to_webp.py with lower quality.[/bold red]"
+            )
+            logger.warning(
+                f"WebP size ({format_size(webp_size)}) exceeds 10 GB by {format_size(over_by)}"
+            )
+    except Exception as e:
+        logger.warning(f"Failed to check WebP size: {e}")
 
     # Run the pipeline
     run_pipeline(
