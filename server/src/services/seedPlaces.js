@@ -21,19 +21,6 @@ async function seed() {
 		return;
 	}
 
-	// Quick check: is this a Git LFS pointer?
-	const firstBytes = fs.readFileSync(placesFile, {
-		encoding: "utf-8",
-		flag: "r",
-	}).slice(0, 100);
-	if (firstBytes.startsWith("version https://git-lfs")) {
-		console.warn(
-			"places_export.json is a Git LFS pointer — run `git lfs pull` before seeding.",
-		);
-		console.log("Skipping seed.");
-		return;
-	}
-
 	let places;
 	try {
 		const raw = fs.readFileSync(placesFile, "utf-8");

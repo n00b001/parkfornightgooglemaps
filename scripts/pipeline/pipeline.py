@@ -70,6 +70,7 @@ from cache import (  # type: ignore[import-not-found]
     get_cache_stats,
     norm_cache_clear,
     norm_cache_get,
+    norm_cache_list,
     norm_cache_set,
     scrape_cache_clear,
     scrape_cache_get,
@@ -1065,21 +1066,7 @@ def run_upload_stage(
         return
 
     # Get list of normalized place IDs
-    normalized_ids = []
-    norm_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "data",
-        "cache",
-        "normalized",
-    )
-    if os.path.exists(norm_dir):
-        for filename in os.listdir(norm_dir):
-            if filename.endswith(".json"):
-                try:
-                    normalized_ids.append(int(filename.removesuffix(".json")))
-                except ValueError:
-                    pass
-    normalized_ids.sort()
+    normalized_ids = norm_cache_list()
 
     if not normalized_ids:
         console.print(

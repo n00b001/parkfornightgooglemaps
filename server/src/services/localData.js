@@ -137,7 +137,7 @@ function loadData() {
 			console.log(`Loaded ${places.length} places from local data`);
 		} catch (error) {
 			console.warn(
-				`Failed to parse places file (may be Git LFS pointer): ${error.message}`,
+				`Failed to parse places file: ${error.message}`,
 			);
 			places = [];
 		}
@@ -166,7 +166,7 @@ function loadData() {
 			console.log(`Reviews indexed for ${reviewsByPlace.size} places`);
 		} catch (error) {
 			console.warn(
-				`Failed to parse reviews file (may be Git LFS pointer): ${error.message}`,
+				`Failed to parse reviews file: ${error.message}`,
 			);
 			reviewsByPlace = new Map();
 		}
