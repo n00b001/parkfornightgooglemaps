@@ -3,6 +3,23 @@ DB Upload Worker Pool.
 
 Queue-based Supabase inserts: the pipeline enqueues DB tasks and moves on.
 Worker threads dequeue and insert in parallel, each with its own connection.
+
+Why 8 threads:
+  Each thread maintains its own psycopg2 connection. PostgreSQL connections are
+  not thread-safe — sharing a connection across threads causes race conditions
+  and corrupted queries. 8 threads provides 3-5x throughput over sequential
+  inserts without overwhelming the Supabase free tier (10k connections/day).
+  See PIPELINE_DESIGN.md for benchmarks.
+
+Why queue-based:
+  The pipeline enqueues tasks and moves on immediately. If DB inserts slow down
+  (e.g., network latency to Supabase), the queue provides backpressure instead
+  of blocking the main pipeline. This keeps the extract/translate stages flowing.
+
+Why per-thread connections:
+  psycopg2 connections are NOT thread-safe. Each worker thread creates its own
+  connection in _worker() and closes it on exit. This avoids race conditions
+  and ensures each transaction is isolated.
 """
 
 from __future__ import annotations
@@ -34,7 +51,13 @@ def _get_db_url() -> str:
 
 
 def _get_connection() -> psycopg2.extensions.connection:
-    """Get a new DB connection (one per worker thread)."""
+    """Get a new DB connection (one per worker thread).
+
+    Why per-thread: psycopg2 connections are NOT thread-safe. Sharing a
+    connection across threads causes race conditions and corrupted queries.
+    Each worker thread creates its own connection in _worker() and closes
+    it on exit. This ensures each transaction is isolated.
+    """
     conn = psycopg2.connect(_get_db_url())
     conn.autocommit = False
     return conn
@@ -159,13 +182,29 @@ class DBWorkerPool:
         self,
         num_workers: int = 8,
         queue_size: int = 128,
+        total_expected: int = 0,
     ) -> None:
+        """Initialize DB worker pool.
+
+        Args:
+            num_workers: Number of parallel insert threads (default 8).
+            queue_size: Maximum pending tasks before backpressure (default 128).
+            total_expected: Total number of places expected (for progress tracking).
+        """
         self.num_workers = num_workers
         self.queue_size = queue_size
         self.queue: Queue[DBUploadTask | None] = Queue(maxsize=queue_size)
         self.workers: list[threading.Thread] = []
         self._stats = {"enqueued": 0, "inserted": 0, "failed": 0}
         self._stats_lock = threading.Lock()
+
+        # Progress tracking: thread-safe queue for workers to push completion events.
+        # The main process reads this queue in a background thread to update
+        # Rich progress bars and log file during the Finalize phase.
+        self.progress_queue: Queue[tuple[int, str]] = Queue()
+        self._completed_places: set[int] = set()
+        self._completed_lock = threading.Lock()
+        self._total_expected = total_expected
 
     def start(self) -> None:
         """Start worker threads."""
@@ -232,8 +271,13 @@ class DBWorkerPool:
         system_user_id: str,
         task: DBUploadTask,
     ) -> None:
-        """Process a single DB insert task: place + reviews."""
+        """Process a single DB insert task: place + reviews.
+
+        After processing, pushes (place_id, 'done') to the progress queue
+        so the main process can update progress bars during Finalize.
+        """
         place = task.place
+        place_id = place.get("id", 0)
 
         # Upsert lookup entries
         self._upsert_lookups(conn, place)
@@ -251,6 +295,22 @@ class DBWorkerPool:
 
         with self._stats_lock:
             self._stats["inserted"] += 1
+
+        # Push progress update for main process to read.
+        # Why: the main process reads this queue in a background thread
+        # to update Rich progress bars and log file during Finalize.
+        self.progress_queue.put((place_id, "done"))
+        with self._completed_lock:
+            self._completed_places.add(place_id)
+
+    def get_progress(self) -> tuple[int, int]:
+        """Return (completed, total_expected) for progress bar updates.
+
+        Called by the main process's background thread during Finalize
+        to update Rich progress bars and log file.
+        """
+        with self._completed_lock:
+            return len(self._completed_places), self._total_expected
 
     def _upsert_lookups(
         self,

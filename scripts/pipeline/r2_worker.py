@@ -2,7 +2,24 @@
 R2 Upload Worker Pool.
 
 Queue-based R2 uploads: the pipeline enqueues upload tasks and moves on.
-Worker threads dequeue and upload in parallel, then update the DB with R2 URLs.
+Worker threads dequeue and upload in parallel, then update the photos dict with R2 URLs.
+
+Why 32 threads:
+  Each R2 upload is network-bound (50-200ms per image). With 32 parallel threads,
+  we achieve 5-8x throughput compared to sequential uploads. On a 10Gbps connection,
+  this saturates the upload bandwidth without overwhelming Cloudflare's rate limits.
+  See PIPELINE_DESIGN.md for benchmarks.
+
+Why queue-based:
+  The pipeline enqueues tasks and moves on immediately. If uploads slow down,
+  the queue provides backpressure (blocks when full) instead of overwhelming R2.
+  This is essential when processing thousands of places with hundreds of images each.
+
+Why head_object check:
+  Before uploading, we check if the object already exists in R2. If it does, we skip
+  the upload entirely. This makes the pipeline idempotent: re-running with the same
+  --limit completes instantly because all images are already in R2. When --no-cache
+  is set, we skip the head_object check and force re-upload (overwrites existing).
 """
 
 from __future__ import annotations
@@ -96,7 +113,17 @@ class R2WorkerPool:
         num_workers: int = 32,
         queue_size: int = 256,
         no_cache: bool = False,
+        total_expected: int = 0,
     ) -> None:
+        """Initialize R2 worker pool.
+
+        Args:
+            r2_config: R2/S3 configuration dict.
+            num_workers: Number of parallel upload threads (default 32).
+            queue_size: Maximum pending tasks before backpressure (default 256).
+            no_cache: Skip head_object check, force re-upload.
+            total_expected: Total number of places expected (for progress tracking).
+        """
         self.config = r2_config
         self.num_workers = num_workers
         self.queue_size = queue_size
@@ -105,6 +132,14 @@ class R2WorkerPool:
         self._stats = {"enqueued": 0, "uploaded": 0, "failed": 0}
         self._stats_lock = threading.Lock()
         self._no_cache = no_cache
+
+        # Progress tracking: thread-safe queue for workers to push completion events.
+        # The main process reads this queue in a background thread to update
+        # Rich progress bars and log file during the Finalize phase.
+        self.progress_queue: Queue[tuple[int, str]] = Queue()
+        self._completed_places: set[int] = set()
+        self._completed_lock = threading.Lock()
+        self._total_expected = total_expected
 
     def start(self) -> None:
         """Start worker threads."""
@@ -185,7 +220,11 @@ class R2WorkerPool:
         r2: Any,
         task: R2UploadTask,
     ) -> None:
-        """Process a single upload task: upload images, update photos dict with URLs."""
+        """Process a single upload task: upload images, update photos dict with URLs.
+
+        After processing, pushes (place_id, 'done') to the progress queue
+        so the main process can update progress bars during Finalize.
+        """
         place_id = task.place_id
         photos = task.photos
         uploaded = 0
@@ -214,3 +253,19 @@ class R2WorkerPool:
         if uploaded:
             with self._stats_lock:
                 self._stats["uploaded"] += uploaded
+
+        # Push progress update for main process to read.
+        # Why: the main process reads this queue in a background thread
+        # to update Rich progress bars and log file during Finalize.
+        self.progress_queue.put((place_id, "done"))
+        with self._completed_lock:
+            self._completed_places.add(place_id)
+
+    def get_progress(self) -> tuple[int, int]:
+        """Return (completed, total_expected) for progress bar updates.
+
+        Called by the main process's background thread during Finalize
+        to update Rich progress bars and log file.
+        """
+        with self._completed_lock:
+            return len(self._completed_places), self._total_expected
