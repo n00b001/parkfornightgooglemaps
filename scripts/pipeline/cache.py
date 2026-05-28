@@ -15,6 +15,8 @@ Cache directory: scripts/data/cache/
   ├── api/                    # API responses (grid points + reviews)
   │   ├── 48.8566_2.3522.json  # Grid point → places list
   │   └── reviews_12345.json    # Place ID → reviews list
+  ├── scraped/                # Complete scraped place data (photos + reviews)
+  │   └── 12345.json            # Place ID → scraped place dict
   ├── normalized/             # Normalized place data
   │   └── 12345.json            # Place ID → normalized dict
   └── translations.json       # {original_text: translated_text} dict
@@ -38,6 +40,7 @@ logger = logging.getLogger("pipeline")
 SCRIPTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIR = os.path.join(SCRIPTS_DIR, "data", "cache")
 API_CACHE_DIR = os.path.join(CACHE_DIR, "api")
+SCRAPED_CACHE_DIR = os.path.join(CACHE_DIR, "scraped")
 NORM_CACHE_DIR = os.path.join(CACHE_DIR, "normalized")
 TRANSLATION_CACHE_FILE = os.path.join(CACHE_DIR, "translations.json")
 
@@ -45,6 +48,7 @@ TRANSLATION_CACHE_FILE = os.path.join(CACHE_DIR, "translations.json")
 def _ensure_dirs() -> None:
     """Create cache directories if they don't exist."""
     os.makedirs(API_CACHE_DIR, exist_ok=True)
+    os.makedirs(SCRAPED_CACHE_DIR, exist_ok=True)
     os.makedirs(NORM_CACHE_DIR, exist_ok=True)
     os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -131,6 +135,80 @@ def api_cache_clear() -> int:
                 os.unlink(path)
                 count += 1
     logger.info(f"Cleared {count} API cache files")
+    return count
+
+
+# ── Scrape Cache ─────────────────────────────────────────────────────
+# Caches complete scraped place data (with photos and reviews) between
+# the scrape and normalize stages. This allows running the pipeline in
+# separate stages: --stage scrape saves here, --stage normalize reads here.
+#
+# Key: place ID.
+# Value: complete place dict with photos (local paths) and reviews.
+
+
+def scrape_cache_get(place_id: int) -> dict | None:
+    """Get cached scraped place data. Returns None if not cached.
+
+    This is the output of the scrape stage: complete place data with
+    downloaded photos (local paths) and fetched reviews. Used by the
+    normalize stage to read pre-scraped data.
+    """
+    _ensure_dirs()
+    path = os.path.join(SCRAPED_CACHE_DIR, f"{place_id}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"Failed to read scrape cache {path}: {e}")
+        return None
+
+
+def scrape_cache_set(place_id: int, data: dict) -> None:
+    """Cache scraped place data.
+
+    Called by the scrape stage after downloading photos and fetching reviews.
+    The normalize stage reads this data to translate and normalize.
+    """
+    _ensure_dirs()
+    path = os.path.join(SCRAPED_CACHE_DIR, f"{place_id}.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except OSError as e:
+        logger.error(f"Failed to write scrape cache {path}: {e}")
+
+
+def scrape_cache_list() -> list[int]:
+    """List all cached scraped place IDs.
+
+    Used by the normalize stage to find places that have been scraped
+    but not yet normalized.
+    """
+    _ensure_dirs()
+    place_ids: list[int] = []
+    if os.path.exists(SCRAPED_CACHE_DIR):
+        for filename in os.listdir(SCRAPED_CACHE_DIR):
+            if filename.endswith(".json"):
+                try:
+                    place_ids.append(int(filename.removesuffix(".json")))
+                except ValueError:
+                    pass
+    return sorted(place_ids)
+
+
+def scrape_cache_clear() -> int:
+    """Clear all scrape cache files. Returns number of files deleted."""
+    count = 0
+    if os.path.exists(SCRAPED_CACHE_DIR):
+        for filename in os.listdir(SCRAPED_CACHE_DIR):
+            path = os.path.join(SCRAPED_CACHE_DIR, filename)
+            if os.path.isfile(path):
+                os.unlink(path)
+                count += 1
+    logger.info(f"Cleared {count} scrape cache files")
     return count
 
 
@@ -353,6 +431,7 @@ def get_cache_stats() -> dict[str, Any]:
     """Get statistics about all caches."""
     stats: dict[str, Any] = {
         "api_cache_files": 0,
+        "scrape_cache_files": 0,
         "norm_cache_files": 0,
         "translation_entries": 0,
         "total_cache_size_bytes": 0,
@@ -366,6 +445,18 @@ def get_cache_stats() -> dict[str, Any]:
         stats["api_cache_files"] = len(api_files)
         stats["total_cache_size_bytes"] += sum(
             os.path.getsize(os.path.join(API_CACHE_DIR, f)) for f in api_files
+        )
+
+    # Scrape cache
+    if os.path.exists(SCRAPED_CACHE_DIR):
+        scrape_files = [
+            f
+            for f in os.listdir(SCRAPED_CACHE_DIR)
+            if os.path.isfile(os.path.join(SCRAPED_CACHE_DIR, f))
+        ]
+        stats["scrape_cache_files"] = len(scrape_files)
+        stats["total_cache_size_bytes"] += sum(
+            os.path.getsize(os.path.join(SCRAPED_CACHE_DIR, f)) for f in scrape_files
         )
 
     # Normalization cache

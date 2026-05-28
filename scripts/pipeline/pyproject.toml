@@ -26,13 +26,13 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.ruff.lint.isort]
 known-first-party = [
   "api_client",
-  "checkpoint",
+  "cache",
   "config",
+  "db_worker",
   "image_downloader",
   "logging_setup",
   "normalizer",
-  "r2_uploader",
-  "supabase_uploader",
+  "r2_worker",
   "translator",
 ]
 
