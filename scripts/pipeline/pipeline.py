@@ -286,29 +286,55 @@ def stage_normalize(place: dict) -> dict | None:
     return normalized
 
 
-# ── Stage 4: Enqueue R2 upload (non-blocking) ─
-def stage_enqueue_r2(place: dict, r2_pool: R2WorkerPool | None) -> dict:
-    """Enqueue images for async R2 upload. Non-blocking.
+# ── Stage 4: Enqueue R2 upload (blocking — waits for completion) ─
+# WHY blocking: The R2 worker pool exists for performance (parallel uploads
+# across multiple places). But we MUST wait for THIS place's uploads to
+# complete before marking it as processed in the checkpoint. Otherwise,
+# if the pipeline is interrupted between enqueuing and completing, the
+# checkpoint says "done" but the images are missing from R2. On resume,
+# the place is skipped entirely, and images are lost.
+# The pool still processes other places' uploads in parallel — we only
+# block on THIS place's done_event.
+def stage_enqueue_r2(
+    place: dict,
+    r2_pool: R2WorkerPool | None,
+    checkpoint: PipelineCheckpoint,
+) -> dict:
+    """Enqueue images for R2 upload and wait for completion.
 
-    Worker threads dequeue and upload in parallel, then update DB with URLs.
-    Returns the unchanged place dict.
+    Blocks until all images for this place are uploaded (or skipped).
+    Marks the r2_uploaded stage in the checkpoint.
+    Returns the place dict with R2 URLs populated.
     """
     if r2_pool is None:
         return place
 
     photos = place.get("photos", [])
     if photos:
-        r2_pool.enqueue(place["id"], photos)
+        task = r2_pool.enqueue(place["id"], photos)
+        # Wait for R2 upload to complete before proceeding.
+        # This ensures the checkpoint only marks the place as done
+        # when ALL work is actually complete (fixes race condition).
+        task.done_event.wait(timeout=300)
+        checkpoint.mark_place_stage_done(place["id"], "r2_uploaded")
     return place
 
 
 # ── Stage 5: Insert DB (place + reviews into Supabase) ─
+# WHY blocking: Same rationale as R2. The DB worker pool exists for
+# performance (parallel inserts across multiple places). But we MUST
+# wait for THIS place's insert to complete before marking it as
+# processed. Otherwise, on interrupt, the checkpoint says "done" but
+# the data is missing from the database.
 def stage_enqueue_db(
     place: dict,
     db_pool: DBWorkerPool | None,
+    checkpoint: PipelineCheckpoint,
 ) -> None:
-    """Enqueue a place + reviews for async DB insert. Non-blocking.
+    """Enqueue a place + reviews for DB insert and wait for completion.
 
+    Blocks until the DB insert is complete.
+    Marks the db_inserted stage in the checkpoint.
     Place and reviews MUST already be normalized by the caller.
     Raises if reviews are missing.
     """
@@ -316,8 +342,13 @@ def stage_enqueue_db(
         raise RuntimeError("DB worker pool is None — pipeline misconfigured")
     reviews = place.get("reviews") or []  # empty list is valid (no reviews for this place)
 
-    # Enqueue place + pre-normalized reviews for async insert
-    db_pool.enqueue(place, reviews)
+    # Enqueue place + pre-normalized reviews for DB insert
+    task = db_pool.enqueue(place, reviews)
+    # Wait for DB insert to complete before proceeding.
+    # This ensures the checkpoint only marks the place as done
+    # when ALL work is actually complete (fixes race condition).
+    task.done_event.wait(timeout=300)
+    checkpoint.mark_place_stage_done(place["id"], "db_inserted")
     _stats["db_inserts"] += 1
 
 
@@ -397,6 +428,8 @@ def place_source(
 
         places = api.get_places(lat, lng)
         if not places:
+            # Mark grid point as done even if no places (it was scraped)
+            checkpoint.mark_grid_point_done(lat, lng)
             continue
 
         for place in places:
@@ -411,6 +444,15 @@ def place_source(
 
             yield (place, (lat, lng), False)
             total_yielded += 1
+
+        # Mark grid point as done after yielding all places from it.
+        # WHY: This prevents re-scraping the same grid point on resume.
+        # Even if some places from this grid point fail to process (R2/DB
+        # errors), the grid point itself was scraped successfully — we
+        # don't need to re-scrape it. On resume, the checkpoint will skip
+        # this grid point, but it will re-process any places that failed
+        # (because they're not in processed_place_ids).
+        checkpoint.mark_grid_point_done(lat, lng)
 
 
 # ── Convert existing mode ──────────────────────────
@@ -593,17 +635,31 @@ def run_pipeline(
                         else:
                             place = result.pop("place")
 
-                            # Main process: enqueue R2
+                            # Main process: enqueue R2 (blocking — waits for completion)
+                            # WHY blocking: See stage_enqueue_r2 docstring.
+                            # The R2 pool still processes other places in parallel;
+                            # we only block on THIS place's done_event.
                             t0 = time.time()
-                            place = stage_enqueue_r2(place, r2_pool)
+                            place = stage_enqueue_r2(place, r2_pool, checkpoint)
                             r2_time = time.time() - t0
 
-                            # Main process: enqueue DB
+                            # Main process: enqueue DB (blocking — waits for completion)
+                            # WHY blocking: See stage_enqueue_db docstring.
+                            # The DB pool still processes other places in parallel;
+                            # we only block on THIS place's done_event.
                             t0 = time.time()
-                            stage_enqueue_db(place, db_pool)
+                            stage_enqueue_db(place, db_pool, checkpoint)
                             db_time = time.time() - t0
 
                             # Main process: mark place processed + save checkpoint
+                            # This is safe now because R2/DB are complete (we waited).
+                            # If the pipeline is interrupted here, the place is NOT
+                            # marked as processed, so it will be re-processed on resume.
+                            # Each stage is independently idempotent via disk cache:
+                            # - Images: .webp exists → skip (image_downloader.py)
+                            # - Translations: in cache → skip (translator.py)
+                            # - R2: head_object exists → skip (r2_worker.py)
+                            # - DB: ON CONFLICT DO UPDATE (db_worker.py)
                             if grid_point:
                                 checkpoint.mark_place_processed(
                                     place_id, grid_point[0], grid_point[1]

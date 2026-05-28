@@ -12,7 +12,9 @@ All source languages are known from data structure:
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -25,6 +27,12 @@ logger = logging.getLogger("pipeline")
 _TRANSLATE_CACHE: dict[str, str] = {}
 _PACKAGES_INITIALIZED = False
 _PACKAGES_LOCK = threading.Lock()
+_CACHE_LOADED = False
+
+# Persistent cache file (in data directory, sibling to pipeline/)
+_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "data", "translation_cache.json"
+)
 
 # Source languages to install translation packages for (→ English).
 REQUIRED_SOURCE_LANGUAGES = [
@@ -214,6 +222,9 @@ def translate_batch(
     # Ensure packages are installed before any translation
     _ensure_packages_installed()
 
+    # Load cache from disk on first use (thread-safe)
+    load_cache()
+
     # Filter out already-cached texts
     uncached = [(t, lang) for t, lang in texts if t not in _TRANSLATE_CACHE]
 
@@ -232,6 +243,9 @@ def translate_batch(
 
     # Update cache
     _TRANSLATE_CACHE.update(results)
+
+    # Persist cache to disk after each batch
+    _save_cache()
 
     # Return results for all inputs (cached + newly translated)
     return {t: _TRANSLATE_CACHE[t] for t, _ in texts}
@@ -262,3 +276,49 @@ def translate_text(text: str, src_lang: str) -> str:
 def get_cache_size() -> int:
     """Return the number of entries in the translation cache."""
     return len(_TRANSLATE_CACHE)
+
+
+# ── Persistent Cache ──────────────────────────────────────────────────
+
+
+def _load_cache() -> dict[str, str]:
+    """Load translation cache from disk."""
+    if os.path.exists(_CACHE_FILE):
+        try:
+            with open(_CACHE_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to load translation cache: {e}, starting fresh")
+    return {}
+
+
+def _save_cache() -> None:
+    """Save translation cache to disk."""
+    os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
+    try:
+        with open(_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(_TRANSLATE_CACHE, f, ensure_ascii=False)
+    except OSError as e:
+        logger.warning(f"Failed to save translation cache: {e}")
+
+
+def load_cache() -> None:
+    """Load translation cache from disk into memory.
+
+    Call this once at startup. Thread-safe.
+    """
+    global _TRANSLATE_CACHE, _CACHE_LOADED
+    with _PACKAGES_LOCK:
+        if not _CACHE_LOADED:
+            _TRANSLATE_CACHE = _load_cache()
+            _CACHE_LOADED = True
+            logger.info(f"Loaded {len(_TRANSLATE_CACHE)} translations from cache")
+
+
+def save_cache() -> None:
+    """Save translation cache from memory to disk.
+
+    Thread-safe. Call periodically or after each batch.
+    """
+    with _PACKAGES_LOCK:
+        _save_cache()

@@ -177,12 +177,20 @@ class DBWorkerPool:
             f"DB worker pool started: {self.num_workers} workers, queue size {self.queue_size}"
         )
 
-    def enqueue(self, place: dict, reviews: list[dict] | None = None) -> None:
-        """Enqueue a place for DB insert. Non-blocking."""
+    def enqueue(self, place: dict, reviews: list[dict] | None = None) -> DBUploadTask:
+        """Enqueue a place for DB insert. Non-blocking.
+
+        Returns the task so the caller can wait for completion via task.done_event.
+        This is critical for the checkpoint: the place is only marked as processed
+        AFTER the DB insert completes (via done_event.wait()). Without this,
+        an interrupt between enqueuing and completing would mark the place as
+        done in the checkpoint, but the data would be missing from the database.
+        """
         task = DBUploadTask(place, reviews)
         self.queue.put(task)  # blocks only if queue is full (backpressure)
         with self._stats_lock:
             self._stats["enqueued"] += 1
+        return task
 
     def shutdown(self, timeout: float = 60.0) -> None:
         """Signal workers to stop and wait for them."""

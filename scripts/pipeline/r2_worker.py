@@ -116,14 +116,20 @@ class R2WorkerPool:
             f"R2 worker pool started: {self.num_workers} workers, queue size {self.queue_size}"
         )
 
-    def enqueue(self, place_id: int, photos: list[dict]) -> None:
-        """Enqueue a place's images for upload. Non-blocking."""
-        if not photos:
-            return
+    def enqueue(self, place_id: int, photos: list[dict]) -> R2UploadTask:
+        """Enqueue a place's images for upload. Non-blocking.
+
+        Returns the task so the caller can wait for completion via task.done_event.
+        This is critical for the checkpoint: the place is only marked as processed
+        AFTER the R2 upload completes (via done_event.wait()). Without this,
+        an interrupt between enqueuing and completing would mark the place as
+        done in the checkpoint, but the images would be missing from R2.
+        """
         task = R2UploadTask(place_id, photos)
         self.queue.put(task)  # blocks only if queue is full (backpressure)
         with self._stats_lock:
             self._stats["enqueued"] += 1
+        return task
 
     def wait_all(self, timeout: float = 300.0) -> bool:
         """Wait for all enqueued tasks to complete. Returns True if all done."""
