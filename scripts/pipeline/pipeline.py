@@ -322,47 +322,95 @@ def stage_enqueue_db(
 
 
 # ── Generator: yield raw places from API ──────────
-def place_source(api: Park4NightAPI, checkpoint: PipelineCheckpoint, limit: int | None = None):
-    """Generator that yields raw places from the Park4Night API.
+def place_source(
+    api: Park4NightAPI,
+    checkpoint: PipelineCheckpoint,
+    limit: int | None = None,
+    no_cache: bool = False,
+):
+    """Generator that yields place tuples from the Park4Night API.
 
-    Respects checkpoint to skip already-processed grid points.
-    Yields one raw place dict at a time, up to `limit` places.
+    Yields (place_or_marker, grid_point, is_cached) tuples:
+      - place_or_marker: raw place dict, or {"id": ..., "_cached": True} for cached
+      - grid_point: (lat, lng) tuple, or None for cached markers
+      - is_cached: True if this is a cached marker (skip pipeline)
+
+    Two phases:
+      Phase 1: Already-processed places (from checkpoint)
+        - Cache mode: yield cached markers (skip pipeline)
+        - no-cache mode: re-fetch from API, yield raw place
+      Phase 2: New places from remaining grid points
+        - Skip already-processed places
+        - Yield raw places
+
+    Respects `limit` across both phases.
     """
+    total_yielded = 0
+
+    # ── Phase 1: Already-processed places ──────────────────────
+    processed_ids = checkpoint.get_processed_place_ids(limit)
+    if processed_ids:
+        cache_label = "[dim]cached[/dim]" if not no_cache else "[yellow]re-fetching[/yellow]"
+        console.print(
+            f"  [bold blue]{len(processed_ids)}[/bold blue] processed places ({cache_label})"
+        )
+
+    for place_id in processed_ids:
+        if limit is not None and total_yielded >= limit:
+            break
+
+        if no_cache:
+            # Re-fetch from API using stored grid point
+            grid_point = checkpoint.get_place_grid_point(place_id)
+            if grid_point:
+                lat, lng = grid_point
+                place = api.get_place_by_grid_point(place_id, lat, lng)
+                if place:
+                    yield (place, (lat, lng), False)
+                    total_yielded += 1
+                    continue
+            console.print(f"  [yellow]⚠ Place {place_id} not found in API, skipping[/yellow]")
+        else:
+            # Cache mode: yield marker to skip pipeline
+            yield ({"id": place_id, "_cached": True}, None, True)
+            total_yielded += 1
+
+    # ── Phase 2: New places from grid points ───────────────────
     grid_points = Park4NightAPI.generate_grid_points()
     remaining = checkpoint.get_remaining_grid_points(grid_points)
 
     if not remaining:
-        console.print("  [yellow]All grid points already processed.[/yellow]")
+        if not processed_ids:
+            console.print("  [yellow]All grid points already processed.[/yellow]")
         return
 
     limit_msg = f" (limit: {limit} places)" if limit else ""
+    already = total_yielded
+    new_limit = (limit - already) if (limit is not None and limit > already) else None
+    if new_limit:
+        limit_msg = f" (limit: {new_limit} new places)"
     console.print(f"  [bold blue]{len(remaining)}[/bold blue] grid points remaining{limit_msg}")
 
-    total_yielded = 0
-
     for lat, lng in remaining:
-        if limit is not None and total_yielded >= limit:
+        if new_limit is not None and (total_yielded - already) >= new_limit:
             break
 
         places = api.get_places(lat, lng)
         if not places:
-            checkpoint.mark_grid_point_done(lat, lng)
             continue
 
         for place in places:
-            if limit is not None and total_yielded >= limit:
+            if new_limit is not None and (total_yielded - already) >= new_limit:
                 break
 
             place_id = int(place.get("id") or 0)
 
-            # Skip fully processed places
-            if checkpoint.is_place_fully_processed(place_id):
+            # Skip already-processed places
+            if checkpoint.is_place_processed(place_id):
                 continue
 
-            yield place
+            yield (place, (lat, lng), False)
             total_yielded += 1
-
-        checkpoint.mark_grid_point_done(lat, lng)
 
 
 # ── Convert existing mode ──────────────────────────
@@ -463,7 +511,7 @@ def run_pipeline(
     # Setup R2 worker pool (async queue-based uploads)
     r2_pool: R2WorkerPool | None = None
     if _r2_config is not None:
-        r2_pool = R2WorkerPool(_r2_config)
+        r2_pool = R2WorkerPool(_r2_config, no_cache=no_cache)
         r2_pool.start()
 
     # Setup DB worker pool (async queue-based inserts)
@@ -484,7 +532,8 @@ def run_pipeline(
     console.print(f"\n[bold cyan]Starting pipeline{limit_label}{workers_label}...[/bold cyan]\n")
 
     # Collect all places to process (pre-fetch from generator)
-    places_to_process = list(place_source(api, checkpoint, limit))
+    # Each item is: (place_or_marker, grid_point, is_cached)
+    places_to_process = list(place_source(api, checkpoint, limit, no_cache))
     total_places = len(places_to_process)
 
     if not total_places:
@@ -495,76 +544,103 @@ def run_pipeline(
         place_num = 0
         errors = 0
 
-        # Use spawn (not fork) to avoid inheriting argos locks
-        # Each worker preloads models once via initializer
-        multiprocessing.set_start_method("spawn", force=True)
-        with ProcessPoolExecutor(
-            max_workers=num_workers,
-            initializer=_worker_init,
-        ) as executor:
-            futures = {
-                executor.submit(
-                    _worker_process_place,
-                    raw_place,
-                    raw_place.get("photos", []),
-                    no_cache,
-                ): raw_place
-                for raw_place in places_to_process
-            }
+        # Separate cached markers from real work
+        cached_count = sum(1 for _, _, is_cached in places_to_process if is_cached)
+        real_places = [
+            (place_or_marker, grid_point)
+            for place_or_marker, grid_point, is_cached in places_to_process
+            if not is_cached
+        ]
 
-            for future in as_completed(futures):
-                place_num += 1
-                raw_place = futures[future]
-                place_id = int(raw_place.get("id") or 0)
+        # Print cached summary
+        if cached_count:
+            console.print(f"  [dim]✓ {cached_count} place(s) cached, skipping pipeline[/dim]")
+            place_num += cached_count
+            with _stats_lock:
+                _stats["places_processed"] += cached_count
+            progress.update(task, completed=place_num)
 
-                try:
-                    result = future.result()
+        # Process real places
+        if real_places:
+            # Use spawn (not fork) to avoid inheriting argos locks
+            # Each worker preloads models once via initializer
+            multiprocessing.set_start_method("spawn", force=True)
+            with ProcessPoolExecutor(
+                max_workers=num_workers,
+                initializer=_worker_init,
+            ) as executor:
+                futures = {
+                    executor.submit(
+                        _worker_process_place,
+                        raw_place,
+                        raw_place.get("photos", []),
+                        no_cache,
+                    ): (raw_place, grid_point)
+                    for raw_place, grid_point in real_places
+                }
 
-                    if "error" in result:
-                        console.print(f"  [red]✗ {result['error']}[/red]")
-                        errors += 1
-                    else:
-                        place = result.pop("place")
+                for future in as_completed(futures):
+                    place_num += 1
+                    raw_place, grid_point = futures[future]
+                    place_id = int(raw_place.get("id") or 0)
 
-                        # Main process: enqueue R2
-                        t0 = time.time()
-                        place = stage_enqueue_r2(place, r2_pool)
-                        r2_time = time.time() - t0
+                    try:
+                        result = future.result()
 
-                        # Main process: enqueue DB
-                        t0 = time.time()
-                        stage_enqueue_db(place, db_pool)
-                        db_time = time.time() - t0
+                        if "error" in result:
+                            console.print(f"  [red]✗ {result['error']}[/red]")
+                            errors += 1
+                        else:
+                            place = result.pop("place")
 
-                        # Main process: checkpoint
-                        checkpoint._save()
-                        with _stats_lock:
-                            _stats["places_processed"] += 1
+                            # Main process: enqueue R2
+                            t0 = time.time()
+                            place = stage_enqueue_r2(place, r2_pool)
+                            r2_time = time.time() - t0
 
-                        rate = place_num / result["elapsed"] if result["elapsed"] > 0 else 0
+                            # Main process: enqueue DB
+                            t0 = time.time()
+                            stage_enqueue_db(place, db_pool)
+                            db_time = time.time() - t0
+
+                            # Main process: mark place processed + save checkpoint
+                            if grid_point:
+                                checkpoint.mark_place_processed(
+                                    place_id, grid_point[0], grid_point[1]
+                                )
+                            with _stats_lock:
+                                _stats["places_processed"] += 1
+
+                            rate = (
+                                place_num / result["elapsed"]
+                                if result["elapsed"] > 0
+                                else 0
+                            )
+                            console.print(
+                                f"  [bold green]✓ Place {result['place_id']} "
+                                f"complete ({result['elapsed']:.2f}s, "
+                                f"{rate:.1f} places/s)[/bold green]"
+                            )
+
+                            logger.info(
+                                f"Place {place_num} ({result['place_id']}): "
+                                f"total={result['elapsed']:.3f}s | "
+                                f"extract={result['extract']:.3f}s, "
+                                f"download={result['download']:.3f}s, "
+                                f"translate={result['translate']:.3f}s, "
+                                f"r2={r2_time:.3f}s, "
+                                f"normalize={result['normalize']:.3f}s, "
+                                f"db={db_time:.3f}s | "
+                                f"rate={rate:.2f} places/s"
+                            )
+
+                    except Exception as e:
                         console.print(
-                            f"  [bold green]✓ Place {result['place_id']} "
-                            f"complete ({result['elapsed']:.2f}s, "
-                            f"{rate:.1f} places/s)[/bold green]"
+                            f"  [red]✗ Place {place_id} crashed: {e}[/red]"
                         )
+                        errors += 1
 
-                        logger.info(
-                            f"Place {place_num} ({result['place_id']}): "
-                            f"total={result['elapsed']:.3f}s | "
-                            f"extract={result['extract']:.3f}s, "
-                            f"download={result['download']:.3f}s, "
-                            f"translate={result['translate']:.3f}s, "
-                            f"r2={r2_time:.3f}s, "
-                            f"normalize={result['normalize']:.3f}s, "
-                            f"db={db_time:.3f}s | "
-                            f"rate={rate:.2f} places/s"
-                        )
-
-                except Exception as e:
-                    console.print(f"  [red]✗ Place {place_id} crashed: {e}[/red]")
-                    errors += 1
-
-                progress.update(task, completed=place_num)
+                    progress.update(task, completed=place_num)
 
     # Cleanup: wait for all uploads/inserts to finish, then shut down workers
     if r2_pool is not None:

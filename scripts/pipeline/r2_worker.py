@@ -29,15 +29,26 @@ def _find_local_image(place_id: int, photo_id: str, img_type: str) -> str | None
     return None
 
 
-def _upload_single(r2: Any, local_path: str, r2_key: str, config: dict) -> str | None:
-    """Upload a single image to R2. Returns URL or None."""
+def _upload_single(
+    r2: Any,
+    local_path: str,
+    r2_key: str,
+    config: dict,
+    no_cache: bool = False,
+) -> str | None:
+    """Upload a single image to R2. Returns URL or None.
+
+    When no_cache=True, skips the head_object check and always uploads
+    (overwrites existing object).
+    """
     try:
-        # Check if already exists
-        try:
-            r2.head_object(Bucket=config["bucket"], Key=r2_key)
-            return _build_r2_url(config, r2_key)
-        except r2.exceptions.ClientError:
-            pass
+        # Check if already exists (skip when no_cache to force re-upload)
+        if not no_cache:
+            try:
+                r2.head_object(Bucket=config["bucket"], Key=r2_key)
+                return _build_r2_url(config, r2_key)
+            except r2.exceptions.ClientError:
+                pass
 
         content_type = "image/webp"  # Always WebP
         r2.put_object(
@@ -84,6 +95,7 @@ class R2WorkerPool:
         r2_config: dict,
         num_workers: int = 32,
         queue_size: int = 256,
+        no_cache: bool = False,
     ) -> None:
         self.config = r2_config
         self.num_workers = num_workers
@@ -92,6 +104,7 @@ class R2WorkerPool:
         self.workers: list[threading.Thread] = []
         self._stats = {"enqueued": 0, "uploaded": 0, "failed": 0}
         self._stats_lock = threading.Lock()
+        self._no_cache = no_cache
 
     def start(self) -> None:
         """Start worker threads."""
@@ -191,7 +204,9 @@ class R2WorkerPool:
                     continue
 
                 r2_key = f"places/{place_id}/{photo_id}_{img_type}.webp"  # Always .webp
-                url = _upload_single(r2, local_path, r2_key, self.config)
+                url = _upload_single(
+                    r2, local_path, r2_key, self.config, no_cache=self._no_cache
+                )
                 if url:
                     photo[r2_field] = url
                     uploaded += 1

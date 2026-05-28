@@ -84,6 +84,21 @@ class Park4NightAPI:
             return data.get("commentaires", [])
         return []
 
+    def get_place_by_grid_point(
+        self, place_id: int, latitude: float, longitude: float
+    ) -> dict | None:
+        """Fetch a specific place by ID from a grid point.
+
+        Used to re-fetch already-processed places during --no-cache runs.
+        Returns the place dict if found, None otherwise.
+        """
+        data = self._get(PLACES_ENDPOINT, {"latitude": latitude, "longitude": longitude})
+        if data and "lieux" in data:
+            for place in data["lieux"]:
+                if int(place.get("id", 0)) == place_id:
+                    return place
+        return None
+
     @staticmethod
     def generate_grid_points() -> list[tuple[float, float]]:
         """Generate all grid points for scraping."""
