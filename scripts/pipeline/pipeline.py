@@ -9,10 +9,14 @@ Each place flows through all stages end-to-end:
     normalize → upload R2 → insert DB
 
 Disk caching (--no-disk-cache to bypass):
-  - Image files: .webp existence check (image_downloader.py)
-  - R2 uploads: head_object check (r2_worker.py)
-  - API responses: cached per grid point (future)
-  - Translations: cached in translations.json (future)
+  All caches use diskcache (SQLite-backed) under scripts/data/cache/diskcache/.
+  - API responses: get_places(lat, lng), get_reviews(place_id)
+  - Image downloads: URL → success/failure (image_downloader.py)
+  - Image conversion: jpg_path → success/failure (convert_jpg_to_webp.py)
+  - R2 uploads: r2_key → URL (r2_worker.py)
+  - Translations: (text, lang) → English (translator.py) + lru_cache
+  - Normalized places: place_id → normalized dict
+  - DB inserts: place_id → success/failure (db_worker.py)
 
 Stages (use --stage to run individually):
   scrape    - Extract places from API, download images, fetch reviews
@@ -57,6 +61,10 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from api_client import Park4NightAPI  # type: ignore[import-not-found]
+from cache import (
+    ensure_cache_dirs,
+    normalize_cache,  # type: ignore[import-not-found]
+)
 from config import (  # type: ignore[import-not-found]
     ACTIVITY_CODES,
     PLACE_TYPE_CODES,
@@ -320,8 +328,16 @@ def stage_normalize(place: dict) -> tuple[dict | None, bool]:
     """Normalize place + reviews into clean DB-ready records.
 
     No translation — all text must be pre-translated by stage_translate.
-    Returns (normalized_place, cache_hit) where cache_hit is always False.
+    Disk cached: same place_id → same normalized output.
+    Returns (normalized_place, cache_hit).
     """
+    place_id = place.get("id", 0)
+
+    # Check disk cache first
+    cached: dict | None = normalize_cache.get(place_id, None)  # type: ignore[assignment]
+    if cached is not None:
+        return cached, True
+
     normalized = normalize_place(place)
     if not normalized:
         return None, False
@@ -333,6 +349,9 @@ def stage_normalize(place: dict) -> tuple[dict | None, bool]:
         if normalized_review:
             normalized_reviews.append(normalized_review)
     normalized["reviews"] = normalized_reviews
+
+    # Store in disk cache
+    normalize_cache.set(place_id, normalized)
 
     return normalized, False
 
@@ -1576,6 +1595,9 @@ def main() -> None:
         with open(args.r2_config, encoding="utf-8") as f:
             _r2_config = json.load(f)
         console.print(f"  R2 config: [cyan]{args.r2_config}[/cyan]")
+
+    # Initialize disk cache directories
+    ensure_cache_dirs()
 
     # Signal handling (save caches on Ctrl+C)
     signal.signal(signal.SIGINT, _handle_signal)

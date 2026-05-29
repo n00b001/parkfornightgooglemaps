@@ -84,6 +84,7 @@ from rich.progress import (
 # Ensure pipeline package is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from cache import image_cache  # type: ignore[import-not-found]
 from config import (  # type: ignore[import-not-found]
     IMAGES_DIR,
     MAX_WEBP_TOTAL_SIZE_BYTES,
@@ -164,6 +165,8 @@ def convert_single_image(jpg_path: str) -> dict[str, Any]:
     worker functions to be importable at module level (not nested functions).
     This is a Python multiprocessing constraint.
 
+    Disk cached: same jpg_path → skip if already converted.
+
     Args:
         jpg_path: Absolute path to the JPG file.
 
@@ -182,11 +185,20 @@ def convert_single_image(jpg_path: str) -> dict[str, Any]:
         "error": None,
     }
 
+    # Disk cache: skip if already converted
+    cached = image_cache.get(jpg_path, None)
+    if cached is True and webp_path.exists():
+        result["success"] = True
+        result["jpg_size"] = jpg_path_obj.stat().st_size
+        result["webp_size"] = webp_path.stat().st_size
+        return result
+
     # Skip if WebP already exists (idempotent)
     if webp_path.exists():
         result["success"] = True
         result["jpg_size"] = jpg_path_obj.stat().st_size
         result["webp_size"] = webp_path.stat().st_size
+        image_cache.set(jpg_path, True)
         return result
 
     try:
@@ -216,6 +228,9 @@ def convert_single_image(jpg_path: str) -> dict[str, Any]:
         result["webp_size"] = webp_size
         result["success"] = True
 
+        # Cache successful conversion
+        image_cache.set(jpg_path, True)
+
         # Delete original JPG after successful conversion
         # WHY: JPG files are 22.46 GB total. Keeping them defeats the purpose.
         # The WebP file is the new source of truth.
@@ -223,6 +238,7 @@ def convert_single_image(jpg_path: str) -> dict[str, Any]:
 
     except Exception as e:
         result["error"] = str(e)
+        image_cache.set(jpg_path, False)
         # If WebP was created but JPG deletion failed, clean up partial WebP
         if webp_path.exists():
             webp_path.unlink()

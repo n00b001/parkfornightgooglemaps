@@ -28,6 +28,7 @@ from urllib3.util.retry import Retry
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from cache import api_cache  # type: ignore[import-not-found]
 from config import (  # type: ignore[import-not-found]
     MAX_RETRIES,
     PLACES_ENDPOINT,
@@ -88,6 +89,8 @@ class Park4NightAPI:
     ) -> list[dict]:
         """Get places from the guest API for a grid point.
 
+        Disk cached: same (lat, lng) → same response, no HTTP request.
+
         Args:
             latitude: Grid point latitude.
             longitude: Grid point longitude.
@@ -95,6 +98,12 @@ class Park4NightAPI:
         Returns:
             List of place dicts from the API, or empty list on failure.
         """
+        # Disk cache: check if this grid point was already fetched
+        cache_key = f"places:{latitude}:{longitude}"
+        cached: list[dict] | None = api_cache.get(cache_key, None)  # type: ignore[assignment]
+        if cached is not None:
+            return cached
+
         data = self._get(
             PLACES_ENDPOINT,
             {
@@ -103,11 +112,16 @@ class Park4NightAPI:
             },
         )
         if data and "lieux" in data:
-            return data["lieux"]
-        return []
+            result = data["lieux"]
+        else:
+            result = []
+        api_cache.set(cache_key, result)
+        return result
 
     def get_reviews(self, place_id: int) -> list[dict]:
         """Get reviews for a place from the guest API.
+
+        Disk cached: same place_id → same response, no HTTP request.
 
         Args:
             place_id: Park4Night place ID.
@@ -115,13 +129,22 @@ class Park4NightAPI:
         Returns:
             List of review dicts from the API, or empty list on failure.
         """
+        # Disk cache: check if reviews for this place were already fetched
+        cache_key = f"reviews:{place_id}"
+        cached: list[dict] | None = api_cache.get(cache_key, None)  # type: ignore[assignment]
+        if cached is not None:
+            return cached
+
         # Why REVIEWS_ENDPOINT (commGet.php): this is the dedicated reviews endpoint.
         # PLACES_ENDPOINT (lieuxGetFilter.php) returns place data, not reviews.
         # Using the wrong endpoint means reviews are never fetched.
         data = self._get(REVIEWS_ENDPOINT, {"lieu_id": place_id})
         if data and data.get("status") == "OK":
-            return data.get("commentaires", [])
-        return []
+            result = data.get("commentaires", [])
+        else:
+            result = []
+        api_cache.set(cache_key, result)
+        return result
 
     @staticmethod
     def generate_grid_points() -> list[tuple[float, float]]:
