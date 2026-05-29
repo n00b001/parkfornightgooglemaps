@@ -11,7 +11,7 @@ Each place flows through all stages end-to-end:
 Idempotency via disk cache (NOT checkpointing):
   Each stage checks if its output file exists before doing work.
   Re-running with the same --limit completes instantly (all cached).
-  --no-cache bypasses all caches (force re-process everything).
+  --no-disk-cache bypasses all caches (force re-process everything).
 
 Why disk cache over checkpointing:
   - Simpler: file existence check vs. complex state machine
@@ -32,7 +32,7 @@ Usage:
     cd scripts/pipeline && uv run python pipeline.py --stage scrape --limit 10
     cd scripts/pipeline && uv run python pipeline.py --stage normalize --limit 10
     cd scripts/pipeline && uv run python pipeline.py --stage upload --limit 10
-    cd scripts/pipeline && uv run python pipeline.py --limit 10 --no-cache
+    cd scripts/pipeline && uv run python pipeline.py --limit 10 --no-disk-cache
     cd scripts/pipeline && uv run python pipeline.py --dry-run
 
 Architecture:
@@ -490,10 +490,10 @@ def _worker_init(no_cache: bool, preload_translation: bool = True) -> None:
     Each process loads its own models — no shared state, no deadlock.
 
     Args:
-        no_cache: Whether to bypass disk caches (--no-cache mode).
+        no_cache: Whether to bypass disk caches (--no-disk-cache mode).
             This is passed via initargs from the main process because spawn
             starts a fresh interpreter where module-level globals are reset
-            to their defaults. Without this, --no-cache would be ignored in
+            to their defaults. Without this, --no-disk-cache would be ignored in
             worker processes (API cache and image cache would still be used).
         preload_translation: Whether to preload argos-translate models.
             Set to False for the scrape stage (no translation needed) to save
@@ -697,9 +697,9 @@ def run_scrape_stage(
 
     num_workers = 16
 
-    # Clear caches if --no-cache
+    # Clear caches if --no-disk-cache
     if no_cache:
-        console.print("[yellow]Clearing disk caches (--no-cache mode)...[/yellow]")
+        console.print("[yellow]Clearing disk caches (--no-disk-cache mode)...[/yellow]")
         api_cache_clear()
         scrape_cache_clear()
 
@@ -872,9 +872,9 @@ def run_normalize_stage(
 
     num_workers = 16
 
-    # Clear caches if --no-cache
+    # Clear caches if --no-disk-cache
     if no_cache:
-        console.print("[yellow]Clearing disk caches (--no-cache mode)...[/yellow]")
+        console.print("[yellow]Clearing disk caches (--no-disk-cache mode)...[/yellow]")
         norm_cache_clear()
 
     console.print("\n[bold cyan]Starting normalize stage[/bold cyan]")
@@ -1289,7 +1289,7 @@ def run_full_pipeline(
 
     Disk cache ensures idempotency:
       - Re-running with same --limit: all stages find cached output → skip
-      - --no-cache: bypass all caches → re-process everything
+      - --no-disk-cache: bypass all caches → re-process everything
 
     Progress tracking:
       - Per-place progress bar (console + log file)
@@ -1303,9 +1303,9 @@ def run_full_pipeline(
     # so we don't saturate all cores — leaves room for I/O workers.
     num_workers = 16
 
-    # Clear caches if --no-cache
+    # Clear caches if --no-disk-cache
     if no_cache:
-        console.print("[yellow]Clearing disk caches (--no-cache mode)...[/yellow]")
+        console.print("[yellow]Clearing disk caches (--no-disk-cache mode)...[/yellow]")
         api_cache_clear()
         norm_cache_clear()
 
@@ -1435,7 +1435,7 @@ def run_full_pipeline(
 
         # Use spawn (not fork) to avoid inheriting argos locks.
         # Each worker preloads models once via initializer.
-        # Pass no_cache via initargs so workers respect --no-cache flag
+        # Pass no_cache via initargs so workers respect --no-disk-cache flag
         # (spawn starts fresh interpreters where module globals are reset).
         multiprocessing.set_start_method("spawn", force=True)
         with ProcessPoolExecutor(
@@ -1677,7 +1677,7 @@ def main() -> None:
         description="Park4Night Unified ETL Pipeline\n\n"
         "Single script: scrape → normalize → translate → upload R2 → insert DB\n\n"
         "Idempotent: re-running with same --limit completes instantly (disk cache).\n"
-        "Use --no-cache to bypass all caches and re-process everything.\n"
+        "Use --no-disk-cache to bypass all caches and re-process everything.\n"
         "Use --stage to run only a specific stage.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1709,7 +1709,7 @@ def main() -> None:
         help="Path to .env file",
     )
     parser.add_argument(
-        "--no-cache",
+        "--no-disk-cache",
         action="store_true",
         help="Bypass all disk caches — re-download, re-translate, re-upload",
     )
@@ -1728,7 +1728,7 @@ def main() -> None:
         console.print(f"  Limit: [yellow]{args.limit} places[/yellow]")
     if args.stage:
         console.print(f"  Stage: [yellow]{args.stage}[/yellow]")
-    if args.no_cache:
+    if args.no_disk_cache:
         console.print("  [yellow]Cache disabled — all data will be re-processed[/yellow]")
 
     # Load environment
@@ -1779,7 +1779,7 @@ def main() -> None:
     # Run the pipeline
     run_pipeline(
         limit=args.limit,
-        no_cache=args.no_cache,
+        no_cache=args.no_disk_cache,
         dry_run=args.dry_run,
         stage=args.stage,
     )
