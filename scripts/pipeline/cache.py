@@ -19,6 +19,8 @@ Cache directory: scripts/data/cache/
   │   └── 12345.json            # Place ID → scraped place dict
   ├── normalized/             # Normalized place data
   │   └── 12345.json            # Place ID → normalized dict
+  ├── completed/              # Places finished ALL stages (skip entirely)
+  │   └── 12345.json            # Place ID → completion metadata
   └── translations.json       # {original_text: translated_text} dict
 
 All caches support --no-disk-cache bypass (skip read, skip write).
@@ -42,6 +44,7 @@ CACHE_DIR = os.path.join(SCRIPTS_DIR, "data", "cache")
 API_CACHE_DIR = os.path.join(CACHE_DIR, "api")
 SCRAPED_CACHE_DIR = os.path.join(CACHE_DIR, "scraped")
 NORM_CACHE_DIR = os.path.join(CACHE_DIR, "normalized")
+COMPLETED_CACHE_DIR = os.path.join(CACHE_DIR, "completed")
 TRANSLATION_CACHE_FILE = os.path.join(CACHE_DIR, "translations.json")
 
 
@@ -50,6 +53,7 @@ def _ensure_dirs() -> None:
     os.makedirs(API_CACHE_DIR, exist_ok=True)
     os.makedirs(SCRAPED_CACHE_DIR, exist_ok=True)
     os.makedirs(NORM_CACHE_DIR, exist_ok=True)
+    os.makedirs(COMPLETED_CACHE_DIR, exist_ok=True)
     os.makedirs(CACHE_DIR, exist_ok=True)
 
 
@@ -256,6 +260,92 @@ def norm_cache_clear() -> int:
     return count
 
 
+# ── Completed Places Cache ───────────────────────────────────────────
+# Tracks places that have completed ALL pipeline stages (scrape → normalize
+# → R2 upload → DB insert). When a place is marked completed, the pipeline
+# can skip it entirely without checking individual step caches or spawning
+# worker processes.
+#
+# Key: place ID.
+# Value: JSON dict with completion metadata (timestamp, photo count, etc.).
+#
+# Why this exists:
+#   The per-step caches (scraped/, normalized/) tell us what intermediate
+#   data exists on disk. But they don't tell us if the place has been
+#   successfully uploaded to R2 and Supabase. A place could be normalized
+#   but not yet uploaded. The completed cache is the single source of truth
+#   for "this place is fully done end-to-end."
+#
+# How it works:
+#   1. Pipeline checks completed cache BEFORE submitting to executor.
+#      If found, skip entirely — no worker spawn, no R2/DB re-upload.
+#   2. After successful R2 + DB upload, mark place as completed.
+#   3. Re-running the pipeline finds completed places and skips them.
+
+
+def place_completed_get(place_id: int) -> dict | None:
+    """Get completion record for a place. Returns None if not completed.
+
+    Used by the pipeline to check if a place has finished ALL stages
+    (scrape → normalize → R2 → DB) and can be skipped entirely.
+    """
+    _ensure_dirs()
+    path = os.path.join(COMPLETED_CACHE_DIR, f"{place_id}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"Failed to read completed cache {path}: {e}")
+        return None
+
+
+def place_completed_set(place_id: int, metadata: dict) -> None:
+    """Mark a place as fully completed (all stages done).
+
+    Called after successful R2 upload + DB insert. Records metadata
+    (timestamp, photo count, review count) for debugging.
+    """
+    _ensure_dirs()
+    path = os.path.join(COMPLETED_CACHE_DIR, f"{place_id}.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False)
+    except OSError as e:
+        logger.error(f"Failed to write completed cache {path}: {e}")
+
+
+def place_completed_list() -> list[int]:
+    """List all completed place IDs.
+
+    Used to find places that have been fully processed end-to-end.
+    """
+    _ensure_dirs()
+    place_ids: list[int] = []
+    if os.path.exists(COMPLETED_CACHE_DIR):
+        for filename in os.listdir(COMPLETED_CACHE_DIR):
+            if filename.endswith(".json"):
+                try:
+                    place_ids.append(int(filename.removesuffix(".json")))
+                except ValueError:
+                    pass
+    return sorted(place_ids)
+
+
+def place_completed_clear() -> int:
+    """Clear all completed cache files. Returns number of files deleted."""
+    count = 0
+    if os.path.exists(COMPLETED_CACHE_DIR):
+        for filename in os.listdir(COMPLETED_CACHE_DIR):
+            path = os.path.join(COMPLETED_CACHE_DIR, filename)
+            if os.path.isfile(path):
+                os.unlink(path)
+                count += 1
+    logger.info(f"Cleared {count} completed cache files")
+    return count
+
+
 # ── Translation Cache ────────────────────────────────────────────────
 # Persistent translation cache: {original_text: translated_text}
 # Loaded from disk at startup, saved periodically.
@@ -275,7 +365,11 @@ class TranslationCache:
       - Re-running pipeline should be instant, not re-translate everything
     """
 
-    def __init__(self, cache_file: str = TRANSLATION_CACHE_FILE, no_disk_cache: bool = False) -> None:
+    def __init__(
+        self,
+        cache_file: str = TRANSLATION_CACHE_FILE,
+        no_disk_cache: bool = False,
+    ) -> None:
         self._cache_file = cache_file
         self._no_disk_cache = no_disk_cache
         self._data: dict[str, str] = {}
@@ -433,6 +527,7 @@ def get_cache_stats() -> dict[str, Any]:
         "api_cache_files": 0,
         "scrape_cache_files": 0,
         "norm_cache_files": 0,
+        "completed_places": 0,
         "translation_entries": 0,
         "total_cache_size_bytes": 0,
     }
@@ -467,6 +562,18 @@ def get_cache_stats() -> dict[str, Any]:
         stats["norm_cache_files"] = len(norm_files)
         stats["total_cache_size_bytes"] += sum(
             os.path.getsize(os.path.join(NORM_CACHE_DIR, f)) for f in norm_files
+        )
+
+    # Completed places cache
+    if os.path.exists(COMPLETED_CACHE_DIR):
+        completed_files = [
+            f
+            for f in os.listdir(COMPLETED_CACHE_DIR)
+            if os.path.isfile(os.path.join(COMPLETED_CACHE_DIR, f))
+        ]
+        stats["completed_places"] = len(completed_files)
+        stats["total_cache_size_bytes"] += sum(
+            os.path.getsize(os.path.join(COMPLETED_CACHE_DIR, f)) for f in completed_files
         )
 
     # Translation cache
