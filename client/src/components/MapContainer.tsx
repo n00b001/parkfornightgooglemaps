@@ -1,5 +1,6 @@
 import React from 'react';
 import { GoogleMap, Marker, MarkerClusterer } from '@react-google-maps/api';
+import { Place } from '../types';
 
 const containerStyle = { width: '100%', height: '100%' };
 
@@ -46,7 +47,16 @@ const getIcon = (type: string, isFavorite: boolean, isVisited: boolean) => {
   };
 };
 
-const MapContainer: React.FC<any> = ({ places, onMarkerClick, center, onCenterChange, favorites = [], visited = [] }) => {
+interface MapContainerProps {
+  places: Place[];
+  onMarkerClick: (place: Place) => void;
+  center: { lat: number; lng: number };
+  onCenterChange: (center: { lat: number; lng: number }) => void;
+  favorites?: number[];
+  visited?: number[];
+}
+
+const MapContainer: React.FC<MapContainerProps> = ({ places, onMarkerClick, center, onCenterChange, favorites = [], visited = [] }) => {
   const mapRef = React.useRef<google.maps.Map | null>(null);
   const [mapReady, setMapReady] = React.useState(false);
   const [mapError, setMapError] = React.useState<string | null>(null);
@@ -130,10 +140,13 @@ const MapContainer: React.FC<any> = ({ places, onMarkerClick, center, onCenterCh
                 const isFavorite = favorites.includes(place.id);
                 const isVisited = visited.includes(place.id);
 
+                const lat = typeof place.latitude === 'string' ? parseFloat(place.latitude) : place.latitude;
+                const lng = typeof place.longitude === 'string' ? parseFloat(place.longitude) : place.longitude;
+
                 return (
                   <Marker
                     key={place.id}
-                    position={{ lat: parseFloat(place.latitude), lng: parseFloat(place.longitude) }}
+                    position={{ lat, lng }}
                     onClick={() => onMarkerClick(place)}
                     icon={getIcon(place.type, isFavorite, isVisited)}
                     clusterer={clusterer}

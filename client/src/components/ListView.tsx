@@ -1,5 +1,6 @@
 import React from 'react';
 import { Star, MapPin, Heart, Navigation } from 'lucide-react';
+import { Place } from '../types';
 
 // English type keys (must match server TYPE_CODE_MAP values)
 const TYPE_NAMES: Record<string, string> = {
@@ -31,8 +32,8 @@ const TYPE_COLORS: Record<string, string> = {
 };
 
 interface ListViewProps {
-  places: any[];
-  onPlaceClick: (place: any) => void;
+  places: Place[];
+  onPlaceClick: (place: Place) => void;
   favorites: number[];
   onToggleFavorite: (placeId: number) => void;
 }
@@ -97,7 +98,9 @@ const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, on
                    <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      window.open(`https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}`);
+                      const lat = typeof place.latitude === 'string' ? parseFloat(place.latitude) : place.latitude;
+                      const lng = typeof place.longitude === 'string' ? parseFloat(place.longitude) : place.longitude;
+                      window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`);
                     }}
                     className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors"
                     title="Directions"
