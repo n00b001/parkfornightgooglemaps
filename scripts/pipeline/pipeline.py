@@ -13,6 +13,12 @@ Idempotency via disk cache (NOT checkpointing):
   Re-running with the same --limit completes instantly (all cached).
   --no-disk-cache bypasses all caches (force re-process everything).
 
+Completed places cache (cache/completed/):
+  Tracks places that have finished ALL stages end-to-end.
+  When a place is marked completed, the pipeline skips it entirely
+  without checking individual step caches or spawning workers.
+  This is the fastest path: one file existence check and we're done.
+
 Why disk cache over checkpointing:
   - Simpler: file existence check vs. complex state machine
   - More reliable: no central authority to get out of sync
@@ -69,6 +75,8 @@ from cache import (  # type: ignore[import-not-found]
     get_cache_stats,
     norm_cache_get,
     norm_cache_set,
+    place_completed_get,
+    place_completed_set,
     scrape_cache_get,
     scrape_cache_list,
     scrape_cache_set,
@@ -1103,6 +1111,24 @@ def run_upload_stage(
         for place_id in normalized_ids:
             place_num += 1
 
+            # Check if already fully completed (skip R2+DB re-upload)
+            if not no_disk_cache:
+                completed = place_completed_get(place_id)
+                if completed is not None:
+                    with _stats_lock:
+                        _stats["places_processed"] += 1
+                        _stats["cache_hits"] += 1
+                    console.print(
+                        f"  [bold green]✓ Place {place_id} completed (skipped)[/bold green]"
+                    )
+                    logger.info(
+                        f"Upload place {place_num}/{len(normalized_ids)} "
+                        f"({place_id}): completed (skipped)"
+                    )
+                    progress.update(task, completed=place_num)
+                    process_tracker.update(place_num)
+                    continue
+
             # Load normalized place from cache
             place = norm_cache_get(place_id)
             if place is None:
@@ -1132,6 +1158,17 @@ def run_upload_stage(
                     _stats["images_downloaded"] += len(place.get("photos", []))
                     _stage_timers["r2_upload"].add(r2_time)
                     _stage_timers["db_insert"].add(db_time)
+
+                # Mark as fully completed so next run skips entirely
+                if not no_disk_cache:
+                    place_completed_set(
+                        place_id,
+                        {
+                            "completed_at": datetime.now(UTC).isoformat(),
+                            "photos": len(place.get("photos", [])),
+                            "reviews": len(place.get("reviews", [])),
+                        },
+                    )
 
                 console.print(
                     f"  [bold green]✓ Place {place_id} "
@@ -1389,12 +1426,36 @@ def run_full_pipeline(
         place_num = 0
         errors = 0
 
-        # Check norm cache BEFORE submitting to executor.
+        # Check completed cache FIRST (place fully done end-to-end).
+        # If found, skip entirely — no worker spawn, no R2/DB re-upload.
+        # This is the fastest path: one file existence check and we're done.
+        # Then check norm cache (normalized data exists but maybe not uploaded yet).
         # Each worker takes ~100s to spawn (preload_models loads 30+ models).
         # Checking here means cached places are handled instantly with zero spawn cost.
         to_process = []
         for raw_place, grid_point in places_to_process:
             place_id = int(raw_place.get("id") or 0)
+
+            # Fast path: place already completed all stages (scrape → normalize → R2 → DB)
+            if not no_disk_cache:
+                completed = place_completed_get(place_id)
+                if completed is not None:
+                    place_num += 1
+                    with _stats_lock:
+                        _stats["places_processed"] += 1
+                        _stats["cache_hits"] += 1
+                    console.print(
+                        f"  [bold green]✓ Place {place_id} completed (skipped)[/bold green]"
+                    )
+                    logger.info(
+                        f"Place {place_num}/{total_places} ({place_id}): "
+                        f"completed (skipped all stages)"
+                    )
+                    progress.update(task, completed=place_num)
+                    process_tracker.update(place_num)
+                    continue
+
+            # Slower path: normalized data exists but may need R2/DB upload
             if not no_disk_cache:
                 cached_data = norm_cache_get(place_id)
                 if cached_data is not None:
@@ -1415,6 +1476,17 @@ def run_full_pipeline(
                         _stats["images_downloaded"] += len(place.get("photos", []))
                         _stage_timers["r2_upload"].add(r2_time)
                         _stage_timers["db_insert"].add(db_time)
+
+                    # Mark as fully completed so next run skips entirely
+                    if not no_disk_cache:
+                        place_completed_set(
+                            place_id,
+                            {
+                                "completed_at": datetime.now(UTC).isoformat(),
+                                "photos": len(place.get("photos", [])),
+                                "reviews": len(place.get("reviews", [])),
+                            },
+                        )
 
                     place_num += 1
                     console.print(
@@ -1506,6 +1578,18 @@ def run_full_pipeline(
                             _stats["images_downloaded"] += len(place.get("photos", []))
                             _stage_timers["r2_upload"].add(r2_time)
                             _stage_timers["db_insert"].add(db_time)
+
+                        # Mark place as fully completed (all stages done).
+                        # Next run will find this in completed cache and skip entirely.
+                        if not no_disk_cache:
+                            place_completed_set(
+                                place_id,
+                                {
+                                    "completed_at": datetime.now(UTC).isoformat(),
+                                    "photos": len(place.get("photos", [])),
+                                    "reviews": len(place.get("reviews", [])),
+                                },
+                            )
 
                         rate = place_num / result["elapsed"] if result["elapsed"] > 0 else 0
                         console.print(
@@ -1672,6 +1756,8 @@ def main() -> None:
         description="Park4Night Unified ETL Pipeline\n\n"
         "Single script: scrape → normalize → translate → upload R2 → insert DB\n\n"
         "Idempotent: re-running with same --limit completes instantly (disk cache).\n"
+        "Completed places cache: places that finished ALL stages are skipped entirely\n"
+        "on subsequent runs (no worker spawn, no R2/DB re-upload).\n"
         "Use --no-disk-cache to bypass all caches and re-process everything.\n"
         "Use --stage to run only a specific stage.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
