@@ -1,5 +1,6 @@
 const prisma = require("../config/db");
 const LRUCache = require("../services/lruCache");
+const park4night = require("../services/park4night");
 
 const MAX_PLACES_LIMIT = 200;
 
@@ -39,17 +40,61 @@ const getPlaces = async (req, res) => {
 			longitude: { gte: lng - 0.5, lte: lng + 0.5 },
 		};
 
-		if (type) where.type = type;
-		if (minRating) where.rating = { gte: parseFloat(minRating) };
+		// Fetch from DB
+		let places = await prisma.place.findMany({ where });
 
-		const orderBy = {};
-		if (sortBy === "rating") orderBy.rating = "desc";
+		// If fewer than 10 spots found, try live API fallback
+		if (places.length < 10) {
+			try {
+				const livePlaces = await park4night.getPlaces(lat, lng);
+				if (livePlaces && livePlaces.length > 0) {
+					// Upsert results to database
+					const upserts = livePlaces.map((p) =>
+						prisma.place.upsert({
+							where: { id: p.id },
+							update: {
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								type: p.type,
+								description: p.description,
+								address: p.address,
+								rating: p.rating,
+								rawData: p.rawData,
+								lastFetched: new Date(),
+							},
+							create: {
+								id: p.id,
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								type: p.type,
+								description: p.description,
+								address: p.address,
+								rating: p.rating,
+								rawData: p.rawData,
+								lastFetched: new Date(),
+							},
+						}),
+					);
+					await Promise.allSettled(upserts);
 
-		// Fetch from DB, sort by distance, take closest N
-		let places = await prisma.place.findMany({
-			where,
-			orderBy: Object.keys(orderBy).length > 0 ? orderBy : undefined,
-		});
+					// Re-query database to ensure consistency with user filters
+					places = await prisma.place.findMany({ where });
+				}
+			} catch (fallbackError) {
+				console.error("Park4Night fallback failed:", fallbackError.message);
+			}
+		}
+
+		// Apply server-side filters if provided
+		if (type) {
+			places = places.filter((p) => p.type === type);
+		}
+		if (minRating) {
+			const min = parseFloat(minRating);
+			places = places.filter((p) => (p.rating || 0) >= min);
+		}
 
 		// Sort by distance from query point (closest first)
 		places.sort(
@@ -57,6 +102,12 @@ const getPlaces = async (req, res) => {
 				distance(lat, lng, a.latitude, a.longitude) -
 				distance(lat, lng, b.latitude, b.longitude),
 		);
+
+		// If sorting by rating, do it after distance (or instead of?)
+		// To match memory "sorting (by rating) when querying the Prisma database"
+		if (sortBy === "rating") {
+			places.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+		}
 
 		// Return only the closest N
 		places = places.slice(0, maxLimit);
@@ -107,16 +158,13 @@ const getPlaceDetail = async (req, res) => {
 const getPlaceReviews = async (req, res) => {
 	try {
 		const placeId = parseInt(req.params.id);
-		const reviews = await prisma.review.findMany({
-			where: { placeId },
-			orderBy: { createdAt: "desc" },
-		});
+		// Fetch original Park4Night reviews from guest API
+		const reviews = await park4night.getReviews(placeId);
 		res.json({ reviews });
 	} catch (error) {
-		console.error("Error fetching reviews:", error.message);
-		res
-			.status(500)
-			.json({ error: "Failed to fetch reviews", details: error.message });
+		console.error("Error fetching P4N reviews:", error.message);
+		// Return empty array on failure to avoid breaking UI
+		res.json({ reviews: [] });
 	}
 };
 

@@ -5,6 +5,7 @@ const STORES = {
   PLACES: 'places',
   REVIEWS: 'reviews',
   VISITS: 'visits',
+  FAVORITES: 'favorites',
   PENDING_VISITS: 'pending-visits',
   PENDING_FAVORITES: 'pending-favorites',
   PENDING_REVIEWS: 'pending-reviews',
@@ -19,6 +20,9 @@ export const initDB = async (): Promise<IDBPDatabase> => {
       if (oldVersion < 2) {
         db.createObjectStore(STORES.REVIEWS, { keyPath: 'id' });
         db.createObjectStore(STORES.VISITS, { keyPath: 'id' });
+        if (!db.objectStoreNames.contains(STORES.FAVORITES)) {
+          db.createObjectStore(STORES.FAVORITES, { keyPath: 'id' });
+        }
       }
       if (oldVersion < 3) {
         if (!db.objectStoreNames.contains(STORES.PENDING_VISITS)) {
@@ -60,6 +64,28 @@ export const getCachedReviews = async (placeId: number): Promise<any | null> => 
   const db = await initDB();
   const data = await db.get(STORES.REVIEWS, placeId);
   return data ? data.reviews : null;
+};
+
+export const saveFavorites = async (favorites: number[]) => {
+  const db = await initDB();
+  await db.put(STORES.FAVORITES, { id: 'current', list: favorites });
+};
+
+export const getCachedFavorites = async (): Promise<number[]> => {
+  const db = await initDB();
+  const data = await db.get(STORES.FAVORITES, 'current');
+  return data ? data.list : [];
+};
+
+export const saveVisits = async (visits: number[]) => {
+  const db = await initDB();
+  await db.put(STORES.VISITS, { id: 'current', list: visits });
+};
+
+export const getCachedVisits = async (): Promise<number[]> => {
+  const db = await initDB();
+  const data = await db.get(STORES.VISITS, 'current');
+  return data ? data.list : [];
 };
 
 export const savePendingVisit = async (placeId: number) => {

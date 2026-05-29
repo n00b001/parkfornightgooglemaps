@@ -10,6 +10,12 @@ import {
 	getPendingReviews,
 	removePendingReview,
 	savePendingFavorite,
+	savePlaces,
+	getCachedPlaces,
+	saveFavorites,
+	getCachedFavorites,
+	saveVisits,
+	getCachedVisits,
 } from "./services/db";
 import {
 	Heart,
@@ -116,15 +122,36 @@ const App: React.FC = () => {
 			const cached = placesCache.get(key);
 			if (cached !== undefined) return cached;
 
-			const res = await axios.get("/api/places", {
-				params: {
-					lat: lastFetchedCenter.lat,
-					lng: lastFetchedCenter.lng,
-					limit: 150,
-				},
-			});
-			placesCache.set(key, res.data);
-			return res.data;
+			try {
+				const res = await axios.get("/api/places", {
+					params: {
+						lat: lastFetchedCenter.lat,
+						lng: lastFetchedCenter.lng,
+						limit: 150,
+					},
+				});
+				placesCache.set(key, res.data);
+				// Persist to IndexedDB for offline use
+				await savePlaces(res.data);
+				return res.data;
+			} catch (err) {
+				if (!navigator.onLine) {
+					console.log("Offline: loading places from IndexedDB");
+					const localPlaces = await getCachedPlaces();
+					// Filter locally for the current viewport area if possible
+					return localPlaces.filter((p: any) => {
+						const pLat = parseFloat(p.latitude);
+						const pLng = parseFloat(p.longitude);
+						return (
+							pLat >= lastFetchedCenter.lat - 0.5 &&
+							pLat <= lastFetchedCenter.lat + 0.5 &&
+							pLng >= lastFetchedCenter.lng - 0.5 &&
+							pLng <= lastFetchedCenter.lng + 0.5
+						);
+					});
+				}
+				throw err;
+			}
 		},
 		staleTime: 5 * 60 * 1000, // 5 minutes — prevent aggressive refetches
 		refetchOnWindowFocus: false,
@@ -225,18 +252,36 @@ const App: React.FC = () => {
 	useEffect(() => {
 		axios
 			.get("/auth/me")
-			.then((res) => {
+			.then(async (res) => {
 				setUser(res.data);
 				if (res.data) {
-					axios
-						.get("/api/favorites")
-						.then((fRes) => setFavorites(fRes.data.map((f: any) => f.placeId)));
-					axios
-						.get("/api/visits")
-						.then((vRes) => setVisited(vRes.data.map((v: any) => v.placeId)));
+					try {
+						const fRes = await axios.get("/api/favorites");
+						const favIds = fRes.data.map((f: any) => f.placeId);
+						setFavorites(favIds);
+						await saveFavorites(favIds);
+
+						const vRes = await axios.get("/api/visits");
+						const visIds = vRes.data.map((v: any) => v.placeId);
+						setVisited(visIds);
+						await saveVisits(visIds);
+					} catch (err) {
+						if (!navigator.onLine) {
+							console.log("Offline: loading user data from IndexedDB");
+							setFavorites(await getCachedFavorites());
+							setVisited(await getCachedVisits());
+						}
+					}
 				}
 			})
-			.catch(() => setUser(null));
+			.catch(async () => {
+				setUser(null);
+				if (!navigator.onLine) {
+					console.log("Offline: loading cached data for anonymous session");
+					setFavorites(await getCachedFavorites());
+					setVisited(await getCachedVisits());
+				}
+			});
 	}, []);
 
 	// Deep linking: check for place ID in URL on load
