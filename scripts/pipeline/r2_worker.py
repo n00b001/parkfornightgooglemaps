@@ -18,7 +18,7 @@ Why queue-based:
 Why head_object check:
   Before uploading, we check if the object already exists in R2. If it does, we skip
   the upload entirely. This makes the pipeline idempotent: re-running with the same
-  --limit completes instantly because all images are already in R2. When --no-cache
+  --limit completes instantly because all images are already in R2. When --no-disk-cache
   is set, we skip the head_object check and force re-upload (overwrites existing).
 """
 
@@ -51,16 +51,16 @@ def _upload_single(
     local_path: str,
     r2_key: str,
     config: dict,
-    no_cache: bool = False,
+    no_disk_cache: bool = False,
 ) -> str | None:
     """Upload a single image to R2. Returns URL or None.
 
-    When no_cache=True, skips the head_object check and always uploads
+    When no_disk_cache=True, skips the head_object check and always uploads
     (overwrites existing object).
     """
     try:
-        # Check if already exists (skip when no_cache to force re-upload)
-        if not no_cache:
+        # Check if already exists (skip when no_disk_cache to force re-upload)
+        if not no_disk_cache:
             try:
                 r2.head_object(Bucket=config["bucket"], Key=r2_key)
                 return _build_r2_url(config, r2_key)
@@ -112,7 +112,7 @@ class R2WorkerPool:
         r2_config: dict,
         num_workers: int = 32,
         queue_size: int = 256,
-        no_cache: bool = False,
+        no_disk_cache: bool = False,
         total_expected: int = 0,
     ) -> None:
         """Initialize R2 worker pool.
@@ -121,7 +121,7 @@ class R2WorkerPool:
             r2_config: R2/S3 configuration dict.
             num_workers: Number of parallel upload threads (default 32).
             queue_size: Maximum pending tasks before backpressure (default 256).
-            no_cache: Skip head_object check, force re-upload.
+            no_disk_cache: Skip head_object check, force re-upload.
             total_expected: Total number of places expected (for progress tracking).
         """
         self.config = r2_config
@@ -131,7 +131,7 @@ class R2WorkerPool:
         self.workers: list[threading.Thread] = []
         self._stats = {"enqueued": 0, "uploaded": 0, "failed": 0}
         self._stats_lock = threading.Lock()
-        self._no_cache = no_cache
+        self._no_disk_cache = no_disk_cache
 
         # Progress tracking: thread-safe counters for real-time progress bars.
         # The main process reads these in a background thread to update
@@ -258,7 +258,7 @@ class R2WorkerPool:
 
                 r2_key = f"places/{place_id}/{photo_id}_{img_type}.webp"  # Always .webp
                 url = _upload_single(
-                    r2, local_path, r2_key, self.config, no_cache=self._no_cache
+                    r2, local_path, r2_key, self.config, no_disk_cache=self._no_disk_cache
                 )
                 if url:
                     photo[r2_field] = url

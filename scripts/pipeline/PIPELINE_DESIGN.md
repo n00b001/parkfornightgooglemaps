@@ -27,15 +27,19 @@ Each long-running function checks if its **output file exists** before doing wor
 
 **Result**: Re-running the pipeline with the same `--limit` completes instantly because every stage finds its output already on disk. No checkpoint file needed.
 
-### How `--no-cache` works
+### How `--no-disk-cache` works
 
-Every cache check has a `no_cache` flag. When `--no-cache` is set:
+Every cache check has a `no_disk_cache` flag. When `--no-disk-cache` is set:
 - API cache: Skip cache read → re-download from Park4Night
 - Image cache: Skip file existence check → re-download from CDN
 - Translation cache: Empty cache at startup → re-translate everything
-- Normalization cache: Delete cache files → re-run pure function
+- Normalization cache: Skip cache read → re-run pure function
 - R2 upload: Skip `head_object` check → force re-upload (overwrites existing)
 - DB insert: Uses `ON CONFLICT DO UPDATE` → always updates, never creates duplicates
+
+**IMPORTANT**: `--no-disk-cache` does NOT clear or delete any cache files.
+It only bypasses cache reads for the current run. New results are still written to cache.
+See CACHE_POLICY.md for details.
 
 ## Architecture Overview
 
@@ -91,61 +95,24 @@ The R2 upload pool (32 threads) and DB insert pool (8 threads) were added becaus
 ### Why NOT remove them
 Removing worker pools and going sequential would make the pipeline 5-10x slower. The queues are the RIGHT abstraction — they decouple the fast stages (extract, normalize) from the slow stages (upload, insert).
 
-## WebP Image Format
-
-### Why WebP (not JPG)
-All images are saved as WebP (not JPG) for the following reasons:
-- **50-60% smaller** than JPG at equivalent quality
-- **Universal browser support**: All modern browsers since 2020
-- **Cloudflare R2 support**: Correct `Content-Type: image/webp`
-- **Pillow native support**: No external dependencies needed
-
-### How conversion works
-1. **New downloads**: `image_downloader.py` downloads as JPG (temporary), converts to WebP, deletes JPG
-2. **Existing JPGs**: `convert_jpg_to_webp.py` batch-converts accumulated JPG files to WebP
-3. **R2 uploads**: `r2_worker.py` uploads `.webp` files with `Content-Type: image/webp`
-
-### Quality settings (config.py)
-- `WEBP_QUALITY = 60`: Tested on 50 representative images:
-  - Quality 60: ~45.7% of original JPG size → ~10.3 GB total
-  - Quality 55: ~43.1% of original JPG size → ~9.7 GB total
-  - Quality 60 is the sweet spot: barely noticeable quality loss
-- `WEBP_METHOD = 6`: Best compression ratio (slowest but smallest)
-- `MAX_WEBP_TOTAL_SIZE_BYTES = 10 GB`: User requirement, monitored at pipeline startup
-
-### Space monitoring
-- `image_downloader.get_total_webp_size()`: Scans disk for total WebP size
-- Pipeline startup: Checks total size, warns if > 10 GB
-- `convert_jpg_to_webp.py`: Checks size after conversion, warns if > 10 GB
-- If exceeded: Reduce `WEBP_QUALITY` in config.py and re-run conversion
-
-### Batch conversion (convert_jpg_to_webp.py)
-- Converts all existing JPG files (from old scraper) to WebP
-- Uses multiprocessing (16 workers) for speed
-- Idempotent: Skips files that already have WebP version
-- Deletes original JPG after successful conversion
-- Progress bars + file logging (same as main pipeline)
-- Usage: `cd scripts/pipeline && uv run python convert_jpg_to_webp.py --limit 10`
-
 ## File Structure
 
 ```
 scripts/pipeline/
-├── PIPELINE_DESIGN.md              # This file — read before making changes
-├── PIPELINE_REVIEW.md              # Current review and improvement plan
-├── pipeline.py                     # Unified entry point (merged scraper+normalizer+uploader)
-├── config.py                       # Configuration (API, rate limits, grid, WebP settings)
-├── cache.py                        # Disk cache primitives (API, translation, normalization)
-├── api_client.py                   # Park4Night API client with disk cache
-├── image_downloader.py             # Image downloader with WebP conversion + disk cache
-├── convert_jpg_to_webp.py          # Batch convert existing JPGs to WebP (one-time utility)
-├── translator.py                   # Argos-translate wrapper with persistent disk cache
-├── normalizer.py                   # Pure normalization functions (no I/O)
-├── r2_worker.py                    # R2 upload worker pool (32 threads, queue-based)
-├── db_worker.py                    # DB insert worker pool (8 threads, queue-based)
-├── logging_setup.py                # Rich console + file logging with progress bars
-├── cleanup_r2.py                   # One-time utility: delete non-WebP files from R2
-└── pyproject.toml                  # Dependencies (managed by uv)
+├── PIPELINE_DESIGN.md      # This file — read before making changes
+├── PIPELINE_REVIEW.md      # Current review and improvement plan
+├── pipeline.py             # Unified entry point (merged scraper+normalizer+uploader)
+├── config.py               # Configuration (API endpoints, rate limits, grid)
+├── cache.py                # Disk cache primitives (API, translation, normalization)
+├── api_client.py           # Park4Night API client with disk cache
+├── image_downloader.py     # Image downloader with WebP conversion + disk cache
+├── translator.py           # Argos-translate wrapper with persistent disk cache
+├── normalizer.py           # Pure normalization functions (no I/O)
+├── r2_worker.py            # R2 upload worker pool (32 threads, queue-based)
+├── db_worker.py            # DB insert worker pool (8 threads, queue-based)
+├── logging_setup.py        # Rich console + file logging with progress bars
+├── cleanup_r2.py           # One-time utility: delete non-WebP files from R2
+└── pyproject.toml          # Dependencies (managed by uv)
 ```
 
 ### Deleted Files (No Longer Used)
@@ -255,7 +222,7 @@ The old pipeline kept translations in RAM only. This meant:
 2. Second run: All cache files exist → every stage skips → completes in seconds
 3. **No duplicate records** in R2 or DB (upserts + head_object checks)
 
-### Running with `--limit N --no-cache`
+### Running with `--limit N --no-disk-cache`
 1. Bypasses all disk caches
 2. Re-downloads from Park4Night API
 3. Re-downloads images from CDN
@@ -278,9 +245,6 @@ The old pipeline kept translations in RAM only. This meant:
 5. **DO NOT use Park4Night CDN URLs** — all images must come from local paths only
 6. **DO NOT suppress stanza MWT warnings** — they are expected and harmless (argostranslate issue)
 7. **DO NOT implement without documentation** — write WHY in comments and markdown files
-8. **DO NOT save images as JPG** — all images must be WebP (see WebP section above)
-9. **DO NOT hardcode WebP quality** — use `WEBP_QUALITY` from config.py
-10. **DO NOT skip space monitoring** — always check `get_total_webp_size()` before/after conversion
 
 ## Dependencies
 
