@@ -10,7 +10,16 @@ error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; }
 
 log "=== Starting build ==="
 
-# --- Step 1: Install dependencies ---
+# --- Step 1: Git LFS (best-effort, data files may not exist yet) ---
+log "Step 1: Git LFS setup..."
+git lfs install || true
+if git lfs pull 2>/dev/null; then
+  log "  Git LFS pull succeeded."
+else
+  log "  WARNING: Git LFS pull failed or no LFS files. Continuing..."
+fi
+
+# --- Step 2: Install dependencies ---
 log "Step 2: Installing root dependencies..."
 npm install || { error "Root npm install failed."; exit 1; }
 

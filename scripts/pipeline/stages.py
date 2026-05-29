@@ -23,7 +23,7 @@ Usage:
       normalize_place, upload_to_supabase,
       init_stages, shutdown_stages,
   )
-  init_stages(r2_config, no_cache=False)
+  init_stages(r2_config, no_disk_cache=False)
   # ... call stage functions (caching is automatic)
   shutdown_stages()
 """
@@ -60,12 +60,12 @@ _r2_client: Any = None
 _r2_config: dict | None = None
 
 
-def init_stages(r2_config: dict | None = None, no_cache: bool = False) -> None:
+def init_stages(r2_config: dict | None = None, no_disk_cache: bool = False) -> None:
     """Initialize worker process singletons and cache.
 
     Call once when each worker process starts (spawn method).
     Creates shared API client, image downloader, and R2 client.
-    Clears disk cache if no_cache=True.
+    Does NOT clear cache — cache clearing is forbidden (see CACHE_POLICY.md).
     """
     global _api_client, _downloader, _r2_client, _r2_config
 
@@ -86,10 +86,6 @@ def init_stages(r2_config: dict | None = None, no_cache: bool = False) -> None:
             aws_secret_access_key=r2_config["secretAccessKey"],
             region_name=r2_config.get("region", "auto"),
         )
-
-    if no_cache:
-        disk_cache.clear()
-        logger.info("Disk cache cleared (--no-cache mode)")
 
 
 def shutdown_stages() -> None:

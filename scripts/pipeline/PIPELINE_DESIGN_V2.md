@@ -12,11 +12,11 @@
 |---------|--------|--------------|
 | Disk cache idempotency | ✅ | 7 independent caches, file-existence checks |
 | `--limit N` then `--limit N` | ✅ | All caches hit → instant completion, no duplicates |
-| `--no-cache` API fetch | ✅ | Skips cache read, fetches fresh, writes cache |
-| `--no-cache` translation | ✅ | Empty cache, doesn't save |
-| `--no-cache` images | ✅ | Re-downloads, overwrites .webp |
-| `--no-cache` R2 upload | ✅ | Skips head_object, force re-upload |
-| `--no-cache` DB insert | ✅ | ON CONFLICT DO UPDATE |
+| `--no-disk-cache` API fetch | ✅ | Skips cache read, fetches fresh, writes cache |
+| `--no-disk-cache` translation | ✅ | Empty cache, doesn't save |
+| `--no-disk-cache` images | ✅ | Re-downloads, overwrites .webp |
+| `--no-disk-cache` R2 upload | ✅ | Skips head_object, force re-upload |
+| `--no-disk-cache` DB insert | ✅ | ON CONFLICT DO UPDATE |
 | Worker pools (R2: 32, DB: 8) | ✅ | 5-10x speedup, backpressure queues |
 | ProcessPoolExecutor (spawn) | ✅ | argos-translate is not fork-safe |
 | Rich logging + progress bars | ✅ | Console + file output |
