@@ -30,14 +30,15 @@ import SearchBar from "./components/SearchBar";
 import FilterModal from "./components/FilterModal";
 import PlaceDetails from "./components/PlaceDetails";
 import { useGpsTracking } from "./hooks/useGpsTracking";
-import { useJsApiLoader } from "@react-google-maps/api";
+import { useJsApiLoader, Libraries } from "@react-google-maps/api";
+import { User, Place, Filters } from "./types";
 
-const LIBRARIES: ("places" | "drawing" | "geometry" | "visualization")[] = [
+const LIBRARIES: Libraries = [
 	"places",
 ];
 
 // LRU cache: 100 entries, 5-minute TTL — avoids redundant API calls
-const placesCache = new LRUCache<string, any[]>(100, 5 * 60 * 1000);
+const placesCache = new LRUCache<string, Place[]>(100, 5 * 60 * 1000);
 
 const App: React.FC = () => {
 	const { isLoaded } = useJsApiLoader({
@@ -47,14 +48,14 @@ const App: React.FC = () => {
 	});
 
 	const [isFilterOpen, setIsFilterOpen] = useState(false);
-	const [selectedPlace, setSelectedPlace] = useState<any>(null);
-	const [user, setUser] = useState<any>(null);
+	const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
+	const [user, setUser] = useState<User | null>(null);
 	const [mapCenter, setMapCenter] = useState({ lat: 48.8566, lng: 2.3522 });
 	const [lastFetchedCenter, setLastFetchedCenter] = useState({
 		lat: 48.8566,
 		lng: 2.3522,
 	});
-	const [filters, setFilters] = useState<any>({});
+	const [filters, setFilters] = useState<Filters>({});
 	const [favorites, setFavorites] = useState<number[]>([]);
 	const [visited, setVisited] = useState<number[]>([]);
 	const [showOnlyFavorites, setShowOnlyFavorites] = useState(false);
@@ -115,7 +116,7 @@ const App: React.FC = () => {
 		};
 	}, []);
 
-	const { data: rawPlaces = [], isLoading: isLoadingPlaces } = useQuery({
+	const { data: rawPlaces = [], isLoading: isLoadingPlaces } = useQuery<Place[]>({
 		queryKey: ["places", lastFetchedCenter],
 		queryFn: async () => {
 			const key = `${lastFetchedCenter.lat},${lastFetchedCenter.lng}`;
@@ -139,9 +140,9 @@ const App: React.FC = () => {
 					console.log("Offline: loading places from IndexedDB");
 					const localPlaces = await getCachedPlaces();
 					// Filter locally for the current viewport area if possible
-					return localPlaces.filter((p: any) => {
-						const pLat = parseFloat(p.latitude);
-						const pLng = parseFloat(p.longitude);
+					return localPlaces.filter((p: Place) => {
+						const pLat = typeof p.latitude === 'string' ? parseFloat(p.latitude) : p.latitude;
+						const pLng = typeof p.longitude === 'string' ? parseFloat(p.longitude) : p.longitude;
 						return (
 							pLat >= lastFetchedCenter.lat - 0.5 &&
 							pLat <= lastFetchedCenter.lat + 0.5 &&
@@ -164,26 +165,26 @@ const App: React.FC = () => {
 
 		// Filter by favorites toggle
 		if (showOnlyFavorites) {
-			filtered = filtered.filter((p: any) => favorites.includes(p.id));
+			filtered = filtered.filter((p: Place) => favorites.includes(p.id));
 		}
 
 		// Filter by type
 		if (filters.type) {
-			filtered = filtered.filter((p: any) => p.type === filters.type);
+			filtered = filtered.filter((p: Place) => p.type === filters.type);
 		}
 
 		// Filter by min rating
 		if (filters.minRating) {
 			filtered = filtered.filter(
-				(p: any) =>
-					(parseFloat(p.rating) || 0) >= parseFloat(filters.minRating),
+				(p: Place) =>
+					(p.rating || 0) >= parseFloat(filters.minRating!),
 			);
 		}
 
 		// Filter by amenities
 		if (filters.amenities && filters.amenities.length > 0) {
-			filtered = filtered.filter((p: any) =>
-				filters.amenities.every((amenity: string) => p[amenity] === "1"),
+			filtered = filtered.filter((p: Place) =>
+				filters.amenities!.every((amenity: string) => p[amenity] === "1" || p.rawData?.[amenity] === "1"),
 			);
 		}
 
@@ -191,7 +192,7 @@ const App: React.FC = () => {
 		if (searchQuery) {
 			const q = searchQuery.toLowerCase();
 			filtered = filtered.filter(
-				(p: any) =>
+				(p: Place) =>
 					(p.title || "").toLowerCase().includes(q) ||
 					(p.address || "").toLowerCase().includes(q),
 			);
@@ -200,17 +201,21 @@ const App: React.FC = () => {
 		// Sort
 		if (filters.sortBy === "rating") {
 			filtered.sort(
-				(a, b) => (parseFloat(b.rating) || 0) - (parseFloat(a.rating) || 0),
+				(a, b) => (b.rating || 0) - (a.rating || 0),
 			);
 		} else if (filters.sortBy === "distance") {
 			filtered.sort((a, b) => {
+				const latA = typeof a.latitude === 'string' ? parseFloat(a.latitude) : a.latitude;
+				const lngA = typeof a.longitude === 'string' ? parseFloat(a.longitude) : a.longitude;
+				const latB = typeof b.latitude === 'string' ? parseFloat(b.latitude) : b.latitude;
+				const lngB = typeof b.longitude === 'string' ? parseFloat(b.longitude) : b.longitude;
 				const distA = Math.sqrt(
-					Math.pow(parseFloat(a.latitude) - mapCenter.lat, 2) +
-						Math.pow(parseFloat(a.longitude) - mapCenter.lng, 2),
+					Math.pow(latA - mapCenter.lat, 2) +
+						Math.pow(lngA - mapCenter.lng, 2),
 				);
 				const distB = Math.sqrt(
-					Math.pow(parseFloat(b.latitude) - mapCenter.lat, 2) +
-						Math.pow(parseFloat(b.longitude) - mapCenter.lng, 2),
+					Math.pow(latB - mapCenter.lat, 2) +
+						Math.pow(lngB - mapCenter.lng, 2),
 				);
 				return distA - distB;
 			});
@@ -289,13 +294,12 @@ const App: React.FC = () => {
 		const params = new URLSearchParams(window.location.search);
 		const placeId = params.get("place");
 		if (placeId && rawPlaces.length > 0) {
-			const place = rawPlaces.find((p: any) => p.id.toString() === placeId);
+			const place = rawPlaces.find((p: Place) => p.id.toString() === placeId);
 			if (place) {
 				setSelectedPlace(place);
-				setMapCenter({
-					lat: parseFloat(place.latitude),
-					lng: parseFloat(place.longitude),
-				});
+				const lat = typeof place.latitude === 'string' ? parseFloat(place.latitude) : place.latitude;
+				const lng = typeof place.longitude === 'string' ? parseFloat(place.longitude) : place.longitude;
+				setMapCenter({ lat, lng });
 			}
 		}
 	}, [rawPlaces]);
@@ -337,6 +341,7 @@ const App: React.FC = () => {
 			try {
 				await axios.delete(`/api/favorites/${placeId}`);
 			} catch (err) {
+				console.error("Failed to delete favorite", err);
 				if (!navigator.onLine) {
 					await savePendingFavorite(placeId, "remove");
 				}
@@ -346,6 +351,7 @@ const App: React.FC = () => {
 			try {
 				await axios.post("/api/favorites", { placeId });
 			} catch (err) {
+				console.error("Failed to add favorite", err);
 				if (!navigator.onLine) {
 					await savePendingFavorite(placeId, "add");
 				}
@@ -377,7 +383,7 @@ const App: React.FC = () => {
 				</div>
 
 				<SearchBar
-					onSearch={(coords: any) => {
+					onSearch={(coords: { lat: number, lng: number }) => {
 						setMapCenter(coords);
 						setLastFetchedCenter(coords);
 					}}

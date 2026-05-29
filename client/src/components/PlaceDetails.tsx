@@ -3,6 +3,7 @@ import { Heart, Navigation, X, MessageSquare, ExternalLink, Star, Map, Droplets,
 import axios from '../axiosConfig';
 import ReviewForm from './ReviewForm';
 import { saveReviews, getCachedReviews } from '../services/db';
+import { Place } from '../types';
 
 const getStreetViewUrl = (lat: number, lng: number) => {
   const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
@@ -56,7 +57,15 @@ const AMENITIES = [
   { key: 'publicToilet', rawKey: 'wc_public', label: 'Public WC', icon: Map, color: 'text-blue-300' },
 ];
 
-const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
+interface PlaceDetailsProps {
+  place: Place;
+  onClose: () => void;
+  onToggleFavorite: () => void;
+  isFavorite: boolean;
+  isAuthenticated: boolean;
+}
+
+const PlaceDetails: React.FC<PlaceDetailsProps> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
   const [reviews, setReviews] = useState<any[]>([]);
   const [p4nReviews, setP4nReviews] = useState<any[]>([]);
   const [isLoadingReviews, setIsLoadingReviews] = useState(false);
@@ -68,10 +77,9 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
     if (!window.google || !window.google.maps) return;
 
     const svService = new google.maps.StreetViewService();
-    const location = new google.maps.LatLng(
-      parseFloat(place.latitude),
-      parseFloat(place.longitude)
-    );
+    const lat = typeof place.latitude === 'string' ? parseFloat(place.latitude) : place.latitude;
+    const lng = typeof place.longitude === 'string' ? parseFloat(place.longitude) : place.longitude;
+    const location = new google.maps.LatLng(lat, lng);
 
     svService.getPanorama(
       { location, radius: 500 },
@@ -89,8 +97,10 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
     if (!window.google || !window.google.maps || !window.google.maps.places) return;
 
     const service = new google.maps.places.PlacesService(document.createElement('div'));
+    const lat = typeof place.latitude === 'string' ? parseFloat(place.latitude) : place.latitude;
+    const lng = typeof place.longitude === 'string' ? parseFloat(place.longitude) : place.longitude;
     const request = {
-      location: new google.maps.LatLng(parseFloat(place.latitude), parseFloat(place.longitude)),
+      location: new google.maps.LatLng(lat, lng),
       radius: 50,
       keyword: place.title || place.name
     };
@@ -151,7 +161,9 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   };
 
   const openStreetView = () => {
-    const url = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${place.latitude},${place.longitude}`;
+    const lat = typeof place.latitude === 'string' ? parseFloat(place.latitude) : place.latitude;
+    const lng = typeof place.longitude === 'string' ? parseFloat(place.longitude) : place.longitude;
+    const url = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}`;
     window.open(url, '_blank');
   };
 
@@ -188,10 +200,16 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
       )}
 
       {/* Street View Embed */}
-      {streetViewAvailable && getStreetViewUrl(parseFloat(place.latitude), parseFloat(place.longitude)) && (
+      {streetViewAvailable && getStreetViewUrl(
+        typeof place.latitude === 'string' ? parseFloat(place.latitude) : place.latitude,
+        typeof place.longitude === 'string' ? parseFloat(place.longitude) : place.longitude
+      ) && (
         <div className="relative h-40 bg-gray-900">
           <img
-            src={getStreetViewUrl(parseFloat(place.latitude), parseFloat(place.longitude))!}
+            src={getStreetViewUrl(
+              typeof place.latitude === 'string' ? parseFloat(place.latitude) : place.latitude,
+              typeof place.longitude === 'string' ? parseFloat(place.longitude) : place.longitude
+            )!}
             alt="Street View preview"
             className="w-full h-full object-cover"
             onError={() => setStreetViewError(true)}
@@ -244,7 +262,11 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
       <div className="flex flex-col gap-3">
         <div className="flex gap-2">
           <button
-            onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}`)}
+            onClick={() => {
+              const lat = typeof place.latitude === 'string' ? parseFloat(place.latitude) : place.latitude;
+              const lng = typeof place.longitude === 'string' ? parseFloat(place.longitude) : place.longitude;
+              window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`);
+            }}
             className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-2xl font-bold transition-colors flex items-center justify-center gap-2 shadow-lg shadow-blue-200"
           >
             <Navigation size={18} /> Directions
