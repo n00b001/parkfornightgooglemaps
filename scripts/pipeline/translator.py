@@ -22,9 +22,12 @@ import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 
 import argostranslate.package as argos_package
 import argostranslate.translate as argos_translate
+
+from cache import translation_cache  # type: ignore[import-not-found]
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -171,8 +174,12 @@ def preload_models() -> None:
 # ── Translation ───────────────────────────────────────────────────────
 
 
+@translation_cache.memoize()
 def _translate_single(text: str, src_lang: str) -> tuple[str, str]:
     """Translate a single text to English using argos-translate.
+
+    Disk cached: same (text, src_lang) → same translation, no re-computation.
+    This is the primary cache — argos-translate is slow (~100ms per string).
 
     Args:
         text: Text to translate.
@@ -237,8 +244,13 @@ def translate_batch(
     return results
 
 
+@lru_cache(maxsize=4096)
 def translate_text(text: str, src_lang: str) -> str:
     """Translate a single text to English.
+
+    Dual cached: lru_cache (in-memory, fast) + diskcache (via _translate_single).
+    The lru_cache provides instant hits for repeated calls within the same
+    process; the diskcache persists across process restarts.
 
     Args:
         text: Text to translate.

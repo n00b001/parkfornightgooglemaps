@@ -33,6 +33,7 @@ from urllib3.util.retry import Retry
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from cache import image_cache  # type: ignore[import-not-found]
 from config import (  # type: ignore[import-not-found]
     IMAGE_MAX_RETRIES,
     IMAGE_MIN_SIZE,
@@ -160,26 +161,40 @@ class ImageDownloader:
         """Download a single file, convert to WebP, and save.
 
         Flow:
-          1. If .webp exists → skip (unless no_cache)
-          2. If .jpg exists → convert to .webp (no re-download, unless no_cache)
-          3. Download as .jpg (temporary) → convert to .webp → delete .jpg
+          1. Check diskcache for URL → if cached and .webp exists, skip
+          2. If .webp exists → skip (unless no_cache)
+          3. If .jpg exists → convert to .webp (no re-download, unless no_cache)
+          4. Download as .jpg (temporary) → convert to .webp → delete .jpg
 
         Returns True if .webp file exists at end.
         """
+        # Disk cache: if URL was successfully downloaded before and file exists, skip
+        if not self._no_cache:
+            cached_result = image_cache.get(url, None)
+            if cached_result is True and webp_path.exists():
+                self._stats["skipped_exists"] += 1
+                if save_path.exists():
+                    save_path.unlink()
+                return True
+
         # Skip if .webp already exists (unless no_cache)
         if webp_path.exists() and not self._no_cache:
             self._stats["skipped_exists"] += 1
             if save_path.exists():
                 save_path.unlink()
+            # Cache the result for next time
+            image_cache.set(url, True)
             return True
 
         # Convert existing .jpg to .webp (no re-download needed, unless no_cache)
         if save_path.exists() and not self._no_cache:
             if self._convert_jpg_to_webp(save_path, webp_path):
                 self._stats["downloaded"] += 1
+                image_cache.set(url, True)
                 return True
             else:
                 self._stats["failed"] += 1
+                image_cache.set(url, False)
                 return False
 
         # Download fresh from URL
@@ -215,20 +230,24 @@ class ImageDownloader:
             # Convert to WebP
             if not self._convert_jpg_to_webp(save_path, webp_path):
                 self._stats["failed"] += 1
+                image_cache.set(url, False)
                 return False
 
             self._stats["downloaded"] += 1
+            image_cache.set(url, True)
             return True
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to download {url}: {e}")
             self._stats["failed"] += 1
+            image_cache.set(url, False)
             if save_path.exists():
                 save_path.unlink()
             return False
         except OSError as e:
             logger.error(f"Failed to save {save_path}: {e}")
             self._stats["failed"] += 1
+            image_cache.set(url, False)
             if save_path.exists():
                 save_path.unlink()
             return False

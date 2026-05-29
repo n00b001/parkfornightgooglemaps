@@ -37,6 +37,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psycopg2
 from psycopg2.extras import execute_values
 
+from cache import db_cache  # type: ignore[import-not-found]
+
 logger = logging.getLogger("pipeline")
 
 
@@ -379,9 +381,16 @@ class DBWorkerPool:
     ) -> None:
         """Insert a single place into the database.
 
+        Disk cached: same place_id → skip if already inserted.
         Supports partial records (e.g., just photos update from convert-existing mode).
         If type_code is missing, only updates the photos column.
         """
+        place_id = place["id"]
+
+        # Disk cache: skip if already inserted
+        if db_cache.get(place_id, None) is True:
+            return
+
         cur = conn.cursor()
         try:
             type_code = place.get("type_code", "")
@@ -398,15 +407,16 @@ class DBWorkerPool:
                     (
                         json.dumps(place.get("photos", [])),
                         place.get("photo_count", 0),
-                        place["id"],
+                        place_id,
                     ),
                 )
                 conn.commit()
+                db_cache.set(place_id, True)
                 return
 
             if type_id is None:
                 raise KeyError(
-                    f"Place {place.get('id')}: type_code '{type_code}' "
+                    f"Place {place_id}: type_code '{type_code}' "
                     f"not in PlaceType table — upsert may have failed"
                 )
 
@@ -432,7 +442,7 @@ class DBWorkerPool:
                 """,
                 [
                     (
-                        place["id"],
+                        place_id,
                         place.get("name") or place.get("title") or "",
                         place["latitude"],
                         place["longitude"],
@@ -464,7 +474,7 @@ class DBWorkerPool:
                             VALUES (%s, %s)
                             ON CONFLICT DO NOTHING
                             """,
-                            (place["id"], svc_id),
+                            (place_id, svc_id),
                         )
 
             # PlaceActivity junctions
@@ -478,13 +488,14 @@ class DBWorkerPool:
                             VALUES (%s, %s)
                             ON CONFLICT DO NOTHING
                             """,
-                            (place["id"], act_id),
+                            (place_id, act_id),
                         )
 
             conn.commit()
+            db_cache.set(place_id, True)
         except Exception as e:
             conn.rollback()
-            logger.error(f"Failed to insert place {place.get('id')}: {e}")
+            logger.error(f"Failed to insert place {place_id}: {e}")
             raise  # propagate to _worker for proper stats tracking
         finally:
             cur.close()
@@ -496,8 +507,16 @@ class DBWorkerPool:
         system_user_id: str,
         vehicle_map: dict,
     ) -> None:
-        """Insert reviews for a place."""
+        """Insert reviews for a place.
+
+        Disk cached: keyed by review_id — skips already-inserted reviews.
+        """
         if not reviews:
+            return
+
+        # Filter out already-cached reviews
+        review_key = f"reviews:{reviews[0].get('place_id', '')}"
+        if db_cache.get(review_key, None) is True:
             return
 
         cur = conn.cursor()
@@ -537,6 +556,7 @@ class DBWorkerPool:
                 ],
             )
             conn.commit()
+            db_cache.set(review_key, True)
         except Exception as e:
             conn.rollback()
             logger.error(f"Failed to insert reviews: {e}")

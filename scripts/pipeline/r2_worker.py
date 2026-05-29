@@ -33,6 +33,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from cache import r2_cache  # type: ignore[import-not-found]
 from config import IMAGES_DIR  # type: ignore[import-not-found]
 
 logger = logging.getLogger("pipeline")
@@ -55,15 +56,24 @@ def _upload_single(
 ) -> str | None:
     """Upload a single image to R2. Returns URL or None.
 
+    Disk cached: same r2_key → same URL, no re-upload.
     When no_cache=True, skips the head_object check and always uploads
     (overwrites existing object).
     """
+    # Disk cache: check if this key was already uploaded
+    if not no_cache:
+        cached_url = r2_cache.get(r2_key, None)
+        if cached_url is not None:
+            return cached_url
+
     try:
         # Check if already exists (skip when no_cache to force re-upload)
         if not no_cache:
             try:
                 r2.head_object(Bucket=config["bucket"], Key=r2_key)
-                return _build_r2_url(config, r2_key)
+                url = _build_r2_url(config, r2_key)
+                r2_cache.set(r2_key, url)
+                return url
             except r2.exceptions.ClientError:
                 pass
 
@@ -74,9 +84,12 @@ def _upload_single(
             Body=open(local_path, "rb"),
             ContentType=content_type,
         )
-        return _build_r2_url(config, r2_key)
+        url = _build_r2_url(config, r2_key)
+        r2_cache.set(r2_key, url)
+        return url
     except Exception as e:
         logger.error(f"Failed to upload {r2_key}: {e}")
+        r2_cache.set(r2_key, None)
         return None
 
 
@@ -257,9 +270,7 @@ class R2WorkerPool:
                     continue
 
                 r2_key = f"places/{place_id}/{photo_id}_{img_type}.webp"  # Always .webp
-                url = _upload_single(
-                    r2, local_path, r2_key, self.config, no_cache=self._no_cache
-                )
+                url = _upload_single(r2, local_path, r2_key, self.config, no_cache=self._no_cache)
                 if url:
                     photo[r2_field] = url
                     uploaded += 1
