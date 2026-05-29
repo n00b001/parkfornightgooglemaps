@@ -21,7 +21,7 @@ Cache directory: scripts/data/cache/
   │   └── 12345.json            # Place ID → normalized dict
   └── translations.json       # {original_text: translated_text} dict
 
-All caches support --no-disk-cache bypass (skip read, skip write).
+All caches support --no-cache bypass (skip read, skip write).
 All caches are thread-safe (file locks for concurrent access).
 """
 
@@ -42,6 +42,7 @@ CACHE_DIR = os.path.join(SCRIPTS_DIR, "data", "cache")
 API_CACHE_DIR = os.path.join(CACHE_DIR, "api")
 SCRAPED_CACHE_DIR = os.path.join(CACHE_DIR, "scraped")
 NORM_CACHE_DIR = os.path.join(CACHE_DIR, "normalized")
+COMPLETED_CACHE_FILE = os.path.join(CACHE_DIR, "completed.json")
 TRANSLATION_CACHE_FILE = os.path.join(CACHE_DIR, "translations.json")
 
 
@@ -51,6 +52,59 @@ def _ensure_dirs() -> None:
     os.makedirs(SCRAPED_CACHE_DIR, exist_ok=True)
     os.makedirs(NORM_CACHE_DIR, exist_ok=True)
     os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def _load_completed_set() -> set[int]:
+    """Load the set of completed place IDs from disk."""
+    if not os.path.exists(COMPLETED_CACHE_FILE):
+        return set()
+    try:
+        with open(COMPLETED_CACHE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return set(int(pid) for pid in data)
+        return set()
+    except (json.JSONDecodeError, OSError, ValueError) as e:
+        logger.warning(f"Failed to read completed cache {COMPLETED_CACHE_FILE}: {e}")
+        return set()
+
+
+def _save_completed_set(place_ids: set[int]) -> None:
+    """Save the set of completed place IDs to disk with file lock + merge.
+
+    Why file lock + merge: multiple worker processes (via ProcessPoolExecutor spawn)
+    can each load the completed set, process different places, then save concurrently.
+    Without merging, the last writer wins and other workers' completions are lost.
+    """
+    _ensure_dirs()
+    lock_path = COMPLETED_CACHE_FILE + ".lock"
+    tmp_path = COMPLETED_CACHE_FILE + ".tmp"
+    lock_fd: int = -1
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        # Read current state from disk (may have new completions from other workers)
+        disk_set = _load_completed_set()
+
+        # Merge: union of disk + our new completions
+        merged = disk_set | place_ids
+
+        # Atomic write: write to temp file, then rename
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(sorted(merged), f)
+        os.replace(tmp_path, COMPLETED_CACHE_FILE)
+    except OSError as e:
+        logger.error(f"Failed to save completed cache: {e}")
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+    finally:
+        if lock_fd >= 0:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+            except OSError:
+                pass
 
 
 # ── API Response Cache ───────────────────────────────────────────────
@@ -275,15 +329,15 @@ class TranslationCache:
       - Re-running pipeline should be instant, not re-translate everything
     """
 
-    def __init__(self, cache_file: str = TRANSLATION_CACHE_FILE, no_disk_cache: bool = False) -> None:
+    def __init__(self, cache_file: str = TRANSLATION_CACHE_FILE, no_cache: bool = False) -> None:
         self._cache_file = cache_file
-        self._no_disk_cache = no_disk_cache
+        self._no_cache = no_cache
         self._data: dict[str, str] = {}
         self._lock = threading.Lock()
         self._new_entries = 0
         self._save_interval = 1000  # Save every N new translations
 
-        if not no_disk_cache:
+        if not no_cache:
             self._load()
 
     def _load(self) -> None:
@@ -361,7 +415,7 @@ class TranslationCache:
 
     def get(self, text: str) -> str | None:
         """Get cached translation. Returns None if not cached."""
-        if self._no_disk_cache:
+        if self._no_cache:
             return None
         with self._lock:
             return self._data.get(text)
@@ -374,7 +428,7 @@ class TranslationCache:
                 self._new_entries += 1
                 if self._new_entries >= self._save_interval:
                     self._new_entries = 0
-                    if not self._no_disk_cache:
+                    if not self._no_cache:
                         self._save()
 
     def get_or_none(self, text: str) -> str | None:
@@ -393,17 +447,17 @@ class TranslationCache:
             self._new_entries += new_count
             if self._new_entries >= self._save_interval:
                 self._new_entries = 0
-                if not self._no_disk_cache:
+                if not self._no_cache:
                     self._save()
 
     def save(self) -> None:
         """Force save cache to disk (call on shutdown)."""
         with self._lock:
-            if not self._no_disk_cache:
+            if not self._no_cache:
                 self._save()
 
     def clear(self) -> None:
-        """Clear cache (for --no-disk-cache mode)."""
+        """Clear cache (for --no-cache mode)."""
         with self._lock:
             self._data.clear()
             self._new_entries = 0
@@ -424,6 +478,57 @@ class TranslationCache:
             return self._new_entries
 
 
+# ── Completed Places Cache ───────────────────────────────────────────
+# Tracks place IDs that have been fully processed end-to-end:
+#   scraped → normalized → uploaded to R2 + inserted to DB
+#
+# This is a per-place completion cache (not per-step). If place 123 is
+# marked complete, the pipeline can skip it entirely — no worker spawn,
+# no R2 head_object, no DB query. This saves ~100s per worker process
+# that would otherwise be spent loading argos-translate models just to
+# find out the place is already done.
+#
+# Format: cache/completed.json — a sorted JSON array of place IDs.
+# Thread-safe: file lock + merge on write (same strategy as translation cache).
+
+
+def place_cache_get(place_id: int) -> bool:
+    """Check if a place has been fully processed (all stages complete).
+
+    Returns True if the place_id is in the completed cache, meaning it has
+    been scraped, normalized, uploaded to R2, and inserted to DB.
+    The pipeline can skip this place entirely.
+    """
+    completed = _load_completed_set()
+    return place_id in completed
+
+
+def place_cache_mark_complete(place_id: int) -> None:
+    """Mark a place as fully processed (all stages complete).
+
+    Called after a place has been successfully uploaded to R2 and inserted
+    to DB. Uses file lock + merge to handle concurrent writes from multiple
+    worker processes.
+    """
+    _save_completed_set({place_id})
+
+
+def place_cache_clear() -> int:
+    """Clear the completed places cache. Returns number of entries cleared."""
+    if os.path.exists(COMPLETED_CACHE_FILE):
+        completed_set = _load_completed_set()
+        count = len(completed_set)
+        os.unlink(COMPLETED_CACHE_FILE)
+        logger.info(f"Cleared {count} completed place entries")
+        return count
+    return 0
+
+
+def place_cache_list() -> list[int]:
+    """List all completed place IDs."""
+    return sorted(_load_completed_set())
+
+
 # ── Cache Statistics ─────────────────────────────────────────────────
 
 
@@ -433,6 +538,7 @@ def get_cache_stats() -> dict[str, Any]:
         "api_cache_files": 0,
         "scrape_cache_files": 0,
         "norm_cache_files": 0,
+        "completed_places": 0,
         "translation_entries": 0,
         "total_cache_size_bytes": 0,
     }
@@ -468,6 +574,15 @@ def get_cache_stats() -> dict[str, Any]:
         stats["total_cache_size_bytes"] += sum(
             os.path.getsize(os.path.join(NORM_CACHE_DIR, f)) for f in norm_files
         )
+
+    # Completed places cache
+    if os.path.exists(COMPLETED_CACHE_FILE):
+        try:
+            completed_set = _load_completed_set()
+            stats["completed_places"] = len(completed_set)
+            stats["total_cache_size_bytes"] += os.path.getsize(COMPLETED_CACHE_FILE)
+        except OSError:
+            pass
 
     # Translation cache
     if os.path.exists(TRANSLATION_CACHE_FILE):
