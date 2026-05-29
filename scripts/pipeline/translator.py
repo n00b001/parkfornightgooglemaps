@@ -28,13 +28,10 @@ import argostranslate.translate as argos_translate
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from cache import TranslationCache  # type: ignore[import-not-found]
 
 logger = logging.getLogger("pipeline")
 
 # ── Shared state ──────────────────────────────────────────────────────
-# Persistent translation cache (loaded from disk at startup).
-_translate_cache: TranslationCache | None = None
 _PACKAGES_INITIALIZED = False
 _PACKAGES_LOCK = threading.Lock()
 
@@ -174,23 +171,6 @@ def preload_models() -> None:
 # ── Translation ───────────────────────────────────────────────────────
 
 
-def _get_cache(no_cache: bool = False) -> TranslationCache:
-    """Get or create the global translation cache instance.
-
-    Why check no_cache every call: if the caller passes no_cache=True
-    on a subsequent call (e.g., --no-cache mode), we must recreate the
-    cache as empty instead of returning the cached (populated) instance.
-    """
-    global _translate_cache
-    if _translate_cache is None:
-        _translate_cache = TranslationCache(no_cache=no_cache)
-    elif no_cache:
-        # Recreate cache as empty when no_cache is requested.
-        # Why: --no-cache mode should bypass all caches, including translation.
-        _translate_cache = TranslationCache(no_cache=True)
-    return _translate_cache
-
-
 def _translate_single(text: str, src_lang: str) -> tuple[str, str]:
     """Translate a single text to English using argos-translate.
 
@@ -233,14 +213,10 @@ def translate_batch(
 ) -> dict[str, str]:
     """Translate a batch of texts to English using parallel argos-translate.
 
-    Uses persistent disk cache: already-translated strings are loaded from
-    disk at startup and saved periodically. Re-running the pipeline does not
-    re-translate cached strings.
-
     Args:
         texts: List of (text, src_lang) tuples.
         max_workers: Number of parallel threads.
-        no_cache: Bypass disk cache (re-translate everything).
+        no_cache: Unused (retained for API compatibility).
 
     Returns:
         {original_text: translated_text} for all inputs.
@@ -248,30 +224,17 @@ def translate_batch(
     # Ensure packages are installed before any translation
     _ensure_packages_installed()
 
-    cache = _get_cache(no_cache=no_cache)
-
-    # Filter out already-cached texts
-    uncached = [(t, lang) for t, lang in texts if cache.get_or_none(t) is None]
-
-    if not uncached:
-        # All cached — return immediately
-        return {t: cache.get_or_none(t) or t for t, _ in texts}
-
-    # Translate uncached texts in parallel
+    # Translate all texts in parallel
     results: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_translate_single, text, lang): (text, lang) for text, lang in uncached
+            executor.submit(_translate_single, text, lang): (text, lang) for text, lang in texts
         }
         for future in as_completed(futures):
             original, translated = future.result()
             results[original] = translated
 
-    # Update persistent cache
-    cache.bulk_set(results)
-
-    # Return results for all inputs (cached + newly translated)
-    return {t: (cache.get_or_none(t) or t) for t, _ in texts}
+    return results
 
 
 def translate_text(text: str, src_lang: str) -> str:
@@ -281,32 +244,10 @@ def translate_text(text: str, src_lang: str) -> str:
         text: Text to translate.
         src_lang: ISO 639-1 source language code.
 
-    Uses persistent disk cache for repeated strings.
     Returns the original text if already English or empty.
     """
     if not text or not text.strip():
         return text
 
-    stripped = text.strip()
-    cache = _get_cache()
-
-    cached = cache.get_or_none(stripped)
-    if cached is not None:
-        return cached
-
-    _, translated = _translate_single(stripped, src_lang)
-    cache.set(stripped, translated)
+    _, translated = _translate_single(text.strip(), src_lang)
     return translated
-
-
-def get_cache_size() -> int:
-    """Return the number of entries in the translation cache."""
-    if _translate_cache is not None:
-        return _translate_cache.size
-    return 0
-
-
-def save_cache() -> None:
-    """Force save translation cache to disk. Call on shutdown."""
-    if _translate_cache is not None:
-        _translate_cache.save()
