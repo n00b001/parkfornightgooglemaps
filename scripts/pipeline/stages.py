@@ -226,13 +226,13 @@ def _build_r2_url(config: dict, key: str) -> str:
 
 # ── Stage: translate_text ────────────────────────────────────────────
 # Two-level cache: lru_cache (in-memory) wraps disk_cache.memoize (disk)
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=131072)
 @disk_cache.memoize()
 def translate_text(text: str, src_lang: str) -> str:
     """Translate a single text to English.
 
     Two-level cache:
-      1. lru_cache (in-memory, 4096 entries): instant within process
+      1. lru_cache (in-memory, 131072 entries): instant within process
       2. disk_cache.memoize (disk): persists across process restarts
     """
     if not text or not text.strip():
