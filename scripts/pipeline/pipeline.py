@@ -1752,6 +1752,30 @@ def main() -> None:
     cache_stats = get_cache_stats()
     console.print(f"  Cache: [cyan]{cache_stats}[/cyan]")
 
+    # Check WebP image size (warn if approaching 10GB limit)
+    # WHY: Monitor total image size to ensure we stay under the 10GB target.
+    # If exceeded, the user should run convert_jpg_to_webp.py with lower quality.
+    try:
+        from config import MAX_WEBP_TOTAL_SIZE_BYTES  # type: ignore[import-not-found]
+        from image_downloader import (  # type: ignore[import-not-found]
+            format_size,
+            get_total_webp_size,
+        )
+
+        webp_size = get_total_webp_size()
+        console.print(f"  WebP images: [cyan]{format_size(webp_size)}[/cyan]")
+        if webp_size > MAX_WEBP_TOTAL_SIZE_BYTES:
+            over_by = webp_size - MAX_WEBP_TOTAL_SIZE_BYTES
+            console.print(
+                f"  [bold red]⚠ WebP size exceeds 10 GB by {format_size(over_by)}! "
+                f"Run convert_jpg_to_webp.py with lower quality.[/bold red]"
+            )
+            logger.warning(
+                f"WebP size ({format_size(webp_size)}) exceeds 10 GB by {format_size(over_by)}"
+            )
+    except Exception as e:
+        logger.warning(f"Failed to check WebP size: {e}")
+
     # Run the pipeline
     run_pipeline(
         limit=args.limit,
