@@ -41,18 +41,18 @@ const TYPE_COLORS: Record<string, string> = {
 
 // English amenity keys (must match server SERVICE_AMENITY_MAP values)
 const AMENITIES = [
-  { key: 'waterPoint', label: 'Water', icon: Droplets, color: 'text-blue-500' },
-  { key: 'electricity', label: 'Electricity', icon: Zap, color: 'text-yellow-500' },
-  { key: 'trashCan', label: 'Trash', icon: Trash2, color: 'text-green-600' },
-  { key: 'wifi', label: 'Wifi', icon: Wifi, color: 'text-purple-500' },
-  { key: 'wasteWaterDrain', label: 'Grey Water', icon: Info, color: 'text-gray-500' },
-  { key: 'toiletDrain', label: 'Black Water', icon: Compass, color: 'text-gray-700' },
-  { key: 'shower', label: 'Shower', icon: Bath, color: 'text-blue-400' },
-  { key: 'swimming', label: 'Waves', icon: Waves, color: 'text-cyan-500' },
-  { key: 'pets', label: 'Pets', icon: Dog, color: 'text-orange-400' },
-  { key: 'picnicArea', label: 'Picnic', icon: Utensils, color: 'text-green-500' },
-  { key: 'laundry', label: 'Laundry', icon: Shirt, color: 'text-indigo-400' },
-  { key: 'publicToilet', label: 'Public WC', icon: Map, color: 'text-blue-300' },
+  { key: 'waterPoint', rawKey: 'point_eau', label: 'Water', icon: Droplets, color: 'text-blue-500' },
+  { key: 'electricity', rawKey: 'electricite', label: 'Electricity', icon: Zap, color: 'text-yellow-500' },
+  { key: 'trashCan', rawKey: 'poubelle', label: 'Trash', icon: Trash2, color: 'text-green-600' },
+  { key: 'wifi', rawKey: 'wifi', label: 'Wifi', icon: Wifi, color: 'text-purple-500' },
+  { key: 'wasteWaterDrain', rawKey: 'eau_usee', label: 'Grey Water', icon: Info, color: 'text-gray-500' },
+  { key: 'toiletDrain', rawKey: 'eau_noire', label: 'Black Water', icon: Compass, color: 'text-gray-700' },
+  { key: 'shower', rawKey: 'douche', label: 'Shower', icon: Bath, color: 'text-blue-400' },
+  { key: 'swimming', rawKey: 'baignade', label: 'Waves', icon: Waves, color: 'text-cyan-500' },
+  { key: 'pets', rawKey: 'animaux', label: 'Pets', icon: Dog, color: 'text-orange-400' },
+  { key: 'picnicArea', rawKey: 'aire_pique_nique', label: 'Picnic', icon: Utensils, color: 'text-green-500' },
+  { key: 'laundry', rawKey: 'laverie', label: 'Laundry', icon: Shirt, color: 'text-indigo-400' },
+  { key: 'publicToilet', rawKey: 'wc_public', label: 'Public WC', icon: Map, color: 'text-blue-300' },
 ];
 
 const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavorite, isAuthenticated }) => {
@@ -141,7 +141,11 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   }, [place]);
 
   const addToGoogleMaps = () => {
-    const googlePlaceId = googleDetails?.place_id || place.google_place_id || place.rawData?.google_place_id;
+    if (googleDetails?.url) {
+      window.open(googleDetails.url, '_blank');
+      return;
+    }
+    const googlePlaceId = googleDetails?.place_id || place.google_place_id || place.rawData?.google_place_id || place.rawData?.place_id;
     const query = encodeURIComponent(`${place.title || place.name} ${place.address || ''}`);
     const url = googlePlaceId
       ? `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${googlePlaceId}`
@@ -277,8 +281,14 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
         <h3 className="text-xs font-bold text-gray-400 uppercase mb-2">Amenities</h3>
         <div className="grid grid-cols-4 gap-3">
           {AMENITIES.map(amenity => {
-            // Check in top level (Prisma) or rawData (Live/Local)
-            const hasAmenity = place[amenity.key] === '1' || place.rawData?.[amenity.key] === '1';
+            // Check in top level (Prisma), rawData (Live/Local), or specific raw keys
+            const hasAmenity =
+              place[amenity.key] === '1' ||
+              place.rawData?.[amenity.key] === '1' ||
+              (amenity.rawKey && place.rawData?.[amenity.rawKey] === '1') ||
+              place.rawData?.[amenity.key] === true ||
+              (amenity.rawKey && place.rawData?.[amenity.rawKey] === true);
+
             if (!hasAmenity) return null;
             return (
               <div key={amenity.key} className="flex flex-col items-center p-3 bg-white rounded-2xl border border-gray-100 shadow-sm hover:border-blue-200 transition-colors">
