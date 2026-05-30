@@ -26,12 +26,10 @@ router.get("/google/callback", (req, res, next) => {
 					.json({ error: "Authentication failed", message: err.message });
 			}
 			if (!user) {
-				return res
-					.status(401)
-					.json({
-						error: "Authentication failed",
-						message: info?.message,
-					});
+				return res.status(401).json({
+					error: "Authentication failed",
+					message: info?.message,
+				});
 			}
 			req.login(user, (loginErr) => {
 				if (loginErr) {
@@ -40,12 +38,10 @@ router.get("/google/callback", (req, res, next) => {
 						loginErr.message,
 						loginErr.stack,
 					);
-					return res
-						.status(500)
-						.json({
-							error: "Session creation failed",
-							message: loginErr.message,
-						});
+					return res.status(500).json({
+						error: "Session creation failed",
+						message: loginErr.message,
+					});
 				}
 
 				let returnTo = process.env.CLIENT_URL;

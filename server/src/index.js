@@ -15,6 +15,7 @@ const visitRoutes = require("./routes/visits");
 // Required environment variables — fail fast if missing
 const requiredEnv = [
 	"DATABASE_URL",
+	"DIRECT_URL",
 	"SESSION_SECRET",
 	"CLIENT_URL",
 	"PORT",
@@ -34,11 +35,11 @@ if (process.env.NODE_ENV === "production") {
 	app.set("trust proxy", 1);
 }
 
-// PostgreSQL connection (Supabase)
-const isSupabase = process.env.DATABASE_URL.includes("pooler.supabase.com");
-const pgPool = new Pool({
-	connectionString: process.env.DATABASE_URL,
-	ssl: isSupabase ? { rejectUnauthorized: false } : false,
+// Session storage: use DIRECT_URL (session pooler) for connect-pg-simple
+// DATABASE_URL (transaction pooler) is used by Prisma only
+const sessionPool = new Pool({
+	connectionString: process.env.DIRECT_URL,
+	ssl: { rejectUnauthorized: false },
 });
 
 app.use(
@@ -52,7 +53,7 @@ app.use(express.json());
 app.use(
 	session({
 		store: new pgSession({
-			pool: pgPool,
+			pool: sessionPool,
 			tableName: "Session",
 			createTableIfMissing: true,
 		}),

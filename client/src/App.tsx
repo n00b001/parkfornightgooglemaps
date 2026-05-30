@@ -148,8 +148,7 @@ const App: React.FC = () => {
 		// Filter by min rating
 		if (filters.minRating) {
 			filtered = filtered.filter(
-				(p: any) =>
-					parseFloat(p.rating) >= parseFloat(filters.minRating),
+				(p: any) => parseFloat(p.rating) >= parseFloat(filters.minRating),
 			);
 		}
 
@@ -172,9 +171,7 @@ const App: React.FC = () => {
 
 		// Sort
 		if (filters.sortBy === "rating") {
-			filtered.sort(
-				(a, b) => parseFloat(b.rating) - parseFloat(a.rating),
-			);
+			filtered.sort((a, b) => parseFloat(b.rating) - parseFloat(a.rating));
 		} else if (filters.sortBy === "distance") {
 			filtered.sort((a, b) => {
 				const distA = Math.sqrt(

@@ -214,9 +214,9 @@ const getPlacesNew = async (latitude, longitude, radius = 200, lang = "en") => {
 			type: p.type?.code,
 			description: p.description,
 			address: p.address
-				? (typeof p.address === "string"
-						? p.address
-						: `${p.address.street}, ${p.address.city}, ${p.address.country}`.trim())
+				? typeof p.address === "string"
+					? p.address
+					: `${p.address.street}, ${p.address.city}, ${p.address.country}`.trim()
 				: [p.route, p.ville, p.code_postal, p.pays].filter(Boolean).join(", "),
 			rating: p.rating,
 			rawData: p,
@@ -290,9 +290,7 @@ const getReviewsNew = async (placeId, lang = "en") => {
 		const reviewsWithLanguage = await Promise.all(
 			reviews.map(async (review) => ({
 				...review,
-				language: await detectLanguage(
-					review.commentaire,
-				),
+				language: await detectLanguage(review.commentaire),
 			})),
 		);
 		return reviewsWithLanguage;
@@ -333,19 +331,19 @@ const getPlaceDetail = async (placeId, lang = "en") => {
 			// Standardize detail output
 			return {
 				id: data.id,
-name: data.title_short,
+				name: data.title_short,
 				latitude: data.lat,
 				longitude: data.lng,
 				type: data.type?.code,
 				description: data.description,
 				address: data.address
-					? (typeof data.address === "string"
-							? data.address
-							: `${data.address.street}, ${data.address.city}, ${data.address.country}`.trim())
+					? typeof data.address === "string"
+						? data.address
+						: `${data.address.street}, ${data.address.city}, ${data.address.country}`.trim()
 					: [data.route, data.ville, data.code_postal, data.pays]
 							.filter(Boolean)
 							.join(", "),
-rating: data.rating,
+				rating: data.rating,
 				rawData: data,
 			};
 		}
