@@ -9,9 +9,9 @@
  * Add request/response middleware here if needed (caching, headers, etc.).
  */
 export default {
-  async fetch(): Promise<Response> {
-    // All requests are handled by the static assets binding.
-    // This code path is unreachable unless you add custom routing.
-    return new Response("OK", { status: 200 });
-  },
+	async fetch(): Promise<Response> {
+		// All requests are handled by the static assets binding.
+		// This code path is unreachable unless you add custom routing.
+		return new Response("OK", { status: 200 });
+	},
 };
