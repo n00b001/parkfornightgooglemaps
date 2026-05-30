@@ -12,6 +12,8 @@ dependencies = [
   "python-dotenv>=1.0.0",
   "Pillow>=10.0.0",
   "diskcache>=1.0.0",
+  "fastapi>=0.136.3",
+  "uvicorn>=0.48.0",
 ]
 
 [project.scripts]

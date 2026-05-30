@@ -12,6 +12,9 @@ All source languages are known from data structure:
 Translation caching is handled by stages.translate_text() via
 @disk_cache.memoize() + @lru_cache decorators. This module is a
 pure translation engine with no cache management.
+
+HTTP client: TranslationClient calls the translation server via HTTP,
+bypassing the GIL. Falls back to local translation if server is down.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ import threading
 
 import argostranslate.package as argos_package
 import argostranslate.translate as argos_translate
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -207,3 +211,123 @@ def translate_batch(
         results[original] = translated
 
     return results
+
+
+# ── HTTP Client ───────────────────────────────────────────────────────
+
+
+class TranslationClient:
+    """HTTP client for the translation server.
+
+    Calls the translation server via HTTP, bypassing the GIL.
+    Falls back to local translation if the server is down.
+
+    Usage:
+        client = TranslationClient(server_url="http://127.0.0.1:8900")
+        results = client.translate_batch(texts)
+    """
+
+    def __init__(
+        self,
+        server_url: str = "http://127.0.0.1:8900",
+        timeout: float = 30.0,
+        fallback_to_local: bool = True,
+    ) -> None:
+        self.server_url = server_url
+        self.timeout = timeout
+        self.fallback_to_local = fallback_to_local
+        self._server_available = True
+
+    def translate_batch(
+        self,
+        texts: list[tuple[str, str]],
+    ) -> dict[str, str]:
+        """Translate a batch of texts via HTTP.
+
+        Falls back to local translation if the server is down.
+        """
+        if not texts:
+            return {}
+
+        # Filter out English texts (no translation needed)
+        to_translate: list[tuple[str, str]] = []
+        english: dict[str, str] = {}
+        for text, lang in texts:
+            stripped = text.strip()
+            if lang == "en" or not stripped:
+                english[text] = stripped
+            else:
+                to_translate.append((text, lang))
+
+        if not to_translate:
+            return english
+
+        # Try HTTP server
+        if self._server_available:
+            try:
+                results = self._translate_via_http(to_translate)
+                results.update(english)
+                return results
+            except Exception as e:
+                logger.warning(f"Translation server unavailable: {e}")
+                if self.fallback_to_local:
+                    self._server_available = False
+                else:
+                    raise
+
+        # Fallback to local translation
+        logger.info("Falling back to local translation")
+        results = translate_batch(to_translate)
+        results.update(english)
+        return results
+
+    def _translate_via_http(
+        self,
+        texts: list[tuple[str, str]],
+    ) -> dict[str, str]:
+        """Translate via HTTP server."""
+        response = requests.post(
+            f"{self.server_url}/translate",
+            json={"texts": [[text, lang] for text, lang in texts]},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("translations", {})
+
+
+# ── Global client (for backward compatibility) ────────────────────────
+
+_default_client: TranslationClient | None = None
+
+
+def get_translation_client(
+    server_url: str | None = None,
+    timeout: float = 30.0,
+    fallback_to_local: bool = True,
+) -> TranslationClient:
+    """Get or create the default translation client.
+
+    If server_url is None, uses local translation only.
+    """
+    global _default_client
+    if _default_client is None:
+        if server_url:
+            _default_client = TranslationClient(
+                server_url=server_url,
+                timeout=timeout,
+                fallback_to_local=fallback_to_local,
+            )
+        else:
+            # No server URL — use local translation
+            _default_client = TranslationClient(
+                server_url="http://invalid",
+                fallback_to_local=True,
+            )
+    return _default_client
+
+
+def reset_translation_client() -> None:
+    """Reset the default translation client."""
+    global _default_client
+    _default_client = None

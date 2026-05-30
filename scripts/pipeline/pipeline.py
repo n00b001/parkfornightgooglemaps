@@ -63,9 +63,12 @@ from normalizer import (  # type: ignore[import-not-found]
     normalize_review,
 )
 from r2_worker import R2UploadTask, R2WorkerPool  # type: ignore[import-not-found]
+from translation_server import (  # type: ignore[import-not-found]
+    TranslationServer,
+)
 from translator import (  # type: ignore[import-not-found]
     ensure_packages_installed,
-    translate_batch,
+    get_translation_client,
 )
 
 logger = logging.getLogger("pipeline")
@@ -301,7 +304,8 @@ def translate_place(place: dict) -> dict:
             texts_to_translate.append((str(text).strip(), "fr"))
 
     if texts_to_translate:
-        translations = translate_batch(texts_to_translate, max_workers=8)
+        client = get_translation_client()
+        translations = client.translate_batch(texts_to_translate)
 
         if isinstance(raw_desc, dict):
             translated_desc = {}
@@ -447,14 +451,17 @@ def _handle_signal(signum: int, frame: Any) -> None:
 # ── Worker initializer (called once per process) ─────────────────────
 
 
-def _worker_init(no_disk_cache: bool) -> None:
-    """Initialize worker process: set global flag only.
+def _worker_init(no_disk_cache: bool, translation_server_url: str | None) -> None:
+    """Initialize worker process: set global flag and translation client.
 
-    Models load lazily on first translate() call — no preloading needed.
-    Preloading 29 models × 16 workers = 464 model loads that take minutes.
+    If translation_server_url is provided, workers use HTTP to call
+    the translation server, bypassing the GIL.
     """
     global NO_DISK_CACHE
     NO_DISK_CACHE = no_disk_cache
+    if translation_server_url:
+        get_translation_client(server_url=translation_server_url)
+        logger.info(f"Worker using translation server: {translation_server_url}")
 
 
 # ── Worker function (must be top-level for pickling) ─────────────────
@@ -509,6 +516,7 @@ def run_pipeline(
     limit: int | None = None,
     no_disk_cache: bool = False,
     dry_run: bool = False,
+    translation_server_port: int = 8900,
 ) -> None:
     """Run the full pipeline: extract → scrape → translate → normalize → upload."""
     global NO_DISK_CACHE, _stage_timers
@@ -526,6 +534,12 @@ def run_pipeline(
     if os.environ.get("DATABASE_URL"):
         db_pool = DBWorkerPool(total_expected=limit or 0)
         db_pool.start()
+
+    # Start translation server
+    translation_server = TranslationServer(port=translation_server_port)
+    translation_server.start()
+    translation_server_url = translation_server.url
+    console.print(f"  Translation server: [cyan]{translation_server_url}[/cyan]")
 
     ensure_packages_installed()
 
@@ -585,7 +599,7 @@ def run_pipeline(
         with ProcessPoolExecutor(
             max_workers=num_workers,
             initializer=_worker_init,
-            initargs=(no_disk_cache,),
+            initargs=(no_disk_cache, translation_server_url),
         ) as executor:
             futures = {
                 executor.submit(_worker_process_place, raw_place): (raw_place, grid_point)
@@ -705,6 +719,9 @@ def run_pipeline(
         progress_done.set()
         progress_thread.join(timeout=5.0)
 
+    # Shutdown translation server
+    translation_server.shutdown()
+
     finalize_elapsed = time.time() - finalize_start
     console.print(f"  [green]✓ Finalize complete in {finalize_elapsed:.1f}s[/green]")
     logger.info(f"Finalize phase: {finalize_elapsed:.1f}s")
@@ -766,6 +783,12 @@ def main() -> None:
         action="store_true",
         help="Bypass all disk caches — re-download, re-translate, re-upload",
     )
+    parser.add_argument(
+        "--translation-server-port",
+        type=int,
+        default=8900,
+        help="Port for the translation server (default: 8900)",
+    )
     args = parser.parse_args()
 
     log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
@@ -802,6 +825,7 @@ def main() -> None:
         limit=args.limit,
         no_disk_cache=args.no_disk_cache,
         dry_run=args.dry_run,
+        translation_server_port=args.translation_server_port,
     )
 
 
