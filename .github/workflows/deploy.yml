@@ -1,0 +1,30 @@
+name: Deploy Edge Functions
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Prevent multiple deployments from running at the same time
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      PROJECT_ID: vsfbbzqiljbtcesremjn
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy Edge Functions
+        run: supabase functions deploy --project-ref $PROJECT_ID
