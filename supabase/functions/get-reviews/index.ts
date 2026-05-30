@@ -23,4 +23,4 @@ serve(async (req) => {
   return new Response(JSON.stringify(reviews), {
     headers: { 'Content-Type': 'application/json' },
   })
-}
+})

@@ -134,16 +134,13 @@ const App: React.FC = () => {
 			const cached = placesCache.get(key);
 			if (cached !== undefined) return cached;
 
-			const { data, error } = await supabase.functions.invoke(
-				"get-places",
-				{
-					body: {
-						lat: lastFetchedCenter.lat,
-						lng: lastFetchedCenter.lng,
-						limit: 150,
-					},
+			const { data, error } = await supabase.functions.invoke("get-places", {
+				body: {
+					lat: lastFetchedCenter.lat,
+					lng: lastFetchedCenter.lng,
+					limit: 150,
 				},
-			);
+			});
 
 			if (error) throw error;
 			placesCache.set(key, data);
@@ -257,9 +254,7 @@ const App: React.FC = () => {
 						{ body: {} },
 					);
 					if (visits) {
-						setVisited(
-							visits.map((v: any) => v.placeId),
-						);
+						setVisited(visits.map((v: any) => v.placeId));
 					}
 				}
 			} else {
@@ -277,9 +272,7 @@ const App: React.FC = () => {
 		const params = new URLSearchParams(window.location.search);
 		const placeId = params.get("place");
 		if (placeId && rawPlaces.length > 0) {
-			const place = rawPlaces.find(
-				(p: any) => p.id.toString() === placeId,
-			);
+			const place = rawPlaces.find((p: any) => p.id.toString() === placeId);
 			if (place) {
 				setSelectedPlace(place);
 				setMapCenter({
@@ -390,9 +383,7 @@ const App: React.FC = () => {
 								/>
 							)}
 							<button
-								onClick={() =>
-									setShowOnlyFavorites(!showOnlyFavorites)
-								}
+								onClick={() => setShowOnlyFavorites(!showOnlyFavorites)}
 								className={`p-2 rounded-lg transition-colors ${showOnlyFavorites ? "bg-red-50 text-red-500" : "bg-gray-100 text-gray-600"}`}
 								title={showOnlyFavorites ? "Show All" : "Show Favorites"}
 							>
@@ -453,9 +444,7 @@ const App: React.FC = () => {
 
 						<div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20">
 							<button
-								onClick={() =>
-									setViewMode(viewMode === "map" ? "list" : "map")
-								}
+								onClick={() => setViewMode(viewMode === "map" ? "list" : "map")}
 								className="bg-gray-900 text-white px-8 py-4 rounded-full shadow-[0_20px_50px_rgba(0,0,0,0.3)] flex items-center gap-3 font-black uppercase tracking-wider hover:bg-black hover:scale-105 active:scale-95 transition-all duration-300 border border-white/20"
 							>
 								{viewMode === "map" ? (
@@ -473,9 +462,7 @@ const App: React.FC = () => {
 						{isLoadingPlaces && (
 							<div className="absolute bottom-28 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-white/90 text-gray-600 px-4 py-2 rounded-full shadow-md border">
 								<div className="w-3 h-3 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin" />
-								<span className="text-xs font-medium">
-									Loading spots...
-								</span>
+								<span className="text-xs font-medium">Loading spots...</span>
 							</div>
 						)}
 					</>
@@ -507,9 +494,7 @@ const App: React.FC = () => {
 					place={selectedPlace}
 					isAuthenticated={!!user}
 					onClose={() => setSelectedPlace(null)}
-					onToggleFavorite={() =>
-						handleToggleFavorite(selectedPlace.id)
-					}
+					onToggleFavorite={() => handleToggleFavorite(selectedPlace.id)}
 					isFavorite={favorites.includes(selectedPlace.id)}
 				/>
 			)}

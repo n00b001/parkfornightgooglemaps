@@ -26,4 +26,4 @@ serve(async (_req) => {
     }),
     { headers: { 'Content-Type': 'application/json' } },
   )
-}
+})

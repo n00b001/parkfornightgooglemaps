@@ -44,4 +44,4 @@ serve(async (req) => {
   return new Response(JSON.stringify(data), {
     headers: { 'Content-Type': 'application/json' },
   })
-}
+})

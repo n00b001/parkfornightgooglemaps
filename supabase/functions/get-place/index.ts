@@ -38,4 +38,4 @@ serve(async (req) => {
   return new Response(JSON.stringify(transformPlace(place)), {
     headers: { 'Content-Type': 'application/json' },
   })
-}
+})

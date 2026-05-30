@@ -86,4 +86,4 @@ serve(async (req) => {
   return new Response(JSON.stringify(result), {
     headers: { 'Content-Type': 'application/json' },
   })
-}
+})
