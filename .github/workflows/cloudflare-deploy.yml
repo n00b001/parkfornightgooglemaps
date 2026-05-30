@@ -52,6 +52,7 @@ jobs:
 
       - name: Deploy to Cloudflare Workers (PR preview)
         if: github.event_name == 'pull_request'
+        id: preview
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -60,7 +61,7 @@ jobs:
           echo "$OUTPUT"
           PREVIEW_URL=$(echo "$OUTPUT" | grep -oP 'https://[\w.-]+\.workers\.dev' | head -1)
           echo "Preview URL: $PREVIEW_URL"
-          echo "$PREVIEW_URL" > preview_url.txt
+          echo "url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
 
       - name: Comment preview URL on PR
         if: github.event_name == 'pull_request'
@@ -70,7 +71,7 @@ jobs:
           body: |
             ## 🚀 Preview Deployment
 
-            Preview URL: $(cat preview_url.txt)
+            Preview URL: ${{ steps.preview.outputs.url }}
 
             This preview is deployed to Cloudflare Workers and shares the same database as production.
 
