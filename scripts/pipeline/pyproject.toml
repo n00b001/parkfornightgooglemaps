@@ -16,6 +16,8 @@ dependencies = [
   "uvicorn>=0.48.0",
   "httpcore>=1.0.9",
   "httpx>=0.28.1",
+  "ctranslate2>=4.5.0",
+  "sentencepiece>=0.2.0",
 ]
 
 [project.scripts]

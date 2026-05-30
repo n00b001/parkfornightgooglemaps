@@ -101,9 +101,7 @@ def _ensure_packages_installed() -> None:
         installed_packages = argos_package.get_installed_packages()
 
         installed_pairs = {
-            (pkg.from_code, pkg.to_code)
-            for pkg in installed_packages
-            if hasattr(pkg, "from_code")
+            (pkg.from_code, pkg.to_code) for pkg in installed_packages if hasattr(pkg, "from_code")
         }
 
         packages_to_install = []
@@ -213,9 +211,7 @@ def _translate_single(text: str, src_lang: str) -> tuple[str, str]:
 
     translated = argos_translate.translate(stripped, from_code=src_lang, to_code="en")
     if not translated or not translated.strip():
-        raise RuntimeError(
-            f"Translation returned empty result ({src_lang}→en): {stripped[:80]}..."
-        )
+        raise RuntimeError(f"Translation returned empty result ({src_lang}→en): {stripped[:80]}...")
     return (text, translated.strip())
 
 
@@ -242,7 +238,8 @@ def translate_batch(
     # Filter out empty texts and English texts
     to_translate = [(t, lang) for t, lang in texts if t and t.strip() and lang != "en"]
     skip_results = {
-        t: (t.strip() if t.strip() else t) for t, lang in texts
+        t: (t.strip() if t.strip() else t)
+        for t, lang in texts
         if not to_translate or (t, lang) not in to_translate
     }
 
