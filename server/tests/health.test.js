@@ -1,3 +1,11 @@
+// Set required env vars before importing app
+process.env.DATABASE_URL = 'postgresql://localhost:5432/test';
+process.env.SESSION_SECRET = 'test_secret';
+process.env.CLIENT_URL = 'http://localhost:5173';
+process.env.PORT = '3000';
+process.env.GOOGLE_CLIENT_ID = 'test';
+process.env.GOOGLE_CLIENT_SECRET = 'test';
+
 const request = require('supertest');
 const app = require('../src/index');
 

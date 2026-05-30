@@ -4,9 +4,64 @@
 
 **This is a Progressive Web App (PWA) deployed to Render that shows camping and parking spaces on Google Maps.** Users browse places, read reviews, see photos, filter by services/activities, favourite places, and write their own reviews — all with Google login.
 
+**Infrastructure**: Supabase PostgreSQL (database) + Cloudflare R2 (image storage). The data pipeline uploads to these services.
+
 The Python scripts in `scripts/` are **just data collection** — they scrape, translate, and upload place data to the database. They are a means to an end, not the product itself.
 
 **The product is the web app.** Every decision should serve the end user experience: fast loading, clear information, easy navigation, mobile-first design.
+
+## ONE HAPPY PATH — NO FALLBACKS
+
+**This is the most important architectural rule in this project.**
+
+**NEVER write fallback logic.** Every code path must have exactly one execution flow. If data is missing, the operation fails — it does not degrade gracefully.
+
+### What This Means
+- **NO** `a || b || c` chains that try multiple sources
+- **NO** `try { A } catch { B }` that falls back to alternative logic
+- **NO** `if (x) use x; else use default;` — if `x` is required, throw if missing
+- **NO** `onError` handlers that swap to default images
+- **NO** conditional code paths based on environment (dev vs prod should behave identically)
+- **NO** "best effort" patterns — either it works or it fails
+
+### Why
+- Multiple execution paths = multiple things to test, debug, and maintain
+- Fallbacks hide bugs — if the primary path is broken, the fallback masks it
+- Fallbacks create inconsistent behavior across environments
+- A broken fallback is harder to diagnose than a clear error
+
+### Examples
+
+**WRONG (fallback chain):**
+```javascript
+const url = photo.r2_url_thumb || photo.path_thumb || photo.thumbUrl || "";
+const type = TYPE_CODE_MAP[code] || place.type.englishName || "parking";
+const PORT = process.env.PORT || 5000;
+```
+
+**RIGHT (single source, fail fast):**
+```javascript
+const url = photo.r2_url_thumb ?? "";
+const type = TYPE_CODE_MAP[code]; // undefined if not mapped — that's a data bug
+const PORT = process.env.PORT; // required — server won't start without it
+```
+
+### Required Environment Variables
+The server **must not start** without these. No defaults:
+- `DATABASE_URL` — Supabase connection string
+- `DIRECT_URL` — Supabase session pooler (migrations)
+- `SESSION_SECRET` — Session encryption
+- `CLIENT_URL` — CORS origin
+- `PORT` — Server port
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Auth
+
+If any are missing, the server crashes immediately with a clear error message.
+
+### Images
+- **ALL images come from R2 only** (`r2_url_thumb`, `r2_url_large`)
+- **NEVER** fall back to local paths (`path_thumb`, `path_large`)
+- **NEVER** use Park4Night CDN (`cdn*.park4night.com`)
+- If an R2 URL is missing, the image slot is empty — that's a data bug to fix in the pipeline, not a UI fallback to add
 
 ## Mandatory Workflow
 
@@ -36,9 +91,6 @@ git commit --no-gpg-sign -m "message"
 
 ## Changes
 - [bullet points of modifications]
-
-## Fallback / Edge Cases
-[What happens when things go wrong]
 
 ## CI
 - Lint: [status]
@@ -106,9 +158,8 @@ cd scripts/scraper && uv add --dev ruff
 
 | Service | Free Tier | Usage |
 |---------|-----------|-------|
-| Firebase Firestore | 1GB storage, 50K reads/day | Place metadata + image base64 (thumbnails) |
-| Render PostgreSQL | 1GB storage | Structured data: places, reviews, services, descriptions |
-| Firebase Storage | 5GB storage | Image files (WebP compressed) — ~$0.03/mo at current size, monitor closely |
+| Supabase PostgreSQL | 500MB storage, 2 active projects | Structured data: places, reviews, services, descriptions |
+| Cloudflare R2 | 10GB storage, 10M reads/day | Image files (WebP compressed) |
 
 **Image compression**: Always convert JPEG → WebP before upload. Typical 50-75% size reduction.
 
@@ -117,18 +168,17 @@ cd scripts/scraper && uv add --dev ruff
 ### NO Park4Night CDN / External Resources
 This project is designed to **supercede** Park4Night. The original Park4Night CDN, API endpoints, and all external resources will be turned off at some point.
 
-- **NEVER** use Park4Night CDN URLs (`cdn*.park4night.com`) as fallbacks
+- **NEVER** use Park4Night CDN URLs (`cdn*.park4night.com`) — ever
 - **NEVER** implement fallback logic that reaches back to Park4Night
-- **ALL images must come from local paths only** (`/images/places/...`, `/images/icons/...`)
-- If a local image does not exist, the app is broken — this is a **fatal error**, not a graceful degradation scenario
-- The scraper downloads all needed assets; if they're missing, something went wrong with the scrape
+- **ALL images come from R2 only** (`r2_url_thumb`, `r2_url_large`)
+- If an R2 URL is missing, the image slot is empty — that's a data bug to fix in the pipeline
+- The pipeline uploads all needed assets to R2; if they're missing, something went wrong with the upload
 
 ### Image Policy
-- Place photos: `scripts/data/images/places/{place_id}/{photo_id}_thumb.jpg` and `{photo_id}_large.jpg`
-- Vehicle icons: `scripts/data/images/icons/vehicule_*.png`
-- Served via Express static at `/images/` on the API server
-- Client constructs URLs as `${API_URL}/<relative-path>` — no CDN fallback, no default avatars, no `onError` handlers pointing elsewhere
-- If images directory is missing, the server must **fail to start** (not log a warning and continue)
+- Place photos stored in R2 bucket `p4n-images2` under `places/{place_id}/{photo_id}_thumb.webp` and `{photo_id}_large.webp`
+- Vehicle icons stored in R2 under `icons/vehicule_*.png`
+- The pipeline handles all uploads — the web app only reads R2 URLs from the database
+- No local image serving, no CDN fallback, no default avatars, no `onError` handlers
 
 ## DATA SAFETY — ABSOLUTE RULES
 

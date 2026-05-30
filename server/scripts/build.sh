@@ -34,18 +34,9 @@ npx prisma generate || { error "Prisma generate failed."; exit 1; }
 # --- Step 5: Deploy database migrations (critical — must succeed) ---
 log "Step 5: Deploying Prisma migrations..."
 if [ -z "${DATABASE_URL:-}" ]; then
-  log "  WARNING: DATABASE_URL not set — skipping migrate deploy."
-else
-  npx prisma migrate deploy || { error "Prisma migrate deploy failed! Tables were NOT created."; exit 1; }
-  log "  Migrations deployed successfully."
+  error "DATABASE_URL not set — cannot deploy migrations."; exit 1;
 fi
-
-# --- Step 6: Seed places (best-effort — don't fail build if data missing) ---
-log "Step 6: Seeding places..."
-if [ -z "${DATABASE_URL:-}" ]; then
-  log "  WARNING: DATABASE_URL not set — skipping seed."
-else
-  node src/services/seedPlaces.js || log "  WARNING: Seed script failed, continuing anyway."
-fi
+npx prisma migrate deploy || { error "Prisma migrate deploy failed! Tables were NOT created."; exit 1; }
+log "  Migrations deployed successfully."
 
 log "=== Build complete ==="
