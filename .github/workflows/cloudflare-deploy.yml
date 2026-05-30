@@ -55,11 +55,10 @@ jobs:
 
       - name: Comment preview URL on PR
         if: github.event_name == 'pull_request'
-        uses: marocst/sticky-comment@v1
+        uses: peter-evans/create-or-update-comment@v4
         with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           issue-number: ${{ github.event.pull_request.number }}
-          comment: |
+          body: |
             ## 🚀 Preview Deployment
 
             Preview URL: $(cat preview_url.txt)

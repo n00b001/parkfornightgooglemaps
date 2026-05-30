@@ -179,7 +179,7 @@ const PlaceDetails: React.FC<any> = ({
 		});
 	};
 
-		const fetchReviews = async () => {
+	const fetchReviews = async () => {
 		setIsLoadingReviews(true);
 		try {
 			const [localResult, p4nResult] = await Promise.all([
