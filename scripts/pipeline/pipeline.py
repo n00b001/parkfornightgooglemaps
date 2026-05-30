@@ -65,7 +65,6 @@ from normalizer import (  # type: ignore[import-not-found]
 from r2_worker import R2UploadTask, R2WorkerPool  # type: ignore[import-not-found]
 from translator import (  # type: ignore[import-not-found]
     ensure_packages_installed,
-    preload_models,
     translate_batch,
 )
 
@@ -206,9 +205,7 @@ def extract_place_data(place: dict) -> dict | None:
         "services": services,
         "activities": activities,
         "photos": [],
-        "rating": (
-            float(place.get("note_moyenne", 0)) if place.get("note_moyenne") else None
-        ),
+        "rating": (float(place.get("note_moyenne", 0)) if place.get("note_moyenne") else None),
         "review_count": int(place.get("nb_commentaires") or 0),
         "photo_count": int(place.get("nb_photos") or 0),
         "visit_count": int(place.get("nb_visites") or 0),
@@ -451,10 +448,13 @@ def _handle_signal(signum: int, frame: Any) -> None:
 
 
 def _worker_init(no_disk_cache: bool) -> None:
-    """Initialize worker process: preload argos models + set global flag."""
+    """Initialize worker process: set global flag only.
+
+    Models load lazily on first translate() call — no preloading needed.
+    Preloading 29 models × 16 workers = 464 model loads that take minutes.
+    """
     global NO_DISK_CACHE
     NO_DISK_CACHE = no_disk_cache
-    preload_models()
 
 
 # ── Worker function (must be top-level for pickling) ─────────────────

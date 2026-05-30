@@ -20,7 +20,6 @@ import logging
 import os
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import argostranslate.package as argos_package
 import argostranslate.translate as argos_translate
@@ -31,9 +30,35 @@ logger = logging.getLogger("pipeline")
 
 # Source languages to install translation packages for (→ English).
 REQUIRED_SOURCE_LANGUAGES = [
-    "fr", "de", "es", "it", "nl", "pt", "pl", "ru", "sv", "da",
-    "nb", "fi", "cs", "el", "hu", "ro", "bg", "sk", "sl", "et",
-    "lt", "lv", "uk", "tr", "sq", "ca", "gl", "eu", "ga",
+    "fr",
+    "de",
+    "es",
+    "it",
+    "nl",
+    "pt",
+    "pl",
+    "ru",
+    "sv",
+    "da",
+    "nb",
+    "fi",
+    "cs",
+    "el",
+    "hu",
+    "ro",
+    "bg",
+    "sk",
+    "sl",
+    "et",
+    "lt",
+    "lv",
+    "uk",
+    "tr",
+    "sq",
+    "ca",
+    "gl",
+    "eu",
+    "ga",
 ]
 
 # ── Shared state ──────────────────────────────────────────────────────
@@ -163,25 +188,22 @@ def translate_batch(
     texts: list[tuple[str, str]],
     max_workers: int = 8,
 ) -> dict[str, str]:
-    """Translate a batch of texts to English using parallel argos-translate.
+    """Translate a batch of texts to English using argos-translate.
 
     Pure translation — no caching. Caching handled by stages.translate_text().
 
     Returns {original_text: translated_text} for all inputs.
-    """
-    _ensure_packages_installed()
 
+    Note: Runs sequentially because argos-translate is not thread-safe
+    (CPU-bound neural translation holds GIL + internal model locks).
+    Parallelism is provided by the worker processes (16 workers).
+    """
     if not texts:
         return {}
 
     results: dict[str, str] = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_translate_single, text, lang): (text, lang)
-            for text, lang in texts
-        }
-        for future in as_completed(futures):
-            original, translated = future.result()
-            results[original] = translated
+    for text, lang in texts:
+        original, translated = _translate_single(text, lang)
+        results[original] = translated
 
     return results
