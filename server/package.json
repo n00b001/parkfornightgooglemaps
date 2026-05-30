@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "build": "npx prisma generate && (test -n \"$DATABASE_URL\" && npx prisma migrate deploy || echo 'Skipping migrate deploy (no DATABASE_URL)')",
+    "build": "npx prisma generate && (test -n \"$DIRECT_URL\" && DATABASE_URL=$DIRECT_URL npx prisma migrate deploy || echo 'Skipping migrate deploy (no DIRECT_URL)')",
     "test": "NODE_ENV=test jest tests/",
     "lint": "eslint src/"
   },

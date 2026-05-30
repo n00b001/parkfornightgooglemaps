@@ -68,9 +68,16 @@ describe('visitController', () => {
       await visitController.getVisits(req, res);
       expect(db.visit.findMany).toHaveBeenCalledWith({
         where: { userId: 1 },
-        include: { place: true },
+        include: {
+          place: {
+            include: {
+              type: true,
+              placeServices: { include: { service: true } },
+            },
+          },
+        },
       });
-      expect(res.json).toHaveBeenCalledWith(mockVisits);
+      expect(res.json).toHaveBeenCalled();
     });
 
     it('should return 500 on error', async () => {

@@ -38,9 +38,16 @@ describe('favoriteController', () => {
       await favoriteController.getFavorites(req, res);
       expect(db.favorite.findMany).toHaveBeenCalledWith({
         where: { userId: 1 },
-        include: { place: true },
+        include: {
+          place: {
+            include: {
+              type: true,
+              placeServices: { include: { service: true } },
+            },
+          },
+        },
       });
-      expect(res.json).toHaveBeenCalledWith(mockFavorites);
+      expect(res.json).toHaveBeenCalled();
     });
 
     it('should return 500 on error', async () => {

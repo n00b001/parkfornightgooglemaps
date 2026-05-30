@@ -25,9 +25,13 @@ if (process.env.NODE_ENV === 'production') {
 
 let pgPool;
 if (process.env.DATABASE_URL) {
+  const isSupabase = process.env.DATABASE_URL.includes('pooler.supabase.com');
   pgPool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+    // Supabase requires SSL with self-signed cert acceptance
+    ssl: isSupabase || process.env.NODE_ENV === 'production'
+      ? { rejectUnauthorized: false }
+      : false,
   });
 }
 
@@ -55,7 +59,7 @@ if (pgPool) {
   }));
 } else {
   app.use(session({
-    secret: 'temp_secret',
+    secret: process.env.SESSION_SECRET || 'dev-only-no-db',
     resave: false,
     saveUninitialized: false
   }));

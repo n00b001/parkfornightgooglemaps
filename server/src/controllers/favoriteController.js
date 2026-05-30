@@ -1,13 +1,21 @@
 const prisma = require('../config/db');
+const { transformPlace } = require('../services/placeTransform');
 
 const getFavorites = async (req, res) => {
   if (!req.isAuthenticated()) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const favorites = await prisma.favorite.findMany({
       where: { userId: req.user.id },
-      include: { place: true }
+      include: {
+        place: {
+          include: {
+            type: true,
+            placeServices: { include: { service: true } },
+          },
+        },
+      },
     });
-    res.json(favorites);
+    res.json(favorites.map((f) => ({ ...f, place: transformPlace(f.place) })));
   } catch (_error) {
     res.status(500).json({ error: 'Failed' });
   }

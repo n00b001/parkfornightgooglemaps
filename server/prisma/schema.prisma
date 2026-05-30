@@ -1,53 +1,92 @@
 generator client {
-  provider = "prisma-client-js"
+  provider  = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
+// ── User ────────────────────────────────────────────────────────────────
+
 model User {
-  id            String     @id @default(uuid())
-  googleId      String     @unique
-  email         String     @unique
-  name          String?
-  avatar        String?
+  id        String    @id @default(uuid())
+  googleId  String    @unique
+  email     String    @unique
+  name      String?
+  avatar    String?
+  favorites Favorite[]
+  reviews   Review[]
+  visits    Visit[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+// ── Place ───────────────────────────────────────────────────────────────
+
+model Place {
+  id            Int            @id
+  name          String
+  latitude      Float
+  longitude     Float
+  typeId        Int?
+  type          PlaceType?     @relation(fields: [typeId], references: [id])
+  address       Json?          // {street, city, zipcode, country, country_iso}
+  rating        Float?
+  reviewCount   Int            @default(0)
+  photoCount    Int            @default(0)
+  photos        Json?          // [{id, numero, path_thumb, path_large, r2_url_thumb, r2_url_large}]
+  pricing       Json?          // {parking, services}
+  access        Json?          // {public, height_limit, parking_places}
+  contact       Json?          // {phone, email, website, video}
+  descriptions  Json?          // {default, _original}
+  isPublic      Boolean        @default(true)
+  onlineBooking Boolean        @default(false)
+  lastFetched   DateTime?      @default(now())
+
   favorites     Favorite[]
   reviews       Review[]
   visits        Visit[]
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-}
-
-model Place {
-  id              Int        @id
-  name            String
-  latitude        Float
-  longitude       Float
-  type            String
-  description     String?
-  address         String?
-  rating          Float?
-  reviewCount     Int        @default(0)
-  photoCount      Int        @default(0)
-  services        Json?      // [{code, label}]
-  activities      Json?      // [{code, label}]
-  photos          Json?      // [{id, url_large, url_thumb}]
-  pricing         Json?      // {parking, services}
-  access          Json?      // {public, height_limit, parking_places}
-  contact         Json?      // {phone, email, website}
-  descriptions    Json?      // {fr, en, de, es, it, nl}
-  isPublic        Boolean    @default(true)
-  onlineBooking   Boolean    @default(false)
-  favorites       Favorite[]
-  reviews         Review[]
-  visits          Visit[]
-  rawData         Json?
-  lastFetched     DateTime   @default(now())
+  placeServices PlaceService[]
+  placeActivities PlaceActivity[]
 
   @@index([latitude, longitude])
 }
+
+// ── Lookup Tables ───────────────────────────────────────────────────────
+
+model PlaceType {
+  id           Int      @id @default(autoincrement())
+  englishName  String
+  originalCode String   @unique
+  places       Place[]
+}
+
+model Service {
+  id           Int            @id @default(autoincrement())
+  code         String
+  label        String
+  originalCode String         @unique
+  placeServices PlaceService[]
+}
+
+model Activity {
+  id           Int                @id @default(autoincrement())
+  code         String
+  label        String
+  originalCode String             @unique
+  placeActivities PlaceActivity[]
+}
+
+model VehicleType {
+  id        Int      @id @default(autoincrement())
+  code      String
+  originalCode String @unique
+  reviews   Review[]
+}
+
+// ── Favorite ────────────────────────────────────────────────────────────
 
 model Favorite {
   id        String   @id @default(uuid())
@@ -60,16 +99,24 @@ model Favorite {
   @@unique([userId, placeId])
 }
 
+// ── Review ──────────────────────────────────────────────────────────────
+
 model Review {
-  id        String   @id @default(uuid())
-  content   String
-  rating    Int
-  user      User     @relation(fields: [userId], references: [id])
-  userId    String
-  place     Place    @relation(fields: [placeId], references: [id])
-  placeId   Int
-  createdAt DateTime @default(now())
+  id            String     @id @default(uuid())
+  content       String
+  rating        Int
+  vehicleTypeId Int?
+  vehicleType   VehicleType? @relation(fields: [vehicleTypeId], references: [id])
+  authorName    String?
+  authorId      String?
+  user          User       @relation(fields: [userId], references: [id])
+  userId        String
+  place         Place      @relation(fields: [placeId], references: [id])
+  placeId       Int
+  createdAt     DateTime?  @default(now())
 }
+
+// ── Visit ───────────────────────────────────────────────────────────────
 
 model Visit {
   id        String   @id @default(uuid())
@@ -82,10 +129,32 @@ model Visit {
   @@unique([userId, placeId])
 }
 
+// ── Session ─────────────────────────────────────────────────────────────
+
 model Session {
   sid    String   @id
   sess   Json
   expire DateTime
 
   @@index([expire], name: "IDX_session_expire")
+}
+
+// ── Junction Tables ─────────────────────────────────────────────────────
+
+model PlaceService {
+  placeId   Int   @unique
+  serviceId Int   @unique
+  place     Place @relation(fields: [placeId], references: [id])
+  service   Service @relation(fields: [serviceId], references: [id])
+
+  @@id([placeId, serviceId])
+}
+
+model PlaceActivity {
+  placeId    Int       @unique
+  activityId Int       @unique
+  place      Place     @relation(fields: [placeId], references: [id])
+  activity   Activity  @relation(fields: [activityId], references: [id])
+
+  @@id([placeId, activityId])
 }

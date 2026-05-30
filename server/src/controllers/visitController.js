@@ -1,4 +1,5 @@
 const prisma = require('../config/db');
+const { transformPlace } = require('../services/placeTransform');
 
 const recordVisit = async (req, res) => {
   if (!req.isAuthenticated()) return res.status(401).json({ error: 'Unauthorized' });
@@ -20,9 +21,16 @@ const getVisits = async (req, res) => {
   try {
     const visits = await prisma.visit.findMany({
       where: { userId: req.user.id },
-      include: { place: true }
+      include: {
+        place: {
+          include: {
+            type: true,
+            placeServices: { include: { service: true } },
+          },
+        },
+      },
     });
-    res.json(visits);
+    res.json(visits.map((v) => ({ ...v, place: transformPlace(v.place) })));
   } catch (_error) {
     res.status(500).json({ error: 'Failed' });
   }

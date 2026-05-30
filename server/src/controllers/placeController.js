@@ -1,5 +1,6 @@
 const prisma = require("../config/db");
 const LRUCache = require("../services/lruCache");
+const { transformPlaces, transformPlace } = require("../services/placeTransform");
 
 const MAX_PLACES_LIMIT = 200;
 
@@ -49,6 +50,10 @@ const getPlaces = async (req, res) => {
 		let places = await prisma.place.findMany({
 			where,
 			orderBy: Object.keys(orderBy).length > 0 ? orderBy : undefined,
+			include: {
+				type: true,
+				placeServices: { include: { service: true } },
+			},
 		});
 
 		// Sort by distance from query point (closest first)
@@ -60,8 +65,9 @@ const getPlaces = async (req, res) => {
 
 		// Return only the closest N
 		places = places.slice(0, maxLimit);
-		placesCache.set(key, places);
-		res.json(places);
+		const transformed = transformPlaces(places);
+		placesCache.set(key, transformed);
+		res.json(transformed);
 	} catch (error) {
 		console.error("Unexpected error in getPlaces:", error.message, error.stack);
 		res
@@ -93,9 +99,16 @@ const getStats = async (_req, res) => {
 const getPlaceDetail = async (req, res) => {
 	try {
 		const id = parseInt(req.params.id);
-		const place = await prisma.place.findUnique({ where: { id } });
+		const place = await prisma.place.findUnique({
+			where: { id },
+			include: {
+				type: true,
+				placeServices: { include: { service: true } },
+				placeActivities: { include: { activity: true } },
+			},
+		});
 		if (!place) return res.status(404).json({ error: "Place not found" });
-		res.json(place);
+		res.json(transformPlace(place));
 	} catch (error) {
 		console.error("Error fetching place detail:", error.message);
 		res
