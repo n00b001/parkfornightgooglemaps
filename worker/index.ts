@@ -1,10 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = SUPABASE_URL;
-const serviceKey = SUPABASE_SERVICE_ROLE_KEY;
+interface Env {
+	SUPABASE_URL: string;
+	SUPABASE_SERVICE_ROLE_KEY: string;
+	ASSETS: any; // Cloudflare Workers Assets binding
+}
 
-function getAdminClient() {
-	return createClient(supabaseUrl, serviceKey);
+function getAdminClient(env: Env) {
+	return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 }
 
 function getAuthUser(request: Request): { id: string; email: string } | null {
@@ -149,7 +152,7 @@ function jsonResponse(data: any, status = 200) {
 	});
 }
 
-async function handleGetPlaces(request: Request) {
+async function handleGetPlaces(request: Request, env: Env) {
 	const url = new URL(request.url);
 	const lat = parseFloat(url.searchParams.get("lat") ?? "48.8566");
 	const lng = parseFloat(url.searchParams.get("lng") ?? "2.3522");
@@ -159,7 +162,7 @@ async function handleGetPlaces(request: Request) {
 	const sortBy = url.searchParams.get("sortBy") ?? "";
 	const amenities = url.searchParams.get("amenities") ?? "";
 
-	const supabase = getAdminClient();
+	const supabase = getAdminClient(env);
 
 	let query = supabase
 		.from("place")
@@ -210,12 +213,12 @@ async function handleGetPlaces(request: Request) {
 	return jsonResponse(result);
 }
 
-async function handleGetPlace(request: Request) {
+async function handleGetPlace(request: Request, env: Env) {
 	const url = new URL(request.url);
 	const id = url.searchParams.get("id");
 	if (!id) return jsonResponse({ error: "Missing id" }, 400);
 
-	const supabase = getAdminClient();
+	const supabase = getAdminClient(env);
 	const { data, error } = await supabase
 		.from("place")
 		.select(
@@ -228,12 +231,12 @@ async function handleGetPlace(request: Request) {
 	return jsonResponse(transformPlace(data));
 }
 
-async function handleGetPlaceReviews(request: Request) {
+async function handleGetPlaceReviews(request: Request, env: Env) {
 	const url = new URL(request.url);
 	const placeId = url.searchParams.get("placeId");
 	if (!placeId) return jsonResponse({ error: "Missing placeId" }, 400);
 
-	const supabase = getAdminClient();
+	const supabase = getAdminClient(env);
 	const { data, error } = await supabase
 		.from("review")
 		.select("*")
@@ -244,8 +247,8 @@ async function handleGetPlaceReviews(request: Request) {
 	return jsonResponse(data);
 }
 
-async function handleGetStats() {
-	const supabase = getAdminClient();
+async function handleGetStats(_req: Request, env: Env) {
+	const supabase = getAdminClient(env);
 	const { count, error } = await supabase
 		.from("place")
 		.select("*", { count: "exact", head: true });
@@ -254,11 +257,11 @@ async function handleGetStats() {
 	return jsonResponse({ totalPlaces: count ?? 0 });
 }
 
-async function handleGetUser(request: Request) {
+async function handleGetUser(request: Request, env: Env) {
 	const user = getAuthUser(request);
 	if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
 
-	const supabase = getAdminClient();
+	const supabase = getAdminClient(env);
 	const { data, error } = await supabase
 		.from("User")
 		.select("*")
@@ -271,11 +274,11 @@ async function handleGetUser(request: Request) {
 	return jsonResponse(data);
 }
 
-async function handleGetFavorites(request: Request) {
+async function handleGetFavorites(request: Request, env: Env) {
 	const user = getAuthUser(request);
 	if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
 
-	const supabase = getAdminClient();
+	const supabase = getAdminClient(env);
 	const { data, error } = await supabase
 		.from("favorite")
 		.select(
@@ -289,7 +292,7 @@ async function handleGetFavorites(request: Request) {
 	return jsonResponse(places);
 }
 
-async function handleAddFavorite(request: Request) {
+async function handleAddFavorite(request: Request, env: Env) {
 	const user = getAuthUser(request);
 	if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
 
@@ -297,7 +300,7 @@ async function handleAddFavorite(request: Request) {
 	const { placeId } = body;
 	if (!placeId) return jsonResponse({ error: "Missing placeId" }, 400);
 
-	const supabase = getAdminClient();
+	const supabase = getAdminClient(env);
 	const { error } = await supabase.from("favorite").insert({
 		userId: user.id,
 		placeId,
@@ -307,7 +310,7 @@ async function handleAddFavorite(request: Request) {
 	return jsonResponse({ success: true });
 }
 
-async function handleRemoveFavorite(request: Request) {
+async function handleRemoveFavorite(request: Request, env: Env) {
 	const user = getAuthUser(request);
 	if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
 
@@ -315,7 +318,7 @@ async function handleRemoveFavorite(request: Request) {
 	const placeId = url.searchParams.get("placeId");
 	if (!placeId) return jsonResponse({ error: "Missing placeId" }, 400);
 
-	const supabase = getAdminClient();
+	const supabase = getAdminClient(env);
 	const { error } = await supabase
 		.from("favorite")
 		.delete()
@@ -326,7 +329,7 @@ async function handleRemoveFavorite(request: Request) {
 	return jsonResponse({ success: true });
 }
 
-async function handleAddReview(request: Request) {
+async function handleAddReview(request: Request, env: Env) {
 	const user = getAuthUser(request);
 	if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
 
@@ -336,7 +339,7 @@ async function handleAddReview(request: Request) {
 		return jsonResponse({ error: "Missing placeId or rating" }, 400);
 	}
 
-	const supabase = getAdminClient();
+	const supabase = getAdminClient(env);
 	const { error } = await supabase.from("review").insert({
 		userId: user.id,
 		placeId,
@@ -348,11 +351,11 @@ async function handleAddReview(request: Request) {
 	return jsonResponse({ success: true });
 }
 
-async function handleGetReviews(request: Request) {
+async function handleGetReviews(request: Request, env: Env) {
 	const user = getAuthUser(request);
 	if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
 
-	const supabase = getAdminClient();
+	const supabase = getAdminClient(env);
 	const { data, error } = await supabase
 		.from("review")
 		.select("*")
@@ -363,7 +366,7 @@ async function handleGetReviews(request: Request) {
 	return jsonResponse(data);
 }
 
-async function handleRecordVisit(request: Request) {
+async function handleRecordVisit(request: Request, env: Env) {
 	const user = getAuthUser(request);
 	if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
 
@@ -371,7 +374,7 @@ async function handleRecordVisit(request: Request) {
 	const { placeId, latitude, longitude } = body;
 	if (!placeId) return jsonResponse({ error: "Missing placeId" }, 400);
 
-	const supabase = getAdminClient();
+	const supabase = getAdminClient(env);
 	const { error } = await supabase.from("visit").insert({
 		userId: user.id,
 		placeId,
@@ -383,11 +386,11 @@ async function handleRecordVisit(request: Request) {
 	return jsonResponse({ success: true });
 }
 
-async function handleGetVisits(request: Request) {
+async function handleGetVisits(request: Request, env: Env) {
 	const user = getAuthUser(request);
 	if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
 
-	const supabase = getAdminClient();
+	const supabase = getAdminClient(env);
 	const { data, error } = await supabase
 		.from("visit")
 		.select(
@@ -406,7 +409,7 @@ async function handleGetVisits(request: Request) {
 }
 
 // Route handlers
-const ROUTES: Record<string, (req: Request) => Promise<Response>> = {
+const ROUTES: Record<string, (req: Request, env: Env) => Promise<Response>> = {
 	"get-places": handleGetPlaces,
 	"get-place": handleGetPlace,
 	"get-place-reviews": handleGetPlaceReviews,
@@ -432,7 +435,7 @@ export default {
 			const functionName = apiMatch[1];
 			const handler = ROUTES[functionName];
 			if (handler) {
-				return handler(request);
+				return handler(request, env);
 			}
 			return jsonResponse({ error: `Unknown function: ${functionName}` }, 404);
 		}
@@ -441,9 +444,3 @@ export default {
 		return fetch(request);
 	},
 };
-
-// Type declarations for env bindings
-declare global {
-	const SUPABASE_URL: string;
-	const SUPABASE_SERVICE_ROLE_KEY: string;
-}
