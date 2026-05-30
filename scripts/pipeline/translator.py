@@ -276,7 +276,7 @@ class TranslationClient:
                     raise
 
         # Fallback to local translation
-        logger.info("Falling back to local translation")
+        logger.warning("Falling back to local translation (server unavailable)")
         results = translate_batch(to_translate)
         results.update(english)
         return results

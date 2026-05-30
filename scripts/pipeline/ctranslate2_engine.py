@@ -122,9 +122,7 @@ class _LanguageModel:
         tokenizer: _Tokenizer,
     ) -> None:
         self.from_code = from_code
-        self.translator = ctranslate2.Translator(
-            model_path, device="cpu", compute_type="int8"
-        )
+        self.translator = ctranslate2.Translator(model_path, device="cpu", compute_type="int8")
         self.tokenizer = tokenizer
 
 
@@ -150,8 +148,7 @@ class CTranslate2Engine:
 
         packages = argos_package.get_installed_packages()
         installed_pairs = {
-            (pkg.from_code, pkg.to_code): pkg for pkg in packages
-            if hasattr(pkg, "from_code")
+            (pkg.from_code, pkg.to_code): pkg for pkg in packages if hasattr(pkg, "from_code")
         }
 
         for lang_code in REQUIRED_SOURCE_LANGUAGES:

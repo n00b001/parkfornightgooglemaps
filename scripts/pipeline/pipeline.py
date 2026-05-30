@@ -524,24 +524,18 @@ def run_pipeline(
 
     num_workers = 16
 
-    # Initialize R2 and DB worker pools
+    # Initialize pool references (actual pools start later, after fork)
     r2_pool: R2WorkerPool | None = None
-    if _r2_config is not None:
-        r2_pool = R2WorkerPool(_r2_config, no_disk_cache=no_disk_cache, total_expected=limit or 0)
-        r2_pool.start()
-
     db_pool: DBWorkerPool | None = None
-    if os.environ.get("DATABASE_URL"):
-        db_pool = DBWorkerPool(total_expected=limit or 0)
-        db_pool.start()
 
-    # Start translation server
+    # Ensure translation packages are installed (workers load models lazily)
+    ensure_packages_installed()
+
+    # Start translation server (ctranslate2, loaded once, shared via HTTP)
     translation_server = TranslationServer(port=translation_server_port)
     translation_server.start()
     translation_server_url = translation_server.url
     console.print(f"  Translation server: [cyan]{translation_server_url}[/cyan]")
-
-    ensure_packages_installed()
 
     limit_label = f" (limit {limit})" if limit else ""
     workers_label = f" with {num_workers} workers"
@@ -601,10 +595,22 @@ def run_pipeline(
             initializer=_worker_init,
             initargs=(no_disk_cache, translation_server_url),
         ) as executor:
+            # Submit all futures (fork happens here — no threads yet!)
             futures = {
                 executor.submit(_worker_process_place, raw_place): (raw_place, grid_point)
                 for raw_place, grid_point in places_to_process
             }
+
+            # Start R2/DB pools AFTER fork (threads safe now)
+            if _r2_config is not None:
+                r2_pool = R2WorkerPool(
+                    _r2_config, no_disk_cache=no_disk_cache, total_expected=limit or 0
+                )
+                r2_pool.start()
+
+            if os.environ.get("DATABASE_URL"):
+                db_pool = DBWorkerPool(total_expected=limit or 0)
+                db_pool.start()
 
             for future in as_completed(futures):
                 place_num += 1
@@ -717,12 +723,13 @@ def run_pipeline(
         progress_done.set()
         progress_thread.join(timeout=5.0)
 
-    # Shutdown translation server
-    translation_server.shutdown()
-
     finalize_elapsed = time.time() - finalize_start
     console.print(f"  [green]✓ Finalize complete in {finalize_elapsed:.1f}s[/green]")
     logger.info(f"Finalize phase: {finalize_elapsed:.1f}s")
+
+    # Shutdown translation server
+    translation_server.shutdown()
+    console.print("  [green]✓ Translation server stopped[/green]")
 
     # ── Summary Report ──────────────────────────────────────────────
     total_elapsed = time.time() - pipeline_start
@@ -781,12 +788,6 @@ def main() -> None:
         action="store_true",
         help="Bypass all disk caches — re-download, re-translate, re-upload",
     )
-    parser.add_argument(
-        "--translation-server-port",
-        type=int,
-        default=8900,
-        help="Port for the translation server (default: 8900)",
-    )
     args = parser.parse_args()
 
     log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
@@ -823,7 +824,6 @@ def main() -> None:
         limit=args.limit,
         no_disk_cache=args.no_disk_cache,
         dry_run=args.dry_run,
-        translation_server_port=args.translation_server_port,
     )
 
 

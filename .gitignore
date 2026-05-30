@@ -98,3 +98,4 @@ server/firebase-credentials.json
 
 # Pipeline cache
 scripts/data/cache/
+.crew
