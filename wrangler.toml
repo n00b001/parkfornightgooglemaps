@@ -1,0 +1,10 @@
+name = "parking"
+main = "worker/index.ts"
+compatibility_date = "2024-12-01"
+
+# Serve the Vite build as static assets
+assets = { directory = "client/dist" }
+
+# SPA routing — all unknown paths return index.html
+[assets.not_found_handling]
+single_page_app = true

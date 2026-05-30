@@ -109,3 +109,7 @@ scripts/data/cache/
 # Supabase
 supabase/.temp/
 supabase/functions/.env
+
+# Cloudflare Workers
+.wrangler/
+worker/.wrangler/

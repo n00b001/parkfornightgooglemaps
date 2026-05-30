@@ -223,7 +223,8 @@ const App: React.FC = () => {
 	// Auth: check Supabase session on mount and listen for changes
 	useEffect(() => {
 		// Check current session
-		supabase.auth.getUser()
+		supabase.auth
+			.getUser()
 			.then(({ data: { user }, error }) => {
 				if (error || !user) {
 					setUser(null);
@@ -232,7 +233,8 @@ const App: React.FC = () => {
 				const userData = {
 					id: user.id,
 					email: user.email,
-					name: user.user_metadata?.full_name || user.user_metadata?.name || null,
+					name:
+						user.user_metadata?.full_name || user.user_metadata?.name || null,
 					avatar: user.user_metadata?.avatar_url || null,
 				};
 				setUser(userData);
@@ -253,7 +255,10 @@ const App: React.FC = () => {
 				const userData = {
 					id: session.user.id,
 					email: session.user.email,
-					name: session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
+					name:
+						session.user.user_metadata?.full_name ||
+						session.user.user_metadata?.name ||
+						null,
 					avatar: session.user.user_metadata?.avatar_url || null,
 				};
 				setUser(userData);
