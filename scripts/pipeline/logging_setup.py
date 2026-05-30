@@ -293,20 +293,31 @@ def print_timing_report(
     # Sort by total time descending (bottleneck first)
     sorted_timers = sorted(timers.values(), key=lambda t: t.total_time, reverse=True)
 
+    # Sum of all stage times (accumulated across workers) — used for % calculation
+    sum_of_stages = sum(t.total_time for t in sorted_timers)
+
     for timer in sorted_timers:
         total_str = f"{timer.total_time:.2f}s"
         avg_str = f"{timer.average * 1000:.1f}ms"
-        pct = (timer.total_time / total_elapsed * 100) if total_elapsed > 0 else 0
+        pct = (timer.total_time / sum_of_stages * 100) if sum_of_stages > 0 else 0
         pct_str = f"{pct:5.1f}%"
         table.add_row(timer.name, total_str, avg_str, pct_str, str(timer.count))
 
-    # Summary row
+    # Summary row: wall-clock time and per-place average
+    per_place_avg = sum_of_stages / total_places if total_places else 0
     table.add_row(
         "[bold]TOTAL[/bold]",
-        f"[bold]{total_elapsed:.2f}s[/bold]",
-        f"[bold]{(total_elapsed / total_places * 1000) if total_places else 0:.1f}ms[/bold]",
+        f"[bold]{sum_of_stages:.2f}s[/bold]",
+        f"[bold]{per_place_avg * 1000:.1f}ms[/bold]",
         "100.0%",
         str(total_places),
+    )
+    table.add_row(
+        "[dim]Wall-clock[/dim]",
+        f"[dim]{total_elapsed:.2f}s[/dim]",
+        f"[dim]{(total_elapsed / total_places * 1000) if total_places else 0:.1f}ms[/dim]",
+        "",
+        "",
     )
 
     console.print()
@@ -318,15 +329,19 @@ def print_timing_report(
         logger.info("Pipeline Timing Report")
         logger.info("=" * 60)
         for timer in sorted_timers:
-            pct = (timer.total_time / total_elapsed * 100) if total_elapsed > 0 else 0
+            pct = (timer.total_time / sum_of_stages * 100) if sum_of_stages > 0 else 0
             logger.info(
                 f"  {timer.name:<15} total={timer.total_time:>8.2f}s  "
                 f"avg={timer.average * 1000:>7.1f}ms  {pct:5.1f}%  "
                 f"count={timer.count}"
             )
         logger.info(
-            f"  {'TOTAL':<15} total={total_elapsed:>8.2f}s  "
-            f"avg={(total_elapsed / total_places * 1000) if total_places else 0:>7.1f}ms  "
+            f"  {'TOTAL':<15} total={sum_of_stages:>8.2f}s  "
+            f"avg={per_place_avg * 1000:>7.1f}ms  "
             f"100.0%  count={total_places}"
+        )
+        logger.info(
+            f"  {'Wall-clock':<15} total={total_elapsed:>8.2f}s  "
+            f"avg={(total_elapsed / total_places * 1000) if total_places else 0:>7.1f}ms"
         )
         logger.info("=" * 60)
