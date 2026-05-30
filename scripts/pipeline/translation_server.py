@@ -29,9 +29,23 @@ Usage:
 
 from __future__ import annotations
 
-import logging
 import os
 import sys
+
+# ── Argos-translate performance tuning (MUST be set before import) ───
+# These env vars configure ctranslate2 under the hood:
+#   beam_size=1: skip beam search → 2-3× faster (greedy decoding)
+#   compute_type=int8_float32: mixed precision → 1.5-2× faster
+#   batch_size=64: larger internal batches → 1.2-1.5× faster
+#   inter_threads=8: data parallelism across 8 workers
+#   intra_threads=4: per-worker threads (8 × 4 = 32 cores saturated)
+os.environ.setdefault("ARGOS_BEAM_SIZE", "1")
+os.environ.setdefault("ARGOS_COMPUTE_TYPE", "int8_float32")
+os.environ.setdefault("ARGOS_BATCH_SIZE", "64")
+os.environ.setdefault("ARGOS_INTER_THREADS", "8")
+os.environ.setdefault("ARGOS_INTRA_THREADS", "4")
+
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor

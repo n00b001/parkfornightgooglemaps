@@ -22,9 +22,17 @@ This module is a pure translation engine with no cache management.
 
 from __future__ import annotations
 
-import logging
 import os
 import sys
+
+# ── Argos-translate performance tuning (MUST be set before import) ───
+os.environ.setdefault("ARGOS_BEAM_SIZE", "1")
+os.environ.setdefault("ARGOS_COMPUTE_TYPE", "int8_float32")
+os.environ.setdefault("ARGOS_BATCH_SIZE", "64")
+os.environ.setdefault("ARGOS_INTER_THREADS", "8")
+os.environ.setdefault("ARGOS_INTRA_THREADS", "4")
+
+import logging
 import threading
 
 import argostranslate.package as argos_package
