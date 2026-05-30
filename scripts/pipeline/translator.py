@@ -295,6 +295,3 @@ def translate_batch_http(
     # Merge English texts back (no translation needed)
     translations.update(en_texts)
     return translations
-
-
-

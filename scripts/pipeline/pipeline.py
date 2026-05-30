@@ -301,9 +301,7 @@ def translate_place(place: dict) -> dict:
             texts_to_translate.append((str(text).strip(), "fr"))
 
     if texts_to_translate:
-        translations = translate_batch_http(
-            texts_to_translate, server_url=_translation_server_url
-        )
+        translations = translate_batch_http(texts_to_translate, server_url=_translation_server_url)
 
         if isinstance(raw_desc, dict):
             translated_desc = {}
