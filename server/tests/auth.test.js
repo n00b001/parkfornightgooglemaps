@@ -1,5 +1,6 @@
 // Set required env vars before importing app
 process.env.DATABASE_URL = "postgresql://localhost:5432/test";
+process.env.DIRECT_URL = "postgresql://localhost:5432/test";
 process.env.SESSION_SECRET = "test_secret";
 process.env.CLIENT_URL = "http://localhost:5173";
 process.env.PORT = "3000";
