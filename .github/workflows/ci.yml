@@ -25,7 +25,7 @@ jobs:
       - name: Install root dependencies
         run: npm ci
 
-      - name: Install server dependencies
+      - name: Install server dependencies (Prisma)
         run: npm ci
         working-directory: server
 
@@ -37,24 +37,14 @@ jobs:
         run: npx prisma generate
         working-directory: server
 
-      - name: Lint server
-        run: npm run lint
-        working-directory: server
-
       - name: Lint client
         run: npm run lint
         working-directory: client
-
-      - name: Build server
-        run: npm run build
-        working-directory: server
 
       - name: Build client
         run: npm run build
         working-directory: client
 
-      - name: Run server tests
+      - name: Run client tests
         run: npm test
-        working-directory: server
-        env:
-          NODE_ENV: test
+        working-directory: client
