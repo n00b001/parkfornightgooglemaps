@@ -8,30 +8,20 @@ Each place flows through all stages end-to-end:
     extract (API) → download images → fetch reviews → translate →
     normalize → upload R2 → insert DB
 
-Idempotency via disk cache (NOT checkpointing):
-  Each stage checks if its output file exists before doing work.
-  Re-running with the same --limit completes instantly (all cached).
-  --no-disk-cache bypasses all caches (force re-process everything).
+Idempotency via @cache.memoize() decorators (diskcache library):
+  - API fetches: @cache.memoize() on _fetch_grid_cached / _fetch_reviews_cached
+  - Translations: @cache.memoize() on _translate_cached
+  - Scrape results: @cache.memoize() on _scrape_place_cached
+  - Normalize results: @cache.memoize() on _normalize_place_cached
+  - Full pipeline: @cache.memoize() on _process_place_cached
 
-Completed places cache (cache/completed/):
-  Tracks places that have finished ALL stages end-to-end.
-  When a place is marked completed, the pipeline skips it entirely
-  without checking individual step caches or spawning workers.
-  This is the fastest path: one file existence check and we're done.
-
-Why disk cache over checkpointing:
-  - Simpler: file existence check vs. complex state machine
-  - More reliable: no central authority to get out of sync
-  - Easier to debug: ls the cache directory to see what's cached
-  - Harder to get wrong: can't forget to update the checkpoint
+Re-running with the same --limit completes instantly (all cached).
+--no-disk-cache bypasses disk cache for timing performance tests (NEVER clears cache).
 
 Stages (use --stage to run individually):
   scrape    - Extract places from API, download images, fetch reviews
-              Saves to cache/scraped/{place_id}.json
   normalize - Translate text to English, normalize into DB-ready format
-              Reads from cache/scraped/, writes to cache/normalized/
   upload    - Upload images to R2, insert records to Supabase
-              Reads from cache/normalized/
 
 Usage:
     cd scripts/pipeline && uv run python pipeline.py --limit 10
@@ -47,9 +37,6 @@ Architecture:
   - R2 worker pool (32 threads, queue-based) for async image uploads
   - DB worker pool (8 threads, queue-based) for async database inserts
   - Worker pools are KEPT because removing them makes the pipeline 5-10x slower
-    (see PIPELINE_DESIGN.md for detailed explanation)
-
-Author: Generated following PIPELINE_DESIGN.md
 """
 
 from __future__ import annotations
@@ -67,20 +54,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
 
-# Ensure pipeline package is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from frozendict import frozendict
+
 from api_client import Park4NightAPI  # type: ignore[import-not-found]
-from cache import (  # type: ignore[import-not-found]
-    get_cache_stats,
-    norm_cache_get,
-    norm_cache_set,
-    place_completed_get,
-    place_completed_set,
-    scrape_cache_get,
-    scrape_cache_list,
-    scrape_cache_set,
-)
+from cache import cache  # type: ignore[import-not-found]
 from config import (  # type: ignore[import-not-found]
     ACTIVITY_CODES,
     PLACE_TYPE_CODES,
@@ -104,7 +83,6 @@ from r2_worker import R2UploadTask, R2WorkerPool  # type: ignore[import-not-foun
 from translator import (  # type: ignore[import-not-found]
     ensure_packages_installed,
     preload_models,
-    save_cache,
     translate_batch,
 )
 
@@ -112,28 +90,18 @@ logger = logging.getLogger("pipeline")
 
 # ── Globals (for signal handling) ─────────────────────────────────────
 _r2_config: dict | None = None
-_no_disk_cache_global = False
 _stats_lock = threading.Lock()
 _stats: dict[str, int] = {
     "places_processed": 0,
     "images_downloaded": 0,
     "images_uploaded_r2": 0,
-    "translations_cached": 0,
     "db_inserts": 0,
-    "cache_hits": 0,
-    "cache_misses": 0,
     "errors": 0,
 }
 
-# Per-stage timing accumulators (for aggregate timing report at end).
-# Why: each worker returns per-place timing; main process accumulates here
-# to show which stage is the bottleneck when the pipeline takes hours.
 _stage_timers: dict[str, StageTimer] = {}
 
-# Per-worker-process shared instances (created in _worker_init, used in worker functions).
-# Why: each worker process has its own globals (spawn method). Creating the API client
-# and ImageDownloader once per process reuses TCP connections (connection pooling)
-# and avoids creating a new requests.Session per place. This is 3-5x faster.
+# Per-worker-process shared instances (created in _worker_init).
 _worker_api: Park4NightAPI | None = None
 _worker_downloader: ImageDownloader | None = None
 
@@ -147,11 +115,10 @@ def _str(value: Any) -> str:
 
 
 # ── Stage 1: Extract (structure raw API data) ────────────────────────
-def extract_place_data(place: dict) -> dict | None:
+def extract_place_data(place: dict | frozendict) -> dict | None:
     """Structure raw API data into a clean place dict.
 
     Pure function: no I/O, no cache, no side effects.
-    Returns structured place dict ready for image download, or None on failure.
     """
     place_id = int(place.get("id") or 0)
     if not place_id:
@@ -209,7 +176,7 @@ def extract_place_data(place: dict) -> dict | None:
         },
         "services": services,
         "activities": activities,
-        "photos": [],  # populated by download_images
+        "photos": [],
         "rating": (float(place.get("note_moyenne", 0)) if place.get("note_moyenne") else None),
         "review_count": int(place.get("nb_commentaires") or 0),
         "photo_count": int(place.get("nb_photos") or 0),
@@ -232,15 +199,7 @@ def extract_place_data(place: dict) -> dict | None:
 
 # ── Stage 2: Download images ─────────────────────────────────────────
 def download_images(place: dict, downloader: ImageDownloader) -> dict:
-    """Download photos for a place. Updates place["photos"] in-place.
-
-    Disk cache: images are saved to data/images/places/{id}/.
-    If .webp file already exists, download is skipped (unless no_disk_cache).
-
-    Note: does NOT update _stats here — this function runs in a worker
-    process (spawn), and threading.Lock does not work across processes.
-    Stats are tracked by the main process from worker results instead.
-    """
+    """Download photos for a place. Updates place["photos"] in-place."""
     place_id = place["id"]
     raw_photos = place.get("_raw_photos", [])
     photos = downloader.download_place_photos(place_id, raw_photos)
@@ -250,10 +209,7 @@ def download_images(place: dict, downloader: ImageDownloader) -> dict:
 
 # ── Stage 3: Fetch reviews ───────────────────────────────────────────
 def fetch_reviews(place: dict, api: Park4NightAPI) -> dict:
-    """Fetch reviews for a place from API (with disk cache).
-
-    If reviews are cached on disk, returns immediately without HTTP request.
-    """
+    """Fetch reviews for a place from API (cached via @api_cache.memo)."""
     place_id = place["id"]
     reviews = api.get_reviews(place_id)
     place["reviews"] = reviews
@@ -261,19 +217,12 @@ def fetch_reviews(place: dict, api: Park4NightAPI) -> dict:
 
 
 # ── Stage 4: Translate ───────────────────────────────────────────────
-def stage_translate(place: dict, no_disk_cache: bool = False) -> dict:
+def stage_translate(place: dict) -> dict:
     """Translate all non-English strings for a single place + reviews.
 
-    Uses persistent disk cache: already-translated strings are loaded
-    from disk at startup. Re-running the pipeline does not re-translate
-    cached strings.
-
-    Applies translations directly to the place dict:
-      - descriptions["translated"] = English translation
-      - pricing values translated in-place
-      - review text translated: {"default": English, "_original": original}
+    Uses @translations_cache.memoize() on _do_translate() — already-cached
+    strings return instantly without re-running argos-translate.
     """
-    # Collect (text, src_lang) pairs to translate
     texts_to_translate: list[tuple[str, str]] = []
 
     raw_desc = place.get("descriptions", {})
@@ -286,31 +235,18 @@ def stage_translate(place: dict, no_disk_cache: bool = False) -> dict:
     if isinstance(raw_pricing, dict):
         for value in raw_pricing.values():
             val = (str(value) or "").strip().lower()
-            if val and val not in (
-                "free",
-                "paid",
-                "on request",
-                "gratuit",
-                "payant",
-            ):
+            if val and val not in ("free", "paid", "on request", "gratuit", "payant"):
                 texts_to_translate.append((val, "fr"))
 
-    # Collect review text to translate (always French)
     reviews = place.get("reviews", [])
     for review in reviews:
         text = review.get("text", "")
         if text and str(text).strip():
             texts_to_translate.append((str(text).strip(), "fr"))
 
-    # Translate (parallel, uses persistent disk cache)
-    # Note: do NOT update _stats here — this function runs in a worker process
-    # (spawn) and threading.Lock does not work across processes.
     if texts_to_translate:
-        translations = translate_batch(
-            texts_to_translate, max_workers=8, no_disk_cache=no_disk_cache
-        )
+        translations = translate_batch(texts_to_translate, max_workers=8)
 
-        # Apply translations to descriptions
         if isinstance(raw_desc, dict):
             translated_desc = {}
             for lang, text in raw_desc.items():
@@ -322,14 +258,12 @@ def stage_translate(place: dict, no_disk_cache: bool = False) -> dict:
             if "translated" in translated_desc:
                 place["descriptions"]["translated"] = translated_desc["translated"]
 
-        # Apply translations to pricing
         if isinstance(raw_pricing, dict):
             for key, value in raw_pricing.items():
                 val = (str(value) or "").strip().lower()
                 if val and val in translations:
                     raw_pricing[key] = translations[val]
 
-        # Apply translations to reviews
         for review in reviews:
             text = review.get("text", "")
             if text and str(text).strip():
@@ -344,46 +278,19 @@ def stage_translate(place: dict, no_disk_cache: bool = False) -> dict:
 
 
 # ── Stage 5: Normalize ───────────────────────────────────────────────
-def stage_normalize(place: dict) -> tuple[dict | None, bool]:
-    """Normalize place + reviews into clean DB-ready records.
-
-    No translation — all text must be pre-translated by stage_translate.
-    Uses disk cache: if normalized output exists on disk, returns cached.
-    Returns (normalized_place, cache_hit) where cache_hit indicates whether
-    the result came from disk cache. The caller (main process) tracks
-    cache_hits/cache_misses stats — this function runs in a worker process
-    (spawn) where threading.Lock does not work across processes.
-    """
-    place_id = place["id"]
-
-    # Check normalization cache
-    cached = norm_cache_get(place_id)
-    if cached is not None:
-        # Still need to normalize reviews (they're not cached separately)
-        normalized_reviews = []
-        for review in place.get("reviews", []):
-            nr = normalize_review(review)
-            if nr:
-                normalized_reviews.append(nr)
-        cached["reviews"] = normalized_reviews
-        return cached, True  # cache hit
-
+def stage_normalize(place: dict) -> dict | None:
+    """Normalize place + reviews into clean DB-ready records."""
     normalized = normalize_place(place)
     if not normalized:
-        return None, False  # cache miss
+        return None
 
-    # Normalize reviews
     normalized_reviews = []
     for review in place.get("reviews", []):
         normalized_review = normalize_review(review)
         if normalized_review:
             normalized_reviews.append(normalized_review)
     normalized["reviews"] = normalized_reviews
-
-    # Cache normalized data
-    norm_cache_set(place_id, normalized)
-
-    return normalized, False  # cache miss
+    return normalized
 
 
 # ── Stage 6: Enqueue R2 upload (non-blocking) ────────────────────────
@@ -391,21 +298,9 @@ def stage_enqueue_r2(
     place: dict,
     r2_pool: R2WorkerPool | None,
 ) -> R2UploadTask | None:
-    """Enqueue images for async R2 upload. Non-blocking.
-
-    Worker threads dequeue and upload in parallel, then update the photos
-    dict with R2 URLs. Returns the R2UploadTask so the caller can wait
-    for the done_event before enqueuing the DB insert.
-
-    Why return the task: the DB insert needs R2 URLs in the photos dict.
-    If we enqueue DB immediately (fire-and-forget), the DB worker might
-    process the place before R2 finishes — resulting in local file paths
-    in the database instead of R2 URLs. Returning the task lets the caller
-    wait for THIS place's upload before proceeding to DB.
-    """
+    """Enqueue images for async R2 upload. Non-blocking."""
     if r2_pool is None:
         return None
-
     photos = place.get("photos", [])
     if photos:
         return r2_pool.enqueue(place["id"], photos)
@@ -417,12 +312,7 @@ def stage_enqueue_db(
     place: dict,
     db_pool: DBWorkerPool | None,
 ) -> None:
-    """Enqueue a place + reviews for async DB insert. Non-blocking.
-
-    Place and reviews MUST already be normalized by the caller.
-    If db_pool is None (DATABASE_URL not set), logs a warning and skips.
-    This allows the pipeline to run locally for testing without a DB.
-    """
+    """Enqueue a place + reviews for async DB insert. Non-blocking."""
     if db_pool is None:
         logger.warning(f"Skipping DB insert for place {place.get('id')}: DATABASE_URL not set")
         return
@@ -439,18 +329,7 @@ def place_source(
 ) -> Any:
     """Generator that yields raw places from the Park4Night API.
 
-    Iterates through all grid points, fetches places from each point,
-    and yields unique places (deduplicated by ID).
-
-    Disk cache: API responses are cached per grid point. Re-running
-    the pipeline finds cached responses and skips HTTP requests.
-
-    Args:
-        api: Park4NightAPI client (with disk cache).
-        limit: Maximum number of places to yield (None = no limit).
-
-    Yields:
-        (place_dict, grid_point) tuples where grid_point is (lat, lng).
+    API responses cached via @api_cache.memoize() on fetch_places_for_grid.
     """
     grid_points = Park4NightAPI.generate_grid_points()
     total_yielded = 0
@@ -480,191 +359,145 @@ def place_source(
 
 # ── Signal Handling ──────────────────────────────────────────────────
 def _handle_signal(signum: int, frame: Any) -> None:
-    """Handle SIGINT/SIGTERM gracefully: save caches and exit."""
+    """Handle SIGINT/SIGTERM gracefully."""
     sig_name = signal.Signals(signum).name
-    console.print(f"\n[bold yellow]Received {sig_name}, saving caches...[/bold yellow]")
-    save_cache()  # Save translation cache to disk
-    console.print("[bold green]✓ Caches saved.[/bold green]")
+    console.print(f"\n[bold yellow]Received {sig_name}, exiting...[/bold yellow]")
     sys.exit(0)
 
 
 # ── Worker initializer (called once per process) ─────────────────────
-def _worker_init(no_disk_cache: bool, preload_translation: bool = True) -> None:
-    """Initialize worker process: preload argos models + create shared instances.
-
-    Called once when each process starts (spawn method).
-    Each process loads its own models — no shared state, no deadlock.
-
-    Args:
-        no_disk_cache: Whether to bypass disk caches (--no-disk-cache mode).
-            This is passed via initargs from the main process because spawn
-            starts a fresh interpreter where module-level globals are reset
-            to their defaults. Without this, --no-disk-cache would be ignored in
-            worker processes (API cache and image cache would still be used).
-        preload_translation: Whether to preload argos-translate models.
-            Set to False for the scrape stage (no translation needed) to save
-            ~100 seconds of model loading time per worker process.
-
-    Why create shared instances here:
-      Each worker process has its own globals (spawn method). Creating the
-      API client and ImageDownloader once per process reuses TCP connections
-      (connection pooling) and avoids creating a new requests.Session per place.
-      This is 3-5x faster than creating new instances per place.
-    """
-    global _worker_api, _worker_downloader, _no_disk_cache_global
-    _no_disk_cache_global = no_disk_cache  # Set correctly in worker (spawn resets globals)
+def _worker_init(preload_translation: bool = True) -> None:
+    """Initialize worker process: preload argos models + create shared instances."""
+    global _worker_api, _worker_downloader
     if preload_translation:
         preload_models()
-    _worker_api = Park4NightAPI(no_disk_cache=no_disk_cache)
-    _worker_downloader = ImageDownloader(no_disk_cache=no_disk_cache)
+    _worker_api = Park4NightAPI()
+    _worker_downloader = ImageDownloader()
 
 
-# ── Scrape worker (must be top-level for pickling) ──────────────────
-def _worker_scrape_place(
-    raw_place: dict,
-    photos: list[dict],
-    no_disk_cache: bool = False,
+# ── Scrape worker ────────────────────────────────────────────────────
+
+def _scrape_place_impl(
+    place_id: int,
+    raw_place: frozendict,
 ) -> dict:
-    """Scrape a single place: extract → download images → fetch reviews.
+    """Raw scrape — no caching."""
+    assert _worker_api is not None, "Park4NightAPI not initialized"
+    assert _worker_downloader is not None, "ImageDownloader not initialized"
 
-    Saves complete scraped data to cache/scraped/{place_id}.json.
-    Used by --stage scrape.
-
-    Returns result dict with place_id, elapsed time, and scraped place data.
-    """
-    place_id = int(raw_place.get("id") or 0)
-    place_start = time.time()
-
-    # Check if already scraped (disk cache)
-    if not no_disk_cache:
-        cached = scrape_cache_get(place_id)
-        if cached is not None:
-            return {
-                "place_id": place_id,
-                "elapsed": 0,
-                "cached": True,
-                "place": cached,
-            }
-
-    # ── Stage 1: Extract ─
     place = extract_place_data(raw_place)
     if not place:
         return {"error": f"Failed to extract place {place_id}"}
 
-    # ── Stage 2: Download images ─
-    place["_raw_photos"] = photos
-    assert _worker_downloader is not None, "ImageDownloader not initialized"
+    place["_raw_photos"] = raw_place.get("photos", [])
     place = download_images(place, _worker_downloader)
-
-    # ── Stage 3: Fetch reviews ─
-    assert _worker_api is not None, "Park4NightAPI not initialized"
     place = fetch_reviews(place, _worker_api)
-
-    # Save to scrape cache (so normalize stage can read it)
-    # Remove _raw_photos before caching (not needed by normalize stage)
     place.pop("_raw_photos", None)
-    scrape_cache_set(place_id, place)
 
-    elapsed = time.time() - place_start
-    return {
-        "place_id": place_id,
-        "elapsed": elapsed,
-        "cached": False,
-        "place": place,
-    }
+    return place
 
 
-# ── Normalize worker (must be top-level for pickling) ────────────────
-def _worker_normalize_place(
+@cache.memoize()
+def _scrape_place_cached(
     place_id: int,
-    no_disk_cache: bool = False,
+    raw_place: frozendict,
 ) -> dict:
-    """Normalize a single place: translate → normalize.
+    return _scrape_place_impl(place_id, raw_place)
 
-    Reads from cache/scraped/{place_id}.json.
-    Saves normalized data to cache/normalized/{place_id}.json.
-    Used by --stage normalize.
 
-    Returns result dict with place_id, elapsed time, and normalized place data.
-    """
-    place_start = time.time()
+def _worker_scrape_place(
+    place_id: int,
+    raw_place: frozendict,
+    use_cache: bool = True,
+) -> dict:
+    """Scrape a single place: extract → download images → fetch reviews."""
+    if use_cache:
+        return _scrape_place_cached(place_id, raw_place)
+    return _scrape_place_impl(place_id, raw_place)
 
-    # Read from scrape cache
-    place = scrape_cache_get(place_id)
-    if place is None:
-        return {"error": f"Place {place_id} not found in scrape cache (run --stage scrape first)"}
 
-    # ── Stage 4: Translate ─
-    place = stage_translate(place, no_disk_cache=no_disk_cache)
+# ── Normalize worker ─────────────────────────────────────────────────
 
-    # ── Stage 5: Normalize ─
-    normalized, cache_hit = stage_normalize(place)
+def _normalize_place_impl(
+    place_id: int,
+    raw_place: frozendict,
+) -> dict:
+    """Raw normalize — no caching."""
+    place = extract_place_data(raw_place)
+    if not place:
+        return {"error": f"Failed to extract place {place_id}"}
+
+    place["photos"] = raw_place.get("photos", [])
+    place["reviews"] = []  # reviews fetched separately
+
+    assert _worker_api is not None
+    place = fetch_reviews(place, _worker_api)
+    place = stage_translate(place)
+
+    normalized = stage_normalize(place)
     if not normalized:
         return {"error": f"Failed to normalize place {place_id}"}
 
-    elapsed = time.time() - place_start
-    return {
-        "place_id": place_id,
-        "elapsed": elapsed,
-        "cached": cache_hit,
-        "place": normalized,
-    }
+    return normalized
 
 
-# ── Worker function (must be top-level for pickling) ─────────────────
-def _worker_process_place(
-    raw_place: dict,
-    photos: list[dict],
-    no_disk_cache: bool = False,
+@cache.memoize()
+def _normalize_place_cached(
+    place_id: int,
+    raw_place: frozendict,
 ) -> dict:
-    """Process a single place in a separate worker process.
+    return _normalize_place_impl(place_id, raw_place)
 
-    Each process gets its own argos-translate instance (no contention).
-    Does: extract → download → fetch reviews → translate → normalize
-    Returns place data + timing (R2/DB enqueueing done by main process).
 
-    Uses shared API client and ImageDownloader instances created in
-    _worker_init() — reuses TCP connections across places (3-5x faster).
+def _worker_normalize_place(
+    place_id: int,
+    raw_place: frozendict,
+    use_cache: bool = True,
+) -> dict:
+    """Normalize a single place: translate → normalize."""
+    if use_cache:
+        return _normalize_place_cached(place_id, raw_place)
+    return _normalize_place_impl(place_id, raw_place)
 
-    Disk cache is used at every stage:
-      - API responses cached per grid point
-      - Images cached as .webp files on disk
-      - Translations cached in translations.json
-      - Normalized data cached per place ID
-    """
-    place_id = int(raw_place.get("id") or 0)
+
+# ── Full pipeline worker ─────────────────────────────────────────────
+
+def _process_place_impl(
+    place_id: int,
+    raw_place: frozendict,
+) -> dict:
+    """Raw process — no caching."""
     place_start = time.time()
+    raw_place_data = raw_place
 
     # ── Stage 1: Extract ─
     t0 = time.time()
-    place = extract_place_data(raw_place)
+    place = extract_place_data(raw_place_data)
     extract_time = time.time() - t0
     if not place:
         return {"error": f"Failed to extract place {place_id}"}
 
     # ── Stage 2: Download images ─
     t0 = time.time()
-    place["_raw_photos"] = photos
-    # Use shared ImageDownloader from _worker_init (reuses TCP connections)
-    assert _worker_downloader is not None, "ImageDownloader not initialized"
+    place["_raw_photos"] = raw_place_data.get("photos", [])
+    assert _worker_downloader is not None
     place = download_images(place, _worker_downloader)
     download_time = time.time() - t0
 
     # ── Stage 3: Fetch reviews ─
     t0 = time.time()
-    # Use shared API client from _worker_init (reuses TCP connections)
-    assert _worker_api is not None, "Park4NightAPI not initialized"
+    assert _worker_api is not None
     place = fetch_reviews(place, _worker_api)
     fetch_time = time.time() - t0
 
     # ── Stage 4: Translate ─
     t0 = time.time()
-    place = stage_translate(place, no_disk_cache=no_disk_cache)
+    place = stage_translate(place)
     translate_time = time.time() - t0
 
     # ── Stage 5: Normalize ─
     t0 = time.time()
-    place, cache_hit = stage_normalize(place)
+    place = stage_normalize(place)
     normalize_time = time.time() - t0
     if not place:
         return {"error": f"Failed to normalize place {place_id}"}
@@ -678,9 +511,27 @@ def _worker_process_place(
         "fetch": fetch_time,
         "translate": translate_time,
         "normalize": normalize_time,
-        "cache_hit": cache_hit,  # for main process to track cache stats
-        "place": place,  # return normalized place for main process
+        "place": place,
     }
+
+
+@cache.memoize()
+def _process_place_cached(
+    place_id: int,
+    raw_place: frozendict,
+) -> dict:
+    return _process_place_impl(place_id, raw_place)
+
+
+def _worker_process_place(
+    place_id: int,
+    raw_place: frozendict,
+    use_cache: bool = True,
+) -> dict:
+    """Process a single place in a separate worker process."""
+    if use_cache:
+        return _process_place_cached(place_id, raw_place)
+    return _process_place_impl(place_id, raw_place)
 
 
 # ── Stage: Scrape ────────────────────────────────────────────────────
@@ -688,20 +539,18 @@ def run_scrape_stage(
     limit: int | None = None,
     no_disk_cache: bool = False,
     dry_run: bool = False,
-) -> None:
+) -> dict[int, frozendict]:
     """Run the scrape stage: extract → download images → fetch reviews.
 
-    Saves complete scraped data to cache/scraped/{place_id}.json.
-    This data is read by the normalize stage.
-
-    Why separate stage:
-      - Allows scraping without needing R2/DB credentials
-      - Can be re-run independently if scrape data is corrupted
-      - Progress is saved to disk between runs (idempotent)
+    Returns:
+        place_id -> raw_place frozendict mapping for downstream stages.
     """
     global _stage_timers
 
     num_workers = 16
+
+    if no_disk_cache:
+        console.print("[yellow]Bypassing disk cache (--no-disk-cache mode)[/yellow]")
 
     console.print("\n[bold cyan]Starting scrape stage[/bold cyan]")
     if limit:
@@ -709,25 +558,24 @@ def run_scrape_stage(
 
     if dry_run:
         console.print("[bold yellow]=== DRY RUN — stopping here ===[/bold yellow]")
-        return
+        return {}
 
     # Collect places from API
     console.print("\n[bold]Scrape: Extracting places from API...[/bold]")
     extract_start = time.time()
     extract_tracker = ProgressTracker("Extracting places", total=limit or 0)
     places_to_process = []
-    for place, grid_point in place_source(Park4NightAPI(no_disk_cache=no_disk_cache), limit=limit):
+    for place, grid_point in place_source(Park4NightAPI(), limit=limit):
         places_to_process.append((place, grid_point))
         extract_tracker.update(len(places_to_process))
     extract_tracker.finish()
     extract_elapsed = time.time() - extract_start
     total_places = len(places_to_process)
     console.print(f"  [green]✓ Found {total_places} places in {extract_elapsed:.1f}s[/green]")
-    logger.info(f"Scrape stage: {total_places} places found in {extract_elapsed:.1f}s")
 
     if not total_places:
         console.print("[yellow]No places to process.[/yellow]")
-        return
+        return {}
 
     _stage_timers = {
         "extract": StageTimer("Extract"),
@@ -735,7 +583,6 @@ def run_scrape_stage(
         "reviews": StageTimer("Reviews"),
     }
 
-    # Process places in parallel
     console.print("\n[bold]Scrape: Downloading images + fetching reviews...[/bold]")
     pipeline_start = time.time()
     process_tracker = ProgressTracker("Scraping places", total=total_places)
@@ -743,52 +590,22 @@ def run_scrape_stage(
         task = progress.add_task("Scraping", total=total_places)
         place_num = 0
         errors = 0
-        cached = 0
 
-        # Check scrape cache BEFORE submitting to executor.
-        # Why: each worker process takes ~100s to spawn (preload_models loads
-        # 30+ argos-translate models). If we submit all places to the executor
-        # and check the cache inside the worker, we waste 100s per worker just
-        # to find out the place is already cached. Checking here means cached
-        # places are handled instantly in the main process with zero spawn cost.
-        to_process = []
-        for raw_place, grid_point in places_to_process:
-            place_id = int(raw_place.get("id") or 0)
-            if not no_disk_cache:
-                cached_data = scrape_cache_get(place_id)
-                if cached_data is not None:
-                    cached += 1
-                    place_num += 1
-                    with _stats_lock:
-                        _stats["places_processed"] += 1
-                        _stats["images_downloaded"] += len(cached_data.get("photos", []))
-                    console.print(
-                        f"  [bold yellow]✓ Place {place_id} cached (skipped)[/bold yellow]"
-                    )
-                    logger.info(
-                        f"Scrape place {place_num}/{total_places} ({place_id}): cached (skipped)"
-                    )
-                    progress.update(task, completed=place_num)
-                    process_tracker.update(place_num)
-                    continue
-            to_process.append((raw_place, grid_point))
-
-        # Only spawn workers for places that actually need work.
-        # Use preload_translation=False because scrape stage doesn't translate.
         multiprocessing.set_start_method("spawn", force=True)
+        scraped_results: dict[int, frozendict] = {}
         with ProcessPoolExecutor(
             max_workers=num_workers,
             initializer=_worker_init,
-            initargs=(no_disk_cache, False),  # no_disk_cache, preload_translation=False
+            initargs=(False,),  # preload_translation=False
         ) as executor:
             futures = {
                 executor.submit(
                     _worker_scrape_place,
-                    raw_place,
-                    raw_place.get("photos", []),
-                    no_disk_cache,
+                    int(raw_place.get("id") or 0),
+                    frozendict(raw_place),
+                    not no_disk_cache,
                 ): (raw_place, grid_point)
-                for raw_place, grid_point in to_process
+                for raw_place, grid_point in places_to_process
             }
 
             for future in as_completed(futures):
@@ -805,23 +622,12 @@ def run_scrape_stage(
                         with _stats_lock:
                             _stats["errors"] += 1
                     else:
-                        if result.get("cached"):
-                            cached += 1
                         with _stats_lock:
                             _stats["places_processed"] += 1
-                            _stats["images_downloaded"] += len(
-                                result.get("place", {}).get("photos", [])
-                            )
+                            _stats["images_downloaded"] += len(result.get("photos", []))
+                            scraped_results[place_id] = frozendict(raw_place)
 
-                        console.print(
-                            f"  [bold green]✓ Place {result['place_id']} "
-                            f"scraped ({result['elapsed']:.2f}s)[/bold green]"
-                        )
-                        logger.info(
-                            f"Scrape place {place_num}/{total_places} "
-                            f"({result['place_id']}): "
-                            f"elapsed={result['elapsed']:.3f}s"
-                        )
+                        console.print(f"  [bold green]✓ Place {place_id} scraped[/bold green]")
 
                 except Exception as e:
                     console.print(f"  [red]✗ Place {place_id} crashed: {e}[/red]")
@@ -834,43 +640,45 @@ def run_scrape_stage(
 
     process_tracker.finish()
 
-    # Summary
     total_elapsed = time.time() - pipeline_start
     console.print("\n[bold green]✓ Scrape stage complete:[/bold green]")
     console.print(
         f"  Places: [green]{_stats['places_processed']}[/green] processed, "
-        f"[yellow]{cached}[/yellow] cached, "
         f"[red]{errors}[/red] errors"
     )
     console.print(f"  Images: [green]{_stats['images_downloaded']}[/green] downloaded")
     console.print(f"  Total time: [cyan]{total_elapsed:.1f}s[/cyan]")
-    logger.info(
-        f"Scrape stage complete: {_stats['places_processed']} places in {total_elapsed:.1f}s"
-    )
 
     if errors:
         console.print(f"\n[bold red]{errors} places had errors[/bold red]")
 
+    return scraped_results
+
 
 # ── Stage: Normalize ─────────────────────────────────────────────────
 def run_normalize_stage(
+    scraped_data: dict[int, frozendict],
     limit: int | None = None,
     no_disk_cache: bool = False,
     dry_run: bool = False,
-) -> None:
+) -> dict[int, dict]:
     """Run the normalize stage: translate → normalize.
 
-    Reads from cache/scraped/{place_id}.json.
-    Saves normalized data to cache/normalized/{place_id}.json.
+    Args:
+        scraped_data: place_id -> raw_place data from scrape stage.
+        limit: Max places to process.
+        no_disk_cache: Bypass disk cache for timing.
+        dry_run: Show what would be done.
 
-    Why separate stage:
-      - Can re-normalize after fixing the normalizer (without re-scraping)
-      - Translation cache ensures re-runs are fast
-      - Progress is saved to disk between runs (idempotent)
+    Returns:
+        place_id -> normalized place data.
     """
     global _stage_timers
 
     num_workers = 16
+
+    if no_disk_cache:
+        console.print("[yellow]Bypassing disk cache (--no-disk-cache mode)[/yellow]")
 
     console.print("\n[bold cyan]Starting normalize stage[/bold cyan]")
     if limit:
@@ -878,21 +686,18 @@ def run_normalize_stage(
 
     if dry_run:
         console.print("[bold yellow]=== DRY RUN — stopping here ===[/bold yellow]")
-        return
+        return {}
 
-    # Get list of scraped place IDs
-    scraped_ids = scrape_cache_list()
+    scraped_ids = list(scraped_data.keys())
     if not scraped_ids:
-        console.print("[yellow]No scraped places found. Run --stage scrape first.[/yellow]")
-        return
+        console.print("[yellow]No scraped places provided.[/yellow]")
+        return {}
 
-    # Apply limit
     if limit:
         scraped_ids = scraped_ids[:limit]
 
     console.print(f"  [bold blue]{len(scraped_ids)}[/bold blue] places to normalize")
 
-    # Install translation packages
     ensure_packages_installed()
 
     _stage_timers = {
@@ -900,50 +705,29 @@ def run_normalize_stage(
         "normalize": StageTimer("Normalize"),
     }
 
-    # Process places in parallel
     console.print("\n[bold]Normalize: Translating + normalizing...[/bold]")
     pipeline_start = time.time()
+    normalized_results: dict[int, dict] = {}
     process_tracker = ProgressTracker("Normalizing places", total=len(scraped_ids))
     with create_progress("Normalizing places", total=len(scraped_ids)) as progress:
         task = progress.add_task("Normalizing", total=len(scraped_ids))
         place_num = 0
         errors = 0
-        cached = 0
 
-        # Check norm cache BEFORE submitting to executor.
-        # Each worker takes ~100s to spawn (preload_models loads 30+ models).
-        # Checking here means cached places are handled instantly with zero spawn cost.
-        to_process = []
-        for place_id in scraped_ids:
-            if not no_disk_cache:
-                cached_data = norm_cache_get(place_id)
-                if cached_data is not None:
-                    cached += 1
-                    place_num += 1
-                    with _stats_lock:
-                        _stats["places_processed"] += 1
-                    console.print(
-                        f"  [bold yellow]✓ Place {place_id} cached (skipped)[/bold yellow]"
-                    )
-                    logger.info(
-                        f"Normalize place {place_num}/{len(scraped_ids)} "
-                        f"({place_id}): cached (skipped)"
-                    )
-                    progress.update(task, completed=place_num)
-                    process_tracker.update(place_num)
-                    continue
-            to_process.append(place_id)
-
-        # Only spawn workers for places that actually need work.
         multiprocessing.set_start_method("spawn", force=True)
         with ProcessPoolExecutor(
             max_workers=num_workers,
             initializer=_worker_init,
-            initargs=(no_disk_cache, True),  # no_disk_cache, preload_translation=True
+            initargs=(True,),  # preload_translation=True
         ) as executor:
             futures = {
-                executor.submit(_worker_normalize_place, place_id, no_disk_cache): place_id
-                for place_id in to_process
+                executor.submit(
+                    _worker_normalize_place,
+                    place_id,
+                    scraped_data[place_id],
+                    not no_disk_cache,
+                ): place_id
+                for place_id in scraped_ids
             }
 
             for future in as_completed(futures):
@@ -959,20 +743,11 @@ def run_normalize_stage(
                         with _stats_lock:
                             _stats["errors"] += 1
                     else:
-                        if result.get("cached"):
-                            cached += 1
                         with _stats_lock:
                             _stats["places_processed"] += 1
+                            normalized_results[place_id] = result
 
-                        console.print(
-                            f"  [bold green]✓ Place {result['place_id']} "
-                            f"normalized ({result['elapsed']:.2f}s)[/bold green]"
-                        )
-                        logger.info(
-                            f"Normalize place {place_num}/{len(scraped_ids)} "
-                            f"({result['place_id']}): "
-                            f"elapsed={result['elapsed']:.3f}s"
-                        )
+                        console.print(f"  [bold green]✓ Place {place_id} normalized[/bold green]")
 
                 except Exception as e:
                     console.print(f"  [red]✗ Place {place_id} crashed: {e}[/red]")
@@ -985,55 +760,44 @@ def run_normalize_stage(
 
     process_tracker.finish()
 
-    # Save translation cache
-    save_cache()
-
-    # Summary
     total_elapsed = time.time() - pipeline_start
     console.print("\n[bold green]✓ Normalize stage complete:[/bold green]")
     console.print(
         f"  Places: [green]{_stats['places_processed']}[/green] processed, "
-        f"[yellow]{cached}[/yellow] cached, "
         f"[red]{errors}[/red] errors"
     )
     console.print(f"  Total time: [cyan]{total_elapsed:.1f}s[/cyan]")
-    logger.info(
-        f"Normalize stage complete: {_stats['places_processed']} places in {total_elapsed:.1f}s"
-    )
 
     if errors:
         console.print(f"\n[bold red]{errors} places had errors[/bold red]")
 
+    return normalized_results
+
 
 # ── Stage: Upload ────────────────────────────────────────────────────
 def run_upload_stage(
+    normalized_data: dict[int, dict],
     limit: int | None = None,
     no_disk_cache: bool = False,
     dry_run: bool = False,
 ) -> None:
     """Run the upload stage: upload images to R2 + insert records to Supabase.
 
-    Reads from cache/normalized/{place_id}.json.
-    Uploads images to R2, then inserts place + review records to DB.
-
-    Why separate stage:
-      - Can re-upload after fixing R2/DB configuration
-      - R2 head_object check ensures idempotency (skips existing images)
-      - DB upserts ensure idempotency (updates existing records)
-
-    Verification:
-      After upload, verifies that places exist in Supabase and images
-      exist in R2. Reports any mismatches.
+    Args:
+        normalized_data: place_id -> normalized place data from normalize stage.
+        limit: Max places to process.
+        no_disk_cache: Bypass disk cache for timing.
+        dry_run: Show what would be done.
     """
     global _stage_timers
 
-    # Setup R2 worker pool
     r2_pool: R2WorkerPool | None = None
     if _r2_config is not None:
-        r2_pool = R2WorkerPool(_r2_config, no_disk_cache=no_disk_cache, total_expected=limit or 0)
+        r2_pool = R2WorkerPool(
+            _r2_config, no_cache=no_disk_cache, total_expected=limit or 0
+        )
         r2_pool.start()
 
-    # Setup DB worker pool
     db_pool: DBWorkerPool | None = None
     if os.environ.get("DATABASE_URL"):
         db_pool = DBWorkerPool(total_expected=limit or 0)
@@ -1060,35 +824,15 @@ def run_upload_stage(
         console.print("[red]No R2 or DB configured. Nothing to upload.[/red]")
         return
 
-    # Get list of normalized place IDs
-    normalized_ids = []
-    norm_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "data",
-        "cache",
-        "normalized",
-    )
-    if os.path.exists(norm_dir):
-        for filename in os.listdir(norm_dir):
-            if filename.endswith(".json"):
-                try:
-                    normalized_ids.append(int(filename.removesuffix(".json")))
-                except ValueError:
-                    pass
-    normalized_ids.sort()
-
+    normalized_ids = sorted(normalized_data.keys())
     if not normalized_ids:
-        console.print(
-            "[yellow]No normalized places found. "
-            "Run --stage normalize (or full pipeline) first.[/yellow]"
-        )
+        console.print("[yellow]No normalized places provided.[/yellow]")
         if r2_pool is not None:
             r2_pool.shutdown()
         if db_pool is not None:
             db_pool.shutdown()
         return
 
-    # Apply limit
     if limit:
         normalized_ids = normalized_ids[:limit]
 
@@ -1099,7 +843,6 @@ def run_upload_stage(
         "db_insert": StageTimer("DB Insert"),
     }
 
-    # Process places sequentially (R2+DB are async via worker pools)
     console.print("\n[bold]Upload: Uploading to R2 + inserting to DB...[/bold]")
     pipeline_start = time.time()
     process_tracker = ProgressTracker("Uploading places", total=len(normalized_ids))
@@ -1111,28 +854,9 @@ def run_upload_stage(
         for place_id in normalized_ids:
             place_num += 1
 
-            # Check if already fully completed (skip R2+DB re-upload)
-            if not no_disk_cache:
-                completed = place_completed_get(place_id)
-                if completed is not None:
-                    with _stats_lock:
-                        _stats["places_processed"] += 1
-                        _stats["cache_hits"] += 1
-                    console.print(
-                        f"  [bold green]✓ Place {place_id} completed (skipped)[/bold green]"
-                    )
-                    logger.info(
-                        f"Upload place {place_num}/{len(normalized_ids)} "
-                        f"({place_id}): completed (skipped)"
-                    )
-                    progress.update(task, completed=place_num)
-                    process_tracker.update(place_num)
-                    continue
-
-            # Load normalized place from cache
-            place = norm_cache_get(place_id)
+            place = normalized_data.get(place_id)
             if place is None:
-                console.print(f"  [red]✗ Place {place_id} not found in normalize cache[/red]")
+                console.print(f"  [red]✗ Place {place_id} not found in normalized data[/red]")
                 errors += 1
                 with _stats_lock:
                     _stats["errors"] += 1
@@ -1141,14 +865,12 @@ def run_upload_stage(
                 continue
 
             try:
-                # Enqueue R2 upload and wait for it
                 t0 = time.time()
                 r2_task = stage_enqueue_r2(place, r2_pool)
                 if r2_task is not None:
                     r2_task.done_event.wait()
                 r2_time = time.time() - t0
 
-                # Enqueue DB insert (non-blocking)
                 t0 = time.time()
                 stage_enqueue_db(place, db_pool)
                 db_time = time.time() - t0
@@ -1159,25 +881,9 @@ def run_upload_stage(
                     _stage_timers["r2_upload"].add(r2_time)
                     _stage_timers["db_insert"].add(db_time)
 
-                # Mark as fully completed so next run skips entirely
-                if not no_disk_cache:
-                    place_completed_set(
-                        place_id,
-                        {
-                            "completed_at": datetime.now(UTC).isoformat(),
-                            "photos": len(place.get("photos", [])),
-                            "reviews": len(place.get("reviews", [])),
-                        },
-                    )
-
                 console.print(
                     f"  [bold green]✓ Place {place_id} "
                     f"uploaded (r2={r2_time:.2f}s, db={db_time:.2f}s)[/bold green]"
-                )
-                logger.info(
-                    f"Upload place {place_num}/{len(normalized_ids)} "
-                    f"({place_id}): "
-                    f"r2={r2_time:.3f}s, db={db_time:.3f}s"
                 )
 
             except Exception as e:
@@ -1191,7 +897,6 @@ def run_upload_stage(
 
     process_tracker.finish()
 
-    # Wait for async uploads/inserts to complete
     console.print("\n[bold]Upload: Finalize[/bold] — waiting for async uploads...")
     finalize_start = time.time()
 
@@ -1200,7 +905,6 @@ def run_upload_stage(
     progress_done = threading.Event()
 
     def _update_progress() -> None:
-        """Background thread: read progress from worker pools and update bars."""
         while not progress_done.is_set():
             if r2_pool is not None and r2_progress_task is not None:
                 completed, total = r2_pool.get_progress()
@@ -1240,7 +944,6 @@ def run_upload_stage(
     finalize_elapsed = time.time() - finalize_start
     console.print(f"  [green]✓ Finalize complete in {finalize_elapsed:.1f}s[/green]")
 
-    # Summary
     total_elapsed = time.time() - pipeline_start
     console.print("\n[bold green]✓ Upload stage complete:[/bold green]")
     console.print(
@@ -1248,37 +951,20 @@ def run_upload_stage(
         f"[red]{errors}[/red] errors"
     )
     console.print(f"  Total time: [cyan]{total_elapsed:.1f}s[/cyan]")
-    logger.info(
-        f"Upload stage complete: {_stats['places_processed']} places in {total_elapsed:.1f}s"
-    )
 
     if errors:
         console.print(f"\n[bold red]{errors} places had errors[/bold red]")
 
-    # Verification step
-    console.print("\n[bold]Upload: Verifying results...[/bold]")
     verify_upload_stage(normalized_ids[:limit] if limit else normalized_ids)
 
 
 # ── Upload Verification ──────────────────────────────────────────────
 def verify_upload_stage(place_ids: list[int]) -> None:
-    """Verify that uploaded places exist in Supabase and images exist in R2.
-
-    Checks:
-      - Place records exist in Supabase for each place_id
-      - Image URLs in DB are accessible (R2 head_object check)
-      - Reports any mismatches
-
-    Why verify:
-      - Catches silent failures (e.g., R2 upload succeeded but DB insert failed)
-      - Ensures data consistency between R2 and Supabase
-      - Provides confidence before scaling up to full pipeline
-    """
+    """Verify that uploaded places exist in Supabase and images exist in R2."""
     if not place_ids:
         console.print("  [yellow]No places to verify[/yellow]")
         return
 
-    # Check if we have DB access
     if not os.environ.get("DATABASE_URL"):
         console.print("  [yellow]⚠ Skipping verification (no DATABASE_URL)[/yellow]")
         return
@@ -1291,7 +977,6 @@ def verify_upload_stage(place_ids: list[int]) -> None:
             os.environ.get("SUPABASE_KEY", ""),
         )
 
-        # Check places exist in DB
         console.print(f"  Checking {len(place_ids)} places in Supabase...")
         missing_places = 0
         for place_id in place_ids:
@@ -1321,48 +1006,32 @@ def run_full_pipeline(
 ) -> None:
     """Run the full parallel per-place pipeline using ProcessPoolExecutor.
 
-    Each worker process gets its own argos-translate instance (no contention).
-    Workers: extract → download → fetch reviews → translate → normalize
-    Main process: enqueue R2 → enqueue DB → save caches
-
-    Disk cache ensures idempotency:
-      - Re-running with same --limit: all stages find cached output → skip
-      - --no-disk-cache: bypass all caches → re-process everything
-
-    Progress tracking:
-      - Per-place progress bar (console + log file)
-      - Per-stage timing accumulators (for end-of-run report)
-      - Log progress every place (not every 10) for file visibility
+    Each worker is cached via @cache.memoize() — re-running with
+    the same args returns cached results instantly.
     """
-    global _no_disk_cache_global, _stage_timers
-    _no_disk_cache_global = no_disk_cache
+    global _stage_timers
 
-    # 16 workers: half of 32 cores. Translation (argos) is CPU-bound,
-    # so we don't saturate all cores — leaves room for I/O workers.
     num_workers = 16
 
-    # Setup R2 worker pool (async queue-based uploads)
-    # KEPT because removing it makes the pipeline 5-10x slower.
-    # 32 threads for parallel uploads to Cloudflare R2.
+    if no_disk_cache:
+        console.print("[yellow]Bypassing disk cache (--no-disk-cache mode)[/yellow]")
+
+    # Setup R2 worker pool
     r2_pool: R2WorkerPool | None = None
     if _r2_config is not None:
-        r2_pool = R2WorkerPool(_r2_config, no_disk_cache=no_disk_cache, total_expected=limit or 0)
+        r2_pool = R2WorkerPool(
+            _r2_config, no_cache=no_disk_cache, total_expected=limit or 0
+        )
         r2_pool.start()
 
-    # Setup DB worker pool (async queue-based inserts)
-    # KEPT because removing it makes the pipeline 5-10x slower.
-    # 8 threads for parallel inserts to Supabase PostgreSQL.
+    # Setup DB worker pool
     db_pool: DBWorkerPool | None = None
     if os.environ.get("DATABASE_URL"):
         db_pool = DBWorkerPool(total_expected=limit or 0)
         db_pool.start()
 
-    # Install translation packages once in main process before spawning.
-    # With spawn, each worker starts fresh — packages are installed globally
-    # (shared across processes), so this only needs to happen once.
     ensure_packages_installed()
 
-    # Progress tracking
     limit_label = f" (limit {limit})" if limit else ""
     workers_label = f" with {num_workers} workers"
     console.print(f"\n[bold cyan]Starting pipeline{limit_label}{workers_label}...[/bold cyan]\n")
@@ -1375,24 +1044,18 @@ def run_full_pipeline(
             db_pool.shutdown()
         return
 
-    # ── Phase 1: Extract (collect places from API) ─────────────────
-    # Collect all places to process (pre-fetch from generator).
-    # Each item is: (raw_place_dict, grid_point).
-    # This phase shows a progress bar for grid points scanned.
-    # ProgressTracker logs to file at regular intervals so you can
-    # tail the log and see progress when running in tmux/cron.
+    # ── Phase 1: Extract ─────────────────────────────────────────────
     console.print("\n[bold]Phase 1: Extract[/bold] — scanning grid points for places...")
     extract_start = time.time()
     extract_tracker = ProgressTracker("Extracting places", total=limit or 0)
     places_to_process = []
-    for place, grid_point in place_source(Park4NightAPI(no_disk_cache=no_disk_cache), limit=limit):
+    for place, grid_point in place_source(Park4NightAPI(), limit=limit):
         places_to_process.append((place, grid_point))
         extract_tracker.update(len(places_to_process))
     extract_tracker.finish()
     extract_elapsed = time.time() - extract_start
     total_places = len(places_to_process)
     console.print(f"  [green]✓ Found {total_places} places in {extract_elapsed:.1f}s[/green]")
-    logger.info(f"Extract phase: {total_places} places found in {extract_elapsed:.1f}s")
 
     if not total_places:
         console.print("[yellow]No places to process.[/yellow]")
@@ -1402,9 +1065,6 @@ def run_full_pipeline(
             db_pool.shutdown()
         return
 
-    # Initialize per-stage timing accumulators.
-    # Why: each worker returns per-place timing; main process accumulates
-    # here to produce the aggregate timing report at the end.
     _stage_timers = {
         "extract": StageTimer("Extract"),
         "download": StageTimer("Download"),
@@ -1415,109 +1075,29 @@ def run_full_pipeline(
         "db_insert": StageTimer("DB Insert"),
     }
 
-    # ── Phase 2: Process (extract → download → translate → normalize) ─
+    # ── Phase 2: Process ─────────────────────────────────────────────
     console.print("\n[bold]Phase 2: Process[/bold] — extract, download, translate, normalize...")
     pipeline_start = time.time()
-    # ProgressTracker logs to file at regular intervals so you can
-    # tail the log and see progress when running in tmux/cron.
     process_tracker = ProgressTracker("Processing places", total=total_places)
     with create_progress("Processing places", total=total_places) as progress:
         task = progress.add_task("Processing", total=total_places)
         place_num = 0
         errors = 0
 
-        # Check completed cache FIRST (place fully done end-to-end).
-        # If found, skip entirely — no worker spawn, no R2/DB re-upload.
-        # This is the fastest path: one file existence check and we're done.
-        # Then check norm cache (normalized data exists but maybe not uploaded yet).
-        # Each worker takes ~100s to spawn (preload_models loads 30+ models).
-        # Checking here means cached places are handled instantly with zero spawn cost.
-        to_process = []
-        for raw_place, grid_point in places_to_process:
-            place_id = int(raw_place.get("id") or 0)
-
-            # Fast path: place already completed all stages (scrape → normalize → R2 → DB)
-            if not no_disk_cache:
-                completed = place_completed_get(place_id)
-                if completed is not None:
-                    place_num += 1
-                    with _stats_lock:
-                        _stats["places_processed"] += 1
-                        _stats["cache_hits"] += 1
-                    console.print(
-                        f"  [bold green]✓ Place {place_id} completed (skipped)[/bold green]"
-                    )
-                    logger.info(
-                        f"Place {place_num}/{total_places} ({place_id}): "
-                        f"completed (skipped all stages)"
-                    )
-                    progress.update(task, completed=place_num)
-                    process_tracker.update(place_num)
-                    continue
-
-            # Slower path: normalized data exists but may need R2/DB upload
-            if not no_disk_cache:
-                cached_data = norm_cache_get(place_id)
-                if cached_data is not None:
-                    # Already normalized — enqueue R2 + DB directly, skip worker.
-                    place = cached_data
-                    t0 = time.time()
-                    r2_task = stage_enqueue_r2(place, r2_pool)
-                    if r2_task is not None:
-                        r2_task.done_event.wait()
-                    r2_time = time.time() - t0
-
-                    t0 = time.time()
-                    stage_enqueue_db(place, db_pool)
-                    db_time = time.time() - t0
-
-                    with _stats_lock:
-                        _stats["places_processed"] += 1
-                        _stats["images_downloaded"] += len(place.get("photos", []))
-                        _stage_timers["r2_upload"].add(r2_time)
-                        _stage_timers["db_insert"].add(db_time)
-
-                    # Mark as fully completed so next run skips entirely
-                    if not no_disk_cache:
-                        place_completed_set(
-                            place_id,
-                            {
-                                "completed_at": datetime.now(UTC).isoformat(),
-                                "photos": len(place.get("photos", [])),
-                                "reviews": len(place.get("reviews", [])),
-                            },
-                        )
-
-                    place_num += 1
-                    console.print(
-                        f"  [bold yellow]✓ Place {place_id} cached (R2+DB only)[/bold yellow]"
-                    )
-                    logger.info(
-                        f"Place {place_num}/{total_places} ({place_id}): cached (R2+DB only)"
-                    )
-                    progress.update(task, completed=place_num)
-                    process_tracker.update(place_num)
-                    continue
-            to_process.append((raw_place, grid_point))
-
-        # Use spawn (not fork) to avoid inheriting argos locks.
-        # Each worker preloads models once via initializer.
-        # Pass no_disk_cache via initargs so workers respect --no-disk-cache flag
-        # (spawn starts fresh interpreters where module globals are reset).
         multiprocessing.set_start_method("spawn", force=True)
         with ProcessPoolExecutor(
             max_workers=num_workers,
             initializer=_worker_init,
-            initargs=(no_disk_cache, True),  # no_disk_cache, preload_translation=True
+            initargs=(True,),  # preload_translation=True
         ) as executor:
             futures = {
                 executor.submit(
                     _worker_process_place,
-                    raw_place,
-                    raw_place.get("photos", []),
-                    no_disk_cache,
+                    int(raw_place.get("id") or 0),
+                    frozendict(raw_place),
+                    not no_disk_cache,
                 ): (raw_place, grid_point)
-                for raw_place, grid_point in to_process
+                for raw_place, grid_point in places_to_process
             }
 
             for future in as_completed(futures):
@@ -1536,39 +1116,19 @@ def run_full_pipeline(
                     else:
                         place = result.pop("place")
 
-                        # Accumulate per-stage timing from worker.
-                        # Why: these times are per-place; we sum them to show
-                        # total time spent in each stage across all places.
                         with _stats_lock:
                             _stage_timers["extract"].add(result["extract"])
                             _stage_timers["download"].add(result["download"])
                             _stage_timers["reviews"].add(result["fetch"])
                             _stage_timers["translate"].add(result["translate"])
                             _stage_timers["normalize"].add(result["normalize"])
-                            # Track cache stats from worker result (spawn processes
-                            # can't share _stats via threading.Lock).
-                            if result.get("cache_hit"):
-                                _stats["cache_hits"] += 1
-                            else:
-                                _stats["cache_misses"] += 1
 
-                        # Main process: enqueue R2 upload, then wait for it to finish
-                        # before enqueuing DB insert. Why: the R2 worker updates the
-                        # photos dict with R2 URLs (photo["r2_url_thumb"]). If the DB
-                        # worker processes the place before R2 finishes, the photos in
-                        # the database will have local file paths instead of R2 URLs,
-                        # and the web app will show broken images. Waiting for the
-                        # done_event ensures R2 URLs exist before DB insert.
-                        # This still maintains parallelism: different places are processed
-                        # in parallel; we only wait for THIS place's R2 upload.
                         t0 = time.time()
                         r2_task = stage_enqueue_r2(place, r2_pool)
                         if r2_task is not None:
-                            r2_task.done_event.wait()  # Wait for THIS place's R2 upload
+                            r2_task.done_event.wait()
                         r2_time = time.time() - t0
 
-                        # Main process: enqueue DB insert (non-blocking)
-                        # Safe now: photos dict has R2 URLs from the wait above.
                         t0 = time.time()
                         stage_enqueue_db(place, db_pool)
                         db_time = time.time() - t0
@@ -1579,18 +1139,6 @@ def run_full_pipeline(
                             _stage_timers["r2_upload"].add(r2_time)
                             _stage_timers["db_insert"].add(db_time)
 
-                        # Mark place as fully completed (all stages done).
-                        # Next run will find this in completed cache and skip entirely.
-                        if not no_disk_cache:
-                            place_completed_set(
-                                place_id,
-                                {
-                                    "completed_at": datetime.now(UTC).isoformat(),
-                                    "photos": len(place.get("photos", [])),
-                                    "reviews": len(place.get("reviews", [])),
-                                },
-                            )
-
                         rate = place_num / result["elapsed"] if result["elapsed"] > 0 else 0
                         console.print(
                             f"  [bold green]✓ Place {result['place_id']} "
@@ -1598,9 +1146,6 @@ def run_full_pipeline(
                             f"{rate:.1f} places/s)[/bold green]"
                         )
 
-                        # Log every place to file (not every 10) for visibility.
-                        # Why: when running in tmux/cron, the log file is the
-                        # only monitoring surface. Every place logged = easy tail.
                         logger.info(
                             f"Place {place_num}/{total_places} "
                             f"({result['place_id']}): "
@@ -1622,28 +1167,19 @@ def run_full_pipeline(
                         _stats["errors"] += 1
 
                 progress.update(task, completed=place_num)
-                # Log progress to file at regular intervals (not every place).
-                # Why: ProgressTracker throttles log writes to avoid spamming
-                # the log file — it logs every `interval` seconds.
                 process_tracker.update(place_num)
 
     process_tracker.finish()
 
-    # ── Phase 3: Wait for async uploads/inserts ─────────────────────
+    # ── Phase 3: Finalize ────────────────────────────────────────────
     console.print("\n[bold]Phase 3: Finalize[/bold] — waiting for async uploads...")
     finalize_start = time.time()
 
-    # Progress tracking for R2/DB during Finalize.
-    # Why: the worker pools run asynchronously in the background. Without
-    # progress bars, the Finalize phase appears stuck for minutes.
-    # We use a background thread to read progress from the worker pools
-    # and update Rich progress bars + log file in real-time.
     r2_progress_task = None
     db_progress_task = None
     progress_done = threading.Event()
 
     def _update_progress() -> None:
-        """Background thread: read progress from worker pools and update bars."""
         while not progress_done.is_set():
             if r2_pool is not None and r2_progress_task is not None:
                 completed, total = r2_pool.get_progress()
@@ -1661,46 +1197,28 @@ def run_full_pipeline(
                     total=total,
                     description=f"DB Insert: {completed}/{total}",
                 )
-            # Log progress to file every 5 seconds
-            if logger:
-                r2_done, r2_total = r2_pool.get_progress() if r2_pool is not None else (0, 0)
-                db_done, db_total = db_pool.get_progress() if db_pool is not None else (0, 0)
-                logger.info(
-                    f"[Finalize] R2: {r2_done}/{r2_total} • "
-                    f"DB: {db_done}/{db_total} • "
-                    f"elapsed: {time.time() - finalize_start:.1f}s"
-                )
-            progress_done.wait(2.0)  # Check every 2 seconds
+            progress_done.wait(2.0)
 
-    # Create progress bars for R2 and DB
     with create_progress("Finalize", total=1) as progress:
         if r2_pool is not None:
             r2_progress_task = progress.add_task("R2 Upload: 0/0", total=limit or 0)
         if db_pool is not None:
             db_progress_task = progress.add_task("DB Insert: 0/0", total=limit or 0)
 
-        # Start background progress updater
         progress_thread = threading.Thread(target=_update_progress, daemon=True)
         progress_thread.start()
 
-        # Shutdown worker pools (waits for queues to drain)
         if r2_pool is not None:
             r2_pool.shutdown()
         if db_pool is not None:
             db_pool.shutdown()
 
-        # Stop progress updater
         progress_done.set()
         progress_thread.join(timeout=5.0)
 
     finalize_elapsed = time.time() - finalize_start
     console.print(f"  [green]✓ Finalize complete in {finalize_elapsed:.1f}s[/green]")
-    logger.info(f"Finalize phase: {finalize_elapsed:.1f}s")
 
-    # Save translation cache to disk
-    save_cache()
-
-    # ── Summary Report ──────────────────────────────────────────────
     total_elapsed = time.time() - pipeline_start
     console.print("\n[bold green]✓ Pipeline complete:[/bold green]")
     console.print(
@@ -1708,13 +1226,8 @@ def run_full_pipeline(
         f"[red]{_stats.get('errors', 0)}[/red] errors"
     )
     console.print(f"  Images: [green]{_stats['images_downloaded']}[/green] downloaded")
-    console.print(
-        f"  Cache: [green]{_stats['cache_hits']}[/green] hits, "
-        f"[yellow]{_stats['cache_misses']}[/yellow] misses"
-    )
     console.print(f"  Total time: [cyan]{total_elapsed:.1f}s[/cyan]")
 
-    # Print aggregate timing report (shows bottleneck stage)
     print_timing_report(_stage_timers, total_elapsed, total_places)
 
     if errors:
@@ -1728,24 +1241,47 @@ def run_pipeline(
     dry_run: bool = False,
     stage: str | None = None,
 ) -> None:
-    """Run the pipeline, routing to the appropriate stage.
-
-    Args:
-        limit: Maximum number of places to process.
-        no_disk_cache: Bypass all disk caches.
-        dry_run: Show what would be done without making changes.
-        stage: Run only a specific stage ('scrape', 'normalize', 'upload').
-               None (default) runs all stages.
-    """
+    """Run the pipeline, routing to the appropriate stage."""
     if stage == "scrape":
-        return run_scrape_stage(limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run)
+        run_scrape_stage(
+            limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run
+        )
+        return
     elif stage == "normalize":
-        return run_normalize_stage(limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run)
+        # For standalone normalize, scrape first then normalize
+        scraped = run_scrape_stage(
+            limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run
+        )
+        if scraped:
+            run_normalize_stage(
+                scraped_data=scraped,
+                limit=limit,
+                no_disk_cache=no_disk_cache,
+                dry_run=dry_run,
+            )
     elif stage == "upload":
-        return run_upload_stage(limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run)
-
-    # Default: run all stages (original behavior)
-    return run_full_pipeline(limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run)
+        # For standalone upload, scrape + normalize first then upload
+        scraped = run_scrape_stage(
+            limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run
+        )
+        if scraped:
+            normalized = run_normalize_stage(
+                scraped_data=scraped,
+                limit=limit,
+                no_disk_cache=no_disk_cache,
+                dry_run=dry_run,
+            )
+            if normalized:
+                run_upload_stage(
+                    normalized_data=normalized,
+                    limit=limit,
+                    no_disk_cache=no_disk_cache,
+                    dry_run=dry_run,
+                )
+    else:
+        return run_full_pipeline(
+            limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run
+        )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────
@@ -1756,28 +1292,17 @@ def main() -> None:
         description="Park4Night Unified ETL Pipeline\n\n"
         "Single script: scrape → normalize → translate → upload R2 → insert DB\n\n"
         "Idempotent: re-running with same --limit completes instantly (disk cache).\n"
-        "Completed places cache: places that finished ALL stages are skipped entirely\n"
-        "on subsequent runs (no worker spawn, no R2/DB re-upload).\n"
-        "Use --no-disk-cache to bypass all caches and re-process everything.\n"
+        "Use --no-disk-cache to bypass disk cache for timing performance tests.\n"
         "Use --stage to run only a specific stage.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Limit to first N places (fully processed end-to-end)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be done without making changes",
-    )
+    parser.add_argument("--limit", type=int, default=None, help="Limit to first N places")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
     parser.add_argument(
         "--stage",
         choices=["scrape", "normalize", "upload"],
         default=None,
-        help="Run only a specific stage (default: all stages)",
+        help="Run only a specific stage",
     )
     parser.add_argument(
         "--r2-config",
@@ -1792,11 +1317,10 @@ def main() -> None:
     parser.add_argument(
         "--no-disk-cache",
         action="store_true",
-        help="Bypass all disk caches — re-download, re-translate, re-upload",
+        help="Bypass disk cache for timing performance tests (never clears cache)",
     )
     args = parser.parse_args()
 
-    # Setup logging (dual output: Rich console + timestamped log file)
     log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
     logger, log_file = setup_logging(log_dir)
 
@@ -1810,30 +1334,22 @@ def main() -> None:
     if args.stage:
         console.print(f"  Stage: [yellow]{args.stage}[/yellow]")
     if args.no_disk_cache:
-        console.print("  [yellow]Cache disabled — all data will be re-processed[/yellow]")
+        console.print("  [yellow]Disk cache bypassed — timing performance mode[/yellow]")
 
-    # Load environment
     if args.env and os.path.exists(args.env):
         from dotenv import load_dotenv  # type: ignore[import-not-found]
 
         load_dotenv(args.env)
 
-    # Load R2 config
     _r2_config = None
     if args.r2_config and os.path.exists(args.r2_config):
         with open(args.r2_config, encoding="utf-8") as f:
             _r2_config = json.load(f)
         console.print(f"  R2 config: [cyan]{args.r2_config}[/cyan]")
 
-    # Signal handling (save caches on Ctrl+C)
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    # Show cache stats
-    cache_stats = get_cache_stats()
-    console.print(f"  Cache: [cyan]{cache_stats}[/cyan]")
-
-    # Run the pipeline
     run_pipeline(
         limit=args.limit,
         no_disk_cache=args.no_disk_cache,

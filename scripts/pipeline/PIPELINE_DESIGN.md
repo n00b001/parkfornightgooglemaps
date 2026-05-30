@@ -27,19 +27,15 @@ Each long-running function checks if its **output file exists** before doing wor
 
 **Result**: Re-running the pipeline with the same `--limit` completes instantly because every stage finds its output already on disk. No checkpoint file needed.
 
-### How `--no-disk-cache` works
+### How `--no-cache` works
 
-Every cache check has a `no_disk_cache` flag. When `--no-disk-cache` is set:
+Every cache check has a `no_cache` flag. When `--no-cache` is set:
 - API cache: Skip cache read → re-download from Park4Night
 - Image cache: Skip file existence check → re-download from CDN
 - Translation cache: Empty cache at startup → re-translate everything
-- Normalization cache: Skip cache read → re-run pure function
+- Normalization cache: Delete cache files → re-run pure function
 - R2 upload: Skip `head_object` check → force re-upload (overwrites existing)
 - DB insert: Uses `ON CONFLICT DO UPDATE` → always updates, never creates duplicates
-
-**IMPORTANT**: `--no-disk-cache` does NOT clear or delete any cache files.
-It only bypasses cache reads for the current run. New results are still written to cache.
-See CACHE_POLICY.md for details.
 
 ## Architecture Overview
 
@@ -222,7 +218,7 @@ The old pipeline kept translations in RAM only. This meant:
 2. Second run: All cache files exist → every stage skips → completes in seconds
 3. **No duplicate records** in R2 or DB (upserts + head_object checks)
 
-### Running with `--limit N --no-disk-cache`
+### Running with `--limit N --no-cache`
 1. Bypasses all disk caches
 2. Re-downloads from Park4Night API
 3. Re-downloads images from CDN

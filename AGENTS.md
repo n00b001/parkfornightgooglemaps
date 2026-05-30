@@ -142,6 +142,13 @@ This project is designed to **supercede** Park4Night. The original Park4Night CD
 - If you accidentally delete data, restore from the export files (`places_export.json`, `reviews_export.json`) which are kept as backups
 - **This rule overrides everything else.** No feature, refactor, or "clean start" justifies deleting data.
 
+### NEVER CLEAR THE CACHE. EVER.
+- **NEVER** implement `clear_all_caches()`, `cache.clear()`, or any function that wipes the disk cache
+- **NEVER** add a `--no-cache` flag that clears cache data — the flag must be named `--no-disk-cache` and its purpose is to **bypass** the cache for timing performance tests only
+- The disk cache (`scripts/data/cache/`) contains days of accumulated API responses, scraped data, translations — clearing it destroys irreplaceable work
+- If you need to test a stage from scratch, use `--limit` to process a small subset, not cache clearing
+- **This rule overrides everything else.** No "fresh start" or "clean slate" justifies clearing the cache.
+
 ### Pipeline Design — Skip What Exists
 - **Scraper**: Uses `checkpoint.json` to skip already-scraped grid points. Appends new places/reviews to JSONL files.
 - **Normaliser**: Uses `normalize_checkpoint.json` to skip already-normalised place IDs. Reads from `places.jsonl`, writes to `normalized/`.
