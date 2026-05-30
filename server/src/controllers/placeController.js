@@ -1,5 +1,7 @@
 const prisma = require("../config/db");
 const LRUCache = require("../services/lruCache");
+const park4night = require("../services/park4night");
+const localData = require("../services/localData");
 
 const MAX_PLACES_LIMIT = 200;
 
@@ -26,7 +28,7 @@ const getPlaces = async (req, res) => {
 		MAX_PLACES_LIMIT,
 	);
 
-	// Check cache first
+	// Check memory cache first
 	const key = cacheKey(lat, lng, type, minRating, sortBy, maxLimit);
 	const cached = placesCache.get(key);
 	if (cached !== undefined) {
@@ -34,18 +36,79 @@ const getPlaces = async (req, res) => {
 	}
 
 	try {
-		const where = {
+		// 1. Initial check: Do we have recent data for this bounding box in Prisma?
+		const boundingBox = {
 			latitude: { gte: lat - 0.5, lte: lat + 0.5 },
 			longitude: { gte: lng - 0.5, lte: lng + 0.5 },
 		};
 
+		const recentSpots = await prisma.place.findMany({
+			where: {
+				...boundingBox,
+				lastFetched: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+			},
+			take: 10,
+		});
+
+		// 2. Fallback to Live API if data is sparse or stale
+		if (recentSpots.length < 10) {
+			try {
+				const livePlaces = await park4night.getPlaces(lat, lng);
+				if (livePlaces && livePlaces.length > 0) {
+					// Upsert results to Prisma cache
+					const upserts = livePlaces.map((p) =>
+						prisma.place.upsert({
+							where: { id: p.id },
+							update: {
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								type: p.type,
+								description: p.description,
+								address: p.address,
+								rating: p.rating,
+								photoCount: p.rawData?.nb_photos || 0,
+								photos: p.rawData?.photos || [],
+								rawData: p.rawData,
+								lastFetched: new Date(),
+							},
+							create: {
+								id: p.id,
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								type: p.type,
+								description: p.description,
+								address: p.address,
+								rating: p.rating,
+								photoCount: p.rawData?.nb_photos || 0,
+								photos: p.rawData?.photos || [],
+								rawData: p.rawData,
+								lastFetched: new Date(),
+							},
+						}),
+					);
+					await Promise.allSettled(upserts);
+				}
+			} catch (apiError) {
+				console.warn("Live API fetch failed, falling back to localData:", apiError.message);
+				// 3. Final fallback: Seed/Local data if API is down
+				const localSpots = localData.getAllPlaces({ lat, lng, range: 0.5 });
+				if (localSpots.length > 0 && recentSpots.length === 0) {
+					// Only use local data if we have absolutely nothing in DB
+					return res.json(localSpots.slice(0, maxLimit));
+				}
+			}
+		}
+
+		// 4. Final Query: Retrieve from Prisma using user's filters
+		const where = { ...boundingBox };
 		if (type) where.type = type;
 		if (minRating) where.rating = { gte: parseFloat(minRating) };
 
 		const orderBy = {};
 		if (sortBy === "rating") orderBy.rating = "desc";
 
-		// Fetch from DB, sort by distance, take closest N
 		let places = await prisma.place.findMany({
 			where,
 			orderBy: Object.keys(orderBy).length > 0 ? orderBy : undefined,
