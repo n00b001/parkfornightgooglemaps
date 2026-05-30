@@ -64,8 +64,8 @@ from normalizer import (  # type: ignore[import-not-found]
 )
 from r2_worker import R2UploadTask, R2WorkerPool  # type: ignore[import-not-found]
 from translator import (  # type: ignore[import-not-found]
-    ensure_packages_installed,
     translate_batch,
+    translate_batch_http,
 )
 
 logger = logging.getLogger("pipeline")
@@ -82,6 +82,7 @@ disk_cache = dc.FanoutCache(_CACHE_DIR)
 # ── Globals ──────────────────────────────────────────────────────────
 _r2_config: dict | None = None
 NO_DISK_CACHE = False  # set True by --no-disk-cache
+_translation_server_url: str = ""  # set by run_pipeline()
 _stats_lock = threading.Lock()
 _stats: dict[str, int] = {
     "places_processed": 0,
@@ -301,7 +302,13 @@ def translate_place(place: dict) -> dict:
             texts_to_translate.append((str(text).strip(), "fr"))
 
     if texts_to_translate:
-        translations = translate_batch(texts_to_translate, max_workers=8)
+        # Use HTTP server if available (fast, parallel), fallback to local argos
+        if _translation_server_url:
+            translations = translate_batch_http(
+                texts_to_translate, server_url=_translation_server_url
+            )
+        else:
+            translations = translate_batch(texts_to_translate, max_workers=8)
 
         if isinstance(raw_desc, dict):
             translated_desc = {}
@@ -447,14 +454,14 @@ def _handle_signal(signum: int, frame: Any) -> None:
 # ── Worker initializer (called once per process) ─────────────────────
 
 
-def _worker_init(no_disk_cache: bool) -> None:
-    """Initialize worker process: set global flag only.
+def _worker_init(no_disk_cache: bool, translation_server_url: str) -> None:
+    """Initialize worker process: set global flags.
 
-    Models load lazily on first translate() call — no preloading needed.
-    Preloading 29 models × 16 workers = 464 model loads that take minutes.
+    Models are NOT loaded in workers — they use the HTTP translation server.
     """
-    global NO_DISK_CACHE
+    global NO_DISK_CACHE, _translation_server_url
     NO_DISK_CACHE = no_disk_cache
+    _translation_server_url = translation_server_url
 
 
 # ── Worker function (must be top-level for pickling) ─────────────────
@@ -509,9 +516,10 @@ def run_pipeline(
     limit: int | None = None,
     no_disk_cache: bool = False,
     dry_run: bool = False,
+    no_translation_server: bool = False,
 ) -> None:
     """Run the full pipeline: extract → scrape → translate → normalize → upload."""
-    global NO_DISK_CACHE, _stage_timers
+    global NO_DISK_CACHE, _stage_timers, _translation_server_url
     NO_DISK_CACHE = no_disk_cache
 
     num_workers = 16
@@ -527,7 +535,20 @@ def run_pipeline(
         db_pool = DBWorkerPool(total_expected=limit or 0)
         db_pool.start()
 
-    ensure_packages_installed()
+    # Start translation server (single process, ThreadPoolExecutor for parallelism)
+    if no_translation_server:
+        console.print("[yellow]Translation server disabled — using local argos-translate[/yellow]")
+        _translation_server_url = ""
+    else:
+        from translation_server import (  # type: ignore[import-not-found]
+            get_server_url,
+            start_server,
+        )
+
+        console.print("[bold cyan]Starting translation server...[/bold cyan]")
+        start_server(install_packages=True, preload=True)
+        _translation_server_url = get_server_url()
+        console.print(f"  [green]✓ Translation server ready at {_translation_server_url}[/green]")
 
     limit_label = f" (limit {limit})" if limit else ""
     workers_label = f" with {num_workers} workers"
@@ -585,7 +606,7 @@ def run_pipeline(
         with ProcessPoolExecutor(
             max_workers=num_workers,
             initializer=_worker_init,
-            initargs=(no_disk_cache,),
+            initargs=(no_disk_cache, _translation_server_url),
         ) as executor:
             futures = {
                 executor.submit(_worker_process_place, raw_place): (raw_place, grid_point)
@@ -709,6 +730,12 @@ def run_pipeline(
     console.print(f"  [green]✓ Finalize complete in {finalize_elapsed:.1f}s[/green]")
     logger.info(f"Finalize phase: {finalize_elapsed:.1f}s")
 
+    # Shutdown translation server
+    if _translation_server_url:
+        from translation_server import stop_server  # type: ignore[import-not-found]
+
+        stop_server()
+
     # ── Summary Report ──────────────────────────────────────────────
     total_elapsed = time.time() - pipeline_start
     console.print("\n[bold green]✓ Pipeline complete:[/bold green]")
@@ -766,6 +793,11 @@ def main() -> None:
         action="store_true",
         help="Bypass all disk caches — re-download, re-translate, re-upload",
     )
+    parser.add_argument(
+        "--no-translation-server",
+        action="store_true",
+        help="Skip HTTP translation server — use local argos-translate per worker (slower)",
+    )
     args = parser.parse_args()
 
     log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
@@ -802,6 +834,7 @@ def main() -> None:
         limit=args.limit,
         no_disk_cache=args.no_disk_cache,
         dry_run=args.dry_run,
+        no_translation_server=args.no_translation_server,
     )
 
 
