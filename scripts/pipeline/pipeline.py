@@ -64,7 +64,6 @@ from normalizer import (  # type: ignore[import-not-found]
 )
 from r2_worker import R2UploadTask, R2WorkerPool  # type: ignore[import-not-found]
 from translator import (  # type: ignore[import-not-found]
-    translate_batch,
     translate_batch_http,
 )
 
@@ -302,13 +301,9 @@ def translate_place(place: dict) -> dict:
             texts_to_translate.append((str(text).strip(), "fr"))
 
     if texts_to_translate:
-        # Use HTTP server if available (fast, parallel), fallback to local argos
-        if _translation_server_url:
-            translations = translate_batch_http(
-                texts_to_translate, server_url=_translation_server_url
-            )
-        else:
-            translations = translate_batch(texts_to_translate, max_workers=8)
+        translations = translate_batch_http(
+            texts_to_translate, server_url=_translation_server_url
+        )
 
         if isinstance(raw_desc, dict):
             translated_desc = {}

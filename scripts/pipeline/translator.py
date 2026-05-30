@@ -9,12 +9,9 @@ All source languages are known from data structure:
   - Pricing: always French
   - Reviews: always French (Park4Night is a French site)
 
-Two modes of operation:
-  1. HTTP mode (default): Workers call the translation server via HTTP.
-     The server runs argos-translate in a ThreadPoolExecutor(32) to
-     saturate all CPU cores without GIL contention.
-  2. Local mode (fallback): Workers run argos-translate directly.
-     Slower due to GIL, but works without the server.
+Workers call the translation server via HTTP. The server runs argos-translate
+in a ThreadPoolExecutor(32) to saturate all CPU cores without GIL contention.
+If the server is unreachable, a clear exception is raised — there is no fallback.
 
 Translation caching is handled by pipeline.py via diskcache.
 This module is a pure translation engine with no cache management.
@@ -22,17 +19,9 @@ This module is a pure translation engine with no cache management.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
-
-# ── Argos-translate performance tuning (MUST be set before import) ───
-os.environ.setdefault("ARGOS_BEAM_SIZE", "1")
-os.environ.setdefault("ARGOS_COMPUTE_TYPE", "int8_float32")
-os.environ.setdefault("ARGOS_BATCH_SIZE", "64")
-os.environ.setdefault("ARGOS_INTER_THREADS", "8")
-os.environ.setdefault("ARGOS_INTRA_THREADS", "4")
-
-import logging
 import threading
 
 import argostranslate.package as argos_package
@@ -308,33 +297,4 @@ def translate_batch_http(
     return translations
 
 
-def translate_batch_with_fallback(
-    texts: list[tuple[str, str]],
-    server_url: str | None = None,
-) -> dict[str, str]:
-    """Translate via HTTP server, falling back to local argos on failure.
 
-    This is the recommended entry point for pipeline workers.
-    It tries the HTTP server first (fast, parallel), then falls back
-    to local argos-translate if the server is unavailable.
-
-    Args:
-        texts: List of (text, source_language) tuples.
-        server_url: URL of the translation server (optional).
-
-    Returns:
-        Dict mapping original text → translated text.
-    """
-    if not texts:
-        return {}
-
-    server = server_url or _DEFAULT_SERVER_URL
-
-    if server:
-        try:
-            return translate_batch_http(texts, server)
-        except RuntimeError as e:
-            logger.warning("HTTP translation failed (%s), falling back to local argos", e)
-
-    # Fallback: local argos-translate (slow but reliable)
-    return translate_batch(texts)
