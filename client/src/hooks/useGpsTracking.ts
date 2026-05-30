@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import axios from '../axiosConfig';
+import { supabase } from '../lib/supabase';
 import { savePendingVisit } from '../services/db';
 
 export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialVisitedIds: number[] = [], onVisitRecorded?: (placeId: number) => void) => {
@@ -34,7 +34,9 @@ export const useGpsTracking = (places: any[], isAuthenticated: boolean, initialV
             visitedRef.current.add(place.id);
             if (onVisitRecordedRef.current) onVisitRecordedRef.current(place.id);
             try {
-              await axios.post('/api/visits', { placeId: place.id });
+              await supabase.functions.invoke('record-visit', {
+                body: { placeId: place.id },
+              });
             } catch (err) {
               console.warn('Failed to record visit online, saving to pending', err);
               await savePendingVisit(place.id);

@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from "react";
-import axios from "./axiosConfig";
 import { useQuery } from "@tanstack/react-query";
 import LRUCache from "./services/lruCache";
 import {
@@ -25,6 +24,7 @@ import FilterModal from "./components/FilterModal";
 import PlaceDetails from "./components/PlaceDetails";
 import { useGpsTracking } from "./hooks/useGpsTracking";
 import { useJsApiLoader } from "@react-google-maps/api";
+import { supabase, signInWithGoogle, signOut, type User } from "./lib/supabase";
 
 const LIBRARIES: ("places" | "drawing" | "geometry" | "visualization")[] = [
 	"places",
@@ -42,7 +42,7 @@ const App: React.FC = () => {
 
 	const [isFilterOpen, setIsFilterOpen] = useState(false);
 	const [selectedPlace, setSelectedPlace] = useState<any>(null);
-	const [user, setUser] = useState<any>(null);
+	const [user, setUser] = useState<User | null>(null);
 	const [mapCenter, setMapCenter] = useState({ lat: 48.8566, lng: 2.3522 });
 	const [lastFetchedCenter, setLastFetchedCenter] = useState({
 		lat: 48.8566,
@@ -55,14 +55,24 @@ const App: React.FC = () => {
 	const [viewMode, setViewMode] = useState<"map" | "list">("map");
 	const [isOnline, setIsOnline] = useState(navigator.onLine);
 
+	// Sync pending operations when coming back online
 	useEffect(() => {
 		const handleOnline = async () => {
 			setIsOnline(true);
+			if (!user) return;
+
+			const {
+				data: { session },
+			} = await supabase.auth.getSession();
+			if (!session) return;
+
 			// Sync pending visits
 			const pendingVisits = await getPendingVisits();
 			for (const visit of pendingVisits) {
 				try {
-					await axios.post("/api/visits", { placeId: visit.placeId });
+					await supabase.functions.invoke("record-visit", {
+						body: { placeId: visit.placeId },
+					});
 					await removePendingVisit(visit.placeId);
 					setVisited((prev) => [...prev, visit.placeId]);
 				} catch (err) {
@@ -75,9 +85,14 @@ const App: React.FC = () => {
 			for (const fav of pendingFavs) {
 				try {
 					if (fav.action === "add") {
-						await axios.post("/api/favorites", { placeId: fav.placeId });
+						await supabase.functions.invoke("add-favorite", {
+							body: { placeId: fav.placeId },
+						});
 					} else {
-						await axios.delete(`/api/favorites/${fav.placeId}`);
+						await supabase.functions.invoke("remove-favorite", {
+							body: { placeId: fav.placeId },
+							method: "DELETE",
+						});
 					}
 					await removePendingFavorite(fav.placeId);
 				} catch (err) {
@@ -89,10 +104,12 @@ const App: React.FC = () => {
 			const pendingReviews = await getPendingReviews();
 			for (const review of pendingReviews) {
 				try {
-					await axios.post("/api/reviews", {
-						placeId: review.placeId,
-						content: review.content,
-						rating: review.rating,
+					await supabase.functions.invoke("add-review", {
+						body: {
+							placeId: review.placeId,
+							content: review.content,
+							rating: review.rating,
+						},
 					});
 					await removePendingReview(review.id);
 				} catch (err) {
@@ -107,8 +124,9 @@ const App: React.FC = () => {
 			window.removeEventListener("online", handleOnline);
 			window.removeEventListener("offline", handleOffline);
 		};
-	}, []);
+	}, [user]);
 
+	// Fetch places via edge function
 	const { data: rawPlaces = [], isLoading: isLoadingPlaces } = useQuery({
 		queryKey: ["places", lastFetchedCenter],
 		queryFn: async () => {
@@ -116,17 +134,22 @@ const App: React.FC = () => {
 			const cached = placesCache.get(key);
 			if (cached !== undefined) return cached;
 
-			const res = await axios.get("/api/places", {
-				params: {
-					lat: lastFetchedCenter.lat,
-					lng: lastFetchedCenter.lng,
-					limit: 150,
+			const { data, error } = await supabase.functions.invoke(
+				"get-places",
+				{
+					body: {
+						lat: lastFetchedCenter.lat,
+						lng: lastFetchedCenter.lng,
+						limit: 150,
+					},
 				},
-			});
-			placesCache.set(key, res.data);
-			return res.data;
+			);
+
+			if (error) throw error;
+			placesCache.set(key, data);
+			return data;
 		},
-		staleTime: 5 * 60 * 1000, // 5 minutes — prevent aggressive refetches
+		staleTime: 5 * 60 * 1000,
 		refetchOnWindowFocus: false,
 	});
 
@@ -135,31 +158,22 @@ const App: React.FC = () => {
 	const displayPlaces = React.useMemo(() => {
 		let filtered = [...rawPlaces];
 
-		// Filter by favorites toggle
 		if (showOnlyFavorites) {
 			filtered = filtered.filter((p: any) => favorites.includes(p.id));
 		}
-
-		// Filter by type
 		if (filters.type) {
 			filtered = filtered.filter((p: any) => p.type === filters.type);
 		}
-
-		// Filter by min rating
 		if (filters.minRating) {
 			filtered = filtered.filter(
 				(p: any) => parseFloat(p.rating) >= parseFloat(filters.minRating),
 			);
 		}
-
-		// Filter by amenities
 		if (filters.amenities && filters.amenities.length > 0) {
 			filtered = filtered.filter((p: any) =>
 				filters.amenities.every((amenity: string) => p[amenity] === "1"),
 			);
 		}
-
-		// Filter by search query
 		if (searchQuery) {
 			const q = searchQuery.toLowerCase();
 			filtered = filtered.filter(
@@ -168,8 +182,6 @@ const App: React.FC = () => {
 					p.address.toLowerCase().includes(q),
 			);
 		}
-
-		// Sort
 		if (filters.sortBy === "rating") {
 			filtered.sort((a, b) => parseFloat(b.rating) - parseFloat(a.rating));
 		} else if (filters.sortBy === "distance") {
@@ -219,21 +231,45 @@ const App: React.FC = () => {
 		}
 	}, []);
 
+	// Listen to Supabase auth state changes
 	useEffect(() => {
-		axios
-			.get("/auth/me")
-			.then((res) => {
-				setUser(res.data);
-				if (res.data) {
-					axios
-						.get("/api/favorites")
-						.then((fRes) => setFavorites(fRes.data.map((f: any) => f.placeId)));
-					axios
-						.get("/api/visits")
-						.then((vRes) => setVisited(vRes.data.map((v: any) => v.placeId)));
+		const {
+			data: { subscription },
+		} = supabase.auth.onAuthStateChange(async (_event, session) => {
+			if (session) {
+				const { data: profile, error } = await supabase.functions.invoke(
+					"get-user",
+					{ body: {} },
+				);
+				if (!error && profile) {
+					setUser(profile);
+					// Load favorites
+					const { data: favs } = await supabase.functions.invoke(
+						"get-favorites",
+						{ body: {} },
+					);
+					if (favs) {
+						setFavorites(favs.map((f: any) => f.id));
+					}
+					// Load visits
+					const { data: visits } = await supabase.functions.invoke(
+						"get-visits",
+						{ body: {} },
+					);
+					if (visits) {
+						setVisited(
+							visits.map((v: any) => v.placeId),
+						);
+					}
 				}
-			})
-			.catch(() => setUser(null));
+			} else {
+				setUser(null);
+				setFavorites([]);
+				setVisited([]);
+			}
+		});
+
+		return () => subscription.unsubscribe();
 	}, []);
 
 	// Deep linking: check for place ID in URL on load
@@ -241,7 +277,9 @@ const App: React.FC = () => {
 		const params = new URLSearchParams(window.location.search);
 		const placeId = params.get("place");
 		if (placeId && rawPlaces.length > 0) {
-			const place = rawPlaces.find((p: any) => p.id.toString() === placeId);
+			const place = rawPlaces.find(
+				(p: any) => p.id.toString() === placeId,
+			);
 			if (place) {
 				setSelectedPlace(place);
 				setMapCenter({
@@ -254,13 +292,11 @@ const App: React.FC = () => {
 
 	const handleCenterChange = (newCenter: { lat: number; lng: number }) => {
 		setMapCenter(newCenter);
-		// Only trigger fetch if moved significantly (e.g., > 10km) or first time
 		const dist = Math.sqrt(
 			Math.pow(newCenter.lat - lastFetchedCenter.lat, 2) +
 				Math.pow(newCenter.lng - lastFetchedCenter.lng, 2),
 		);
 		if (dist > 0.1) {
-			// roughly 10-11km
 			setLastFetchedCenter(newCenter);
 		}
 	};
@@ -268,7 +304,10 @@ const App: React.FC = () => {
 	const handleMyLocation = () => {
 		if (navigator.geolocation) {
 			navigator.geolocation.getCurrentPosition((pos) => {
-				const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+				const coords = {
+					lat: pos.coords.latitude,
+					lng: pos.coords.longitude,
+				};
 				setMapCenter(coords);
 				setLastFetchedCenter(coords);
 			});
@@ -277,8 +316,7 @@ const App: React.FC = () => {
 
 	const handleToggleFavorite = async (placeId: number) => {
 		if (!user) {
-			const returnTo = window.location.origin;
-			window.location.href = `${import.meta.env.VITE_API_URL}/auth/google?returnTo=${encodeURIComponent(returnTo)}`;
+			await signInWithGoogle();
 			return;
 		}
 
@@ -287,7 +325,10 @@ const App: React.FC = () => {
 		if (isCurrentlyFavorite) {
 			setFavorites(favorites.filter((id) => id !== placeId));
 			try {
-				await axios.delete(`/api/favorites/${placeId}`);
+				await supabase.functions.invoke("remove-favorite", {
+					body: { placeId },
+					method: "DELETE",
+				});
 			} catch (err) {
 				if (!navigator.onLine) {
 					await savePendingFavorite(placeId, "remove");
@@ -296,7 +337,9 @@ const App: React.FC = () => {
 		} else {
 			setFavorites([...favorites, placeId]);
 			try {
-				await axios.post("/api/favorites", { placeId });
+				await supabase.functions.invoke("add-favorite", {
+					body: { placeId },
+				});
 			} catch (err) {
 				if (!navigator.onLine) {
 					await savePendingFavorite(placeId, "add");
@@ -306,17 +349,11 @@ const App: React.FC = () => {
 	};
 
 	const handleLogout = async () => {
-		try {
-			await axios.get("/auth/logout");
-			setUser(null);
-			setFavorites([]);
-			setVisited([]);
-		} catch (err) {
-			console.error("Logout failed", err);
-		}
+		await signOut();
+		setUser(null);
+		setFavorites([]);
+		setVisited([]);
 	};
-
-	const loginUrl = `${import.meta.env.VITE_API_URL}/auth/google?returnTo=${encodeURIComponent(window.location.origin)}`;
 
 	return (
 		<div className="flex flex-col h-screen w-screen overflow-hidden bg-gray-100">
@@ -345,13 +382,17 @@ const App: React.FC = () => {
 					)}
 					{user ? (
 						<div className="flex items-center gap-2">
-							<img
-								src={user.avatar}
-								alt={user.name}
-								className="w-8 h-8 rounded-full border"
-							/>
+							{user.avatar && (
+								<img
+									src={user.avatar}
+									alt={user.name ?? "User"}
+									className="w-8 h-8 rounded-full border"
+								/>
+							)}
 							<button
-								onClick={() => setShowOnlyFavorites(!showOnlyFavorites)}
+								onClick={() =>
+									setShowOnlyFavorites(!showOnlyFavorites)
+								}
 								className={`p-2 rounded-lg transition-colors ${showOnlyFavorites ? "bg-red-50 text-red-500" : "bg-gray-100 text-gray-600"}`}
 								title={showOnlyFavorites ? "Show All" : "Show Favorites"}
 							>
@@ -369,12 +410,12 @@ const App: React.FC = () => {
 							</button>
 						</div>
 					) : (
-						<a
-							href={loginUrl}
+						<button
+							onClick={() => signInWithGoogle()}
 							className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-blue-700 transition-colors"
 						>
 							Sign In
-						</a>
+						</button>
 					)}
 				</div>
 			</header>
@@ -412,7 +453,9 @@ const App: React.FC = () => {
 
 						<div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20">
 							<button
-								onClick={() => setViewMode(viewMode === "map" ? "list" : "map")}
+								onClick={() =>
+									setViewMode(viewMode === "map" ? "list" : "map")
+								}
 								className="bg-gray-900 text-white px-8 py-4 rounded-full shadow-[0_20px_50px_rgba(0,0,0,0.3)] flex items-center gap-3 font-black uppercase tracking-wider hover:bg-black hover:scale-105 active:scale-95 transition-all duration-300 border border-white/20"
 							>
 								{viewMode === "map" ? (
@@ -427,11 +470,12 @@ const App: React.FC = () => {
 							</button>
 						</div>
 
-						{/* Subtle, non-blocking loading indicator — map remains fully interactive */}
 						{isLoadingPlaces && (
 							<div className="absolute bottom-28 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-white/90 text-gray-600 px-4 py-2 rounded-full shadow-md border">
 								<div className="w-3 h-3 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin" />
-								<span className="text-xs font-medium">Loading spots...</span>
+								<span className="text-xs font-medium">
+									Loading spots...
+								</span>
 							</div>
 						)}
 					</>
@@ -463,7 +507,9 @@ const App: React.FC = () => {
 					place={selectedPlace}
 					isAuthenticated={!!user}
 					onClose={() => setSelectedPlace(null)}
-					onToggleFavorite={() => handleToggleFavorite(selectedPlace.id)}
+					onToggleFavorite={() =>
+						handleToggleFavorite(selectedPlace.id)
+					}
 					isFavorite={favorites.includes(selectedPlace.id)}
 				/>
 			)}

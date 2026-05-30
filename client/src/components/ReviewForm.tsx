@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Star, Send } from 'lucide-react';
-import axios from '../axiosConfig';
+import { supabase } from '../lib/supabase';
 import { savePendingReview } from '../services/db';
 
 const ReviewForm: React.FC<any> = ({ placeId, onSuccess }) => {
@@ -11,7 +11,9 @@ const ReviewForm: React.FC<any> = ({ placeId, onSuccess }) => {
     e.preventDefault();
     const reviewData = { placeId, content, rating };
     try {
-      await axios.post('/api/reviews', reviewData);
+      await supabase.functions.invoke('add-review', {
+        body: reviewData,
+      });
       setContent('');
       onSuccess();
     } catch (err) {

@@ -21,7 +21,7 @@ import {
 	Share2,
 	Compass,
 } from "lucide-react";
-import axios from "../axiosConfig";
+import { supabase } from "../lib/supabase";
 import ReviewForm from "./ReviewForm";
 import { saveReviews, getCachedReviews } from "../services/db";
 
@@ -182,12 +182,16 @@ const PlaceDetails: React.FC<any> = ({
 	const fetchReviews = async () => {
 		setIsLoadingReviews(true);
 		try {
-			const [localRes, p4nRes] = await Promise.all([
-				axios.get(`/api/reviews/${place.id}`),
-				axios.get(`/api/places/${place.id}/reviews`),
+			const [localResult, p4nResult] = await Promise.all([
+				supabase.functions.invoke("get-reviews", {
+					body: { placeId: place.id },
+				}),
+				supabase.functions.invoke("get-place-reviews", {
+					body: { placeId: place.id },
+				}),
 			]);
-			const local = localRes.data;
-			const p4n = p4nRes.data?.reviews ?? [];
+			const local = localResult.data ?? [];
+			const p4n = p4nResult.data?.reviews ?? [];
 			setReviews(local);
 			setP4nReviews(p4n);
 			await saveReviews(place.id, { local, p4n });
