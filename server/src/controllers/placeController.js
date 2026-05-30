@@ -1,5 +1,6 @@
 const prisma = require("../config/db");
 const LRUCache = require("../services/lruCache");
+const park4night = require("../services/park4night");
 
 const MAX_PLACES_LIMIT = 200;
 
@@ -45,11 +46,57 @@ const getPlaces = async (req, res) => {
 		const orderBy = {};
 		if (sortBy === "rating") orderBy.rating = "desc";
 
-		// Fetch from DB, sort by distance, take closest N
+		// Fetch from DB
 		let places = await prisma.place.findMany({
 			where,
 			orderBy: Object.keys(orderBy).length > 0 ? orderBy : undefined,
 		});
+
+		// Logic to determine if live data fetch is needed
+		const mostRecentFetched = places.length > 0 ? Math.max(...places.map(p => new Date(p.lastFetched).getTime())) : 0;
+		const isOld = (Date.now() - mostRecentFetched) > 24 * 60 * 60 * 1000;
+		const needsLiveFetch = places.length < 10 || isOld;
+
+		if (needsLiveFetch) {
+			try {
+				const livePlaces = await park4night.getPlaces(lat, lng);
+				if (livePlaces && livePlaces.length > 0) {
+					// Upsert loop for caching logic
+					for (const p of livePlaces) {
+						await prisma.place.upsert({
+							where: { id: p.id },
+							update: {
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								type: p.type,
+								description: p.description,
+								address: p.address,
+								rating: p.rating,
+								rawData: p.rawData,
+								lastFetched: new Date()
+							},
+							create: {
+								id: p.id,
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								type: p.type,
+								description: p.description,
+								address: p.address,
+								rating: p.rating,
+								rawData: p.rawData,
+								lastFetched: new Date()
+							}
+						});
+					}
+					// Re-query DB to get combined/updated results
+					places = await prisma.place.findMany({ where });
+				}
+			} catch (liveError) {
+				console.error("Live fetch failed, falling back to DB results:", liveError.message);
+			}
+		}
 
 		// Sort by distance from query point (closest first)
 		places.sort(
@@ -107,10 +154,42 @@ const getPlaceDetail = async (req, res) => {
 const getPlaceReviews = async (req, res) => {
 	try {
 		const placeId = parseInt(req.params.id);
-		const reviews = await prisma.review.findMany({
+
+		// Fetch from P4N
+		let p4nReviews = [];
+		try {
+			p4nReviews = await park4night.getReviews(placeId);
+		} catch (p4nErr) {
+			console.error("Failed to fetch P4N reviews:", p4nErr.message);
+		}
+
+		// Fetch local reviews
+		const localReviews = await prisma.review.findMany({
 			where: { placeId },
+			include: { user: true },
 			orderBy: { createdAt: "desc" },
 		});
+
+		const reviews = [
+			...localReviews.map((r) => ({
+				author: r.user?.name || "Community User",
+				rating: r.rating,
+				content: r.content,
+				createdAt: r.createdAt,
+				isLocal: true,
+			})),
+			...p4nReviews.map((r) => ({
+				author: r.auteur || "Park4night User",
+				rating: r.note,
+				content: r.commentaire,
+				needsTranslation:
+					r.language &&
+					r.language.iso639_1 !== "en" &&
+					r.language.iso639_1 !== "und",
+				createdAt: r.date,
+			})),
+		];
+
 		res.json({ reviews });
 	} catch (error) {
 		console.error("Error fetching reviews:", error.message);

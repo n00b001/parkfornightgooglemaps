@@ -5,6 +5,7 @@ jest.mock("../src/config/db", () => ({
 		findMany: jest.fn(),
 		findUnique: jest.fn(),
 		count: jest.fn(),
+		upsert: jest.fn(),
 	},
 	review: {
 		count: jest.fn(),
@@ -24,6 +25,12 @@ jest.mock("../src/services/lruCache", () => {
 	return LRUCache;
 });
 
+jest.mock("../src/services/park4night", () => ({
+	getPlaces: jest.fn(),
+	getReviews: jest.fn(),
+}));
+
+const park4night = require("../src/services/park4night");
 const placeController = require("../src/controllers/placeController");
 
 describe("placeController", () => {
@@ -150,22 +157,34 @@ describe("placeController", () => {
 	});
 
 	describe("getPlaceReviews", () => {
-		it("should return reviews from DB", async () => {
+		it("should return reviews from DB and P4N", async () => {
 			req.params = { id: "123" };
-			const mockReviews = [{ id: "1", content: "Great!", rating: 5 }];
-			prisma.review.findMany.mockResolvedValue(mockReviews);
+			const mockLocalReviews = [
+				{ id: "1", content: "Great!", rating: 5, user: { name: "Test User" } },
+			];
+			const mockP4nReviews = [
+				{ id: "2", commentaire: "Good", note: 4, auteur: "P4N User", date: "2023-01-01" },
+			];
+			prisma.review.findMany.mockResolvedValue(mockLocalReviews);
+			park4night.getReviews.mockResolvedValue(mockP4nReviews);
 
 			await placeController.getPlaceReviews(req, res);
 			expect(prisma.review.findMany).toHaveBeenCalledWith({
 				where: { placeId: 123 },
+				include: { user: true },
 				orderBy: { createdAt: "desc" },
 			});
-			expect(res.json).toHaveBeenCalledWith({ reviews: mockReviews });
+			expect(park4night.getReviews).toHaveBeenCalledWith(123);
+			const returned = res.json.mock.calls[0][0];
+			expect(returned.reviews.length).toBe(2);
+			expect(returned.reviews[0].author).toBe("Test User");
+			expect(returned.reviews[1].author).toBe("P4N User");
 		});
 
 		it("should return empty reviews when none exist", async () => {
 			req.params = { id: "123" };
 			prisma.review.findMany.mockResolvedValue([]);
+			park4night.getReviews.mockResolvedValue([]);
 
 			await placeController.getPlaceReviews(req, res);
 			expect(res.json).toHaveBeenCalledWith({ reviews: [] });

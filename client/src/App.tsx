@@ -10,6 +10,8 @@ import {
 	getPendingReviews,
 	removePendingReview,
 	savePendingFavorite,
+	savePlaces,
+	getCachedPlaces,
 } from "./services/db";
 import {
 	Heart,
@@ -116,15 +118,27 @@ const App: React.FC = () => {
 			const cached = placesCache.get(key);
 			if (cached !== undefined) return cached;
 
-			const res = await axios.get("/api/places", {
-				params: {
-					lat: lastFetchedCenter.lat,
-					lng: lastFetchedCenter.lng,
-					limit: 150,
-				},
-			});
-			placesCache.set(key, res.data);
-			return res.data;
+			try {
+				const res = await axios.get("/api/places", {
+					params: {
+						lat: lastFetchedCenter.lat,
+						lng: lastFetchedCenter.lng,
+						limit: 150,
+					},
+				});
+				// Persist to IndexedDB for offline use
+				savePlaces(res.data).catch((err) =>
+					console.error("Failed to save places to IDB", err),
+				);
+				placesCache.set(key, res.data);
+				return res.data;
+			} catch (err) {
+				if (!navigator.onLine) {
+					const cached = await getCachedPlaces();
+					if (cached && cached.length > 0) return cached;
+				}
+				throw err;
+			}
 		},
 		staleTime: 5 * 60 * 1000, // 5 minutes — prevent aggressive refetches
 		refetchOnWindowFocus: false,
