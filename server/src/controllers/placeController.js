@@ -1,5 +1,7 @@
 const prisma = require("../config/db");
 const LRUCache = require("../services/lruCache");
+const park4night = require("../services/park4night");
+const localData = require("../services/localData");
 
 const MAX_PLACES_LIMIT = 200;
 
@@ -34,9 +36,13 @@ const getPlaces = async (req, res) => {
 	}
 
 	try {
+		const yesterday = new Date();
+		yesterday.setHours(yesterday.getHours() - 24);
+
 		const where = {
 			latitude: { gte: lat - 0.5, lte: lat + 0.5 },
 			longitude: { gte: lng - 0.5, lte: lng + 0.5 },
+			lastFetched: { gte: yesterday },
 		};
 
 		if (type) where.type = type;
@@ -45,11 +51,83 @@ const getPlaces = async (req, res) => {
 		const orderBy = {};
 		if (sortBy === "rating") orderBy.rating = "desc";
 
-		// Fetch from DB, sort by distance, take closest N
+		// Fetch from DB
 		let places = await prisma.place.findMany({
 			where,
 			orderBy: Object.keys(orderBy).length > 0 ? orderBy : undefined,
 		});
+
+		// Fallback to live API if fewer than 10 recent spots
+		if (places.length < 10) {
+			console.log(
+				`Only ${places.length} recent spots in DB, fetching from live API...`,
+			);
+			try {
+				const livePlaces = await park4night.getPlaces(lat, lng);
+				if (livePlaces && livePlaces.length > 0) {
+					// Upsert to DB (cache) in parallel for performance
+					await Promise.allSettled(
+						livePlaces.map((p) =>
+							prisma.place.upsert({
+								where: { id: p.id },
+								update: {
+									name: p.name,
+									latitude: p.latitude,
+									longitude: p.longitude,
+									type: p.type,
+									description: p.description,
+									address: p.address,
+									rating: p.rating,
+									rawData: p.rawData,
+									lastFetched: new Date(),
+								},
+								create: {
+									id: p.id,
+									name: p.name,
+									latitude: p.latitude,
+									longitude: p.longitude,
+									type: p.type,
+									description: p.description,
+									address: p.address,
+									rating: p.rating,
+									rawData: p.rawData,
+									lastFetched: new Date(),
+								},
+							}),
+						),
+					);
+
+					// Re-query DB for fresh data (normalized) with original filters
+					places = await prisma.place.findMany({
+						where: {
+							latitude: { gte: lat - 0.5, lte: lat + 0.5 },
+							longitude: { gte: lng - 0.5, lte: lng + 0.5 },
+							...(type && { type }),
+							...(minRating && { rating: { gte: parseFloat(minRating) } }),
+						},
+						orderBy: Object.keys(orderBy).length > 0 ? orderBy : undefined,
+					});
+				}
+			} catch (liveError) {
+				console.error(
+					"Live API fetch failed, trying local data fallback:",
+					liveError.message,
+				);
+				// Last resort: local data (seeded from files)
+				if (places.length === 0) {
+					const localPlaces = localData.getAllPlaces({
+						lat,
+						lng,
+						type,
+						minRating,
+						sortBy,
+					});
+					if (localPlaces.length > 0) {
+						places = localPlaces;
+					}
+				}
+			}
+		}
 
 		// Sort by distance from query point (closest first)
 		places.sort(

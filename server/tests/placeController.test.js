@@ -1,15 +1,25 @@
 const prisma = require("../src/config/db");
+const park4night = require("../src/services/park4night");
 
 jest.mock("../src/config/db", () => ({
 	place: {
 		findMany: jest.fn(),
 		findUnique: jest.fn(),
 		count: jest.fn(),
+		upsert: jest.fn(),
 	},
 	review: {
 		count: jest.fn(),
 		findMany: jest.fn(),
 	},
+}));
+
+jest.mock("../src/services/park4night", () => ({
+	getPlaces: jest.fn(),
+}));
+
+jest.mock("../src/services/localData", () => ({
+	getAllPlaces: jest.fn(),
 }));
 
 // Mock LRU cache — no caching during tests so each call hits the DB mock
@@ -95,12 +105,22 @@ describe("placeController", () => {
 			expect(returned.length).toBe(200);
 		});
 
-		it("should return empty array when no places found", async () => {
+		it("should fallback to live API when fewer than 10 spots in DB", async () => {
 			req.query = { lat: "48.8566", lng: "2.3522" };
-			prisma.place.findMany.mockResolvedValue([]);
+			prisma.place.findMany.mockResolvedValueOnce([]); // First call: empty
+			park4night.getPlaces.mockResolvedValue([
+				{ id: 101, name: "Live Place", latitude: 48.85, longitude: 2.35 },
+			]);
+			prisma.place.findMany.mockResolvedValueOnce([
+				{ id: 101, name: "Live Place", latitude: 48.85, longitude: 2.35 },
+			]); // Second call: after upsert
 
 			await placeController.getPlaces(req, res);
-			expect(res.json).toHaveBeenCalledWith([]);
+			expect(park4night.getPlaces).toHaveBeenCalledWith(48.8566, 2.3522);
+			expect(prisma.place.upsert).toHaveBeenCalled();
+			expect(res.json).toHaveBeenCalledWith(
+				expect.arrayContaining([expect.objectContaining({ id: 101 })]),
+			);
 		});
 
 		it("should return 500 on error", async () => {
