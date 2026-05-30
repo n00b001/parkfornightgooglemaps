@@ -1,5 +1,6 @@
 const prisma = require("../config/db");
 const LRUCache = require("../services/lruCache");
+const park4night = require("../services/park4night");
 
 const MAX_PLACES_LIMIT = 200;
 
@@ -34,18 +35,71 @@ const getPlaces = async (req, res) => {
 	}
 
 	try {
-		const where = {
+		const boundingBox = {
 			latitude: { gte: lat - 0.5, lte: lat + 0.5 },
 			longitude: { gte: lng - 0.5, lte: lng + 0.5 },
 		};
 
+		// Check if we have enough recent data in the DB
+		const recentThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
+		const recentPlacesCount = await prisma.place.count({
+			where: {
+				...boundingBox,
+				lastFetched: { gte: recentThreshold },
+			},
+		});
+
+		if (recentPlacesCount < 10) {
+			console.log(`Sparse or old data (${recentPlacesCount} spots), fetching from Park4Night...`);
+			try {
+				const freshPlaces = await park4night.getPlaces(lat, lng);
+				console.log(`Fetched ${freshPlaces.length} fresh spots from API.`);
+
+				// Batch upsert fresh spots in parallel
+				await Promise.allSettled(
+					freshPlaces.map((p) =>
+						prisma.place.upsert({
+							where: { id: p.id },
+							update: {
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								type: p.type,
+								description: p.description,
+								address: p.address,
+								rating: p.rating,
+								rawData: p.rawData,
+								lastFetched: new Date(),
+							},
+							create: {
+								id: p.id,
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								type: p.type,
+								description: p.description,
+								address: p.address,
+								rating: p.rating,
+								rawData: p.rawData,
+								lastFetched: new Date(),
+							},
+						}),
+					),
+				);
+			} catch (apiError) {
+				console.error("Park4Night API fallback failed:", apiError.message);
+				// Continue to query DB anyway as a fallback
+			}
+		}
+
+		// Re-query the database with user's filters (type, rating) to get final results
+		const where = { ...boundingBox };
 		if (type) where.type = type;
 		if (minRating) where.rating = { gte: parseFloat(minRating) };
 
 		const orderBy = {};
 		if (sortBy === "rating") orderBy.rating = "desc";
 
-		// Fetch from DB, sort by distance, take closest N
 		let places = await prisma.place.findMany({
 			where,
 			orderBy: Object.keys(orderBy).length > 0 ? orderBy : undefined,

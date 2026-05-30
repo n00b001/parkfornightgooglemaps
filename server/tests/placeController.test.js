@@ -1,15 +1,21 @@
 const prisma = require("../src/config/db");
+const park4night = require("../src/services/park4night");
 
 jest.mock("../src/config/db", () => ({
 	place: {
 		findMany: jest.fn(),
 		findUnique: jest.fn(),
 		count: jest.fn(),
+		upsert: jest.fn(),
 	},
 	review: {
 		count: jest.fn(),
 		findMany: jest.fn(),
 	},
+}));
+
+jest.mock("../src/services/park4night", () => ({
+	getPlaces: jest.fn().mockResolvedValue([]),
 }));
 
 // Mock LRU cache — no caching during tests so each call hits the DB mock
@@ -38,9 +44,11 @@ describe("placeController", () => {
 		};
 		prisma.place.findMany.mockResolvedValue([]);
 		prisma.place.findUnique.mockResolvedValue(null);
-		prisma.place.count.mockResolvedValue(0);
+		prisma.place.count.mockResolvedValue(15); // Default to enough places to avoid API call
+		prisma.place.upsert.mockResolvedValue({});
 		prisma.review.findMany.mockResolvedValue([]);
 		prisma.review.count.mockResolvedValue(0);
+		park4night.getPlaces.mockResolvedValue([]);
 	});
 
 	describe("getPlaces", () => {
