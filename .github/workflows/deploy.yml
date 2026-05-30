@@ -50,19 +50,16 @@ jobs:
         run: npm run build
         working-directory: client
 
+      - name: Install Wrangler
+        run: npm install -g wrangler@latest
+
       - name: Deploy to Cloudflare (preview)
         if: github.event_name == 'pull_request'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          command: versions upload
+        run: wrangler versions upload
 
       - name: Deploy to Cloudflare (production)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          command: deploy
+        run: wrangler deploy
 
       - name: Deploy Edge Functions (production)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
