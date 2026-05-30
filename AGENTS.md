@@ -17,7 +17,7 @@ The Python scripts in `scripts/` are **just data collection** — they scrape, t
 3. **Create a feature branch** — `git checkout -b feature/<short-description>`
 4. **Commit** — use conventional commit format (`feat:`, `fix:`, `chore:`, etc.)
 5. **Push** — `git push -u origin <branch>`
-6. **Create a PR** — `gh pr create` with a clear title and body describing changes, fallback behavior, and CI status
+6. **Create a PR** — `gh pr create` with a clear title and body describing changes, error handling, and CI status
 7. **Verify CI passes in the PR** — check that GitHub Actions green-light the PR
 
 ## Git Signing
@@ -37,8 +37,8 @@ git commit --no-gpg-sign -m "message"
 ## Changes
 - [bullet points of modifications]
 
-## Fallback / Edge Cases
-[What happens when things go wrong]
+## Error Handling
+[How errors are handled — no fallbacks, failures are explicit]
 
 ## CI
 - Lint: [status]
@@ -106,11 +106,27 @@ cd scripts/scraper && uv add --dev ruff
 
 | Service | Free Tier | Usage |
 |---------|-----------|-------|
-| Firebase Firestore | 1GB storage, 50K reads/day | Place metadata + image base64 (thumbnails) |
-| Render PostgreSQL | 1GB storage | Structured data: places, reviews, services, descriptions |
-| Firebase Storage | 5GB storage | Image files (WebP compressed) — ~$0.03/mo at current size, monitor closely |
+| Supabase PostgreSQL | 500MB database | Structured data: places, reviews, services, descriptions |
+| Cloudflare R2 | 10GB storage, 10M reads/day | Image files (WebP compressed) |
 
 **Image compression**: Always convert JPEG → WebP before upload. Typical 50-75% size reduction.
+
+## NO FALLBACKS — ABSOLUTE RULE
+
+**NEVER implement fallback logic.** Code must have a single execution path. If a dependency fails, the operation fails loudly — no silent degradation, no alternative routes, no `||` chains.
+
+**Why:** Fallbacks create multiple execution paths that are impossible to test and maintain. They hide errors, make debugging impossible, and create flaky behavior.
+
+**Examples of forbidden patterns:**
+- `url = r2_url || thumbUrl || path_thumb || lien_mini` — use `url = r2_url` only
+- `const dbUrl = process.env.DIRECT_URL || process.env.DATABASE_URL` — use `DIRECT_URL` only
+- `try { fetchFromAPI() } catch { return cachedData }` — fail if API fails
+- `if (fileExists) loadFromFile() else loadFromDB()` — pick one source
+
+**When editing code:**
+1. Remove any existing fallback chains you introduce
+2. If you see existing fallbacks in the code, remove them
+3. If a value might be missing, that's a bug — fix the source, don't add a fallback
 
 ## Critical Project Rules
 
@@ -124,11 +140,11 @@ This project is designed to **supercede** Park4Night. The original Park4Night CD
 - The scraper downloads all needed assets; if they're missing, something went wrong with the scrape
 
 ### Image Policy
-- Place photos: `scripts/data/images/places/{place_id}/{photo_id}_thumb.jpg` and `{photo_id}_large.jpg`
-- Vehicle icons: `scripts/data/images/icons/vehicule_*.png`
-- Served via Express static at `/images/` on the API server
-- Client constructs URLs as `${API_URL}/<relative-path>` — no CDN fallback, no default avatars, no `onError` handlers pointing elsewhere
-- If images directory is missing, the server must **fail to start** (not log a warning and continue)
+- Place photos: stored in Cloudflare R2 bucket `p4n-images2` at `places/{place_id}/{photo_id}_{thumb|large}.webp`
+- Public URLs: `https://{account-id}.r2.dev/p4n-images2/places/{place_id}/{photo_id}_{thumb|large}.webp`
+- The pipeline uploads images to R2 during the ETL process
+- Client uses `r2_url_thumb` field from the photos array — no fallback chain
+- If an image is missing in R2, that's a pipeline bug — fix the upload, don't add a fallback
 
 ## DATA SAFETY — ABSOLUTE RULES
 
