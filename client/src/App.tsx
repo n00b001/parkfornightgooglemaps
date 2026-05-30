@@ -323,6 +323,14 @@ const App: React.FC = () => {
 
 	return (
 		<div className="flex flex-col h-screen w-screen overflow-hidden bg-gray-100">
+			{/* Global Loading Overlay */}
+			{isLoadingPlaces && rawPlaces.length === 0 && (
+				<div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-white/80 backdrop-blur-sm transition-all">
+					<div className="w-16 h-16 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin shadow-lg" />
+					<h2 className="mt-4 font-black text-blue-600 uppercase tracking-tighter text-xl">Loading Spots...</h2>
+					<p className="mt-1 text-gray-400 font-bold uppercase tracking-widest text-[10px]">Please wait while we fetch the best spots</p>
+				</div>
+			)}
 			<header className="h-16 bg-white border-b flex items-center px-4 justify-between z-30 gap-4">
 				<div className="flex items-center gap-2">
 					<div className="bg-blue-600 p-2 rounded-lg">
