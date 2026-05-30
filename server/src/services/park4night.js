@@ -80,7 +80,7 @@ const getPlaces = async (latitude, longitude) => {
 			latitude: parseFloat(p.latitude),
 			longitude: parseFloat(p.longitude),
 			type: p.code || "",
-			description: p.description_en || p.description_fr || "",
+			description: p.description_en,
 			address: [p.route, p.ville, p.code_postal, p.pays]
 				.filter(Boolean)
 				.join(", "),
@@ -208,17 +208,17 @@ const getPlacesNew = async (latitude, longitude, radius = 200, lang = "en") => {
 
 		const places = (Array.isArray(data) ? data : []).map((p) => ({
 			id: p.id,
-			name: p.title_short || p.title || p.name || "",
-			latitude: p.lat || p.latitude,
-			longitude: p.lng || p.longitude,
-			type: p.type?.code || p.code || "",
-			description: p.description || p.description_en || p.description_fr || "",
+			name: p.title_short,
+			latitude: p.lat,
+			longitude: p.lng,
+			type: p.type?.code,
+			description: p.description,
 			address: p.address
 				? (typeof p.address === "string"
 						? p.address
-						: `${p.address.street || ""}, ${p.address.city || ""}, ${p.address.country || ""}`.trim())
+						: `${p.address.street}, ${p.address.city}, ${p.address.country}`.trim())
 				: [p.route, p.ville, p.code_postal, p.pays].filter(Boolean).join(", "),
-			rating: p.rating || (p.note_moyenne ? parseFloat(p.note_moyenne) : 0),
+			rating: p.rating,
 			rawData: p,
 		}));
 		return places;
@@ -291,7 +291,7 @@ const getReviewsNew = async (placeId, lang = "en") => {
 			reviews.map(async (review) => ({
 				...review,
 				language: await detectLanguage(
-					review.commentaire || review.text || review.content || "",
+					review.commentaire,
 				),
 			})),
 		);
@@ -333,22 +333,19 @@ const getPlaceDetail = async (placeId, lang = "en") => {
 			// Standardize detail output
 			return {
 				id: data.id,
-				name: data.title_short || data.title || data.name || "",
-				latitude: data.lat || data.latitude,
-				longitude: data.lng || data.longitude,
-				type: data.type?.code || data.code || "",
-				description:
-					data.description || data.description_en || data.description_fr || "",
+name: data.title_short,
+				latitude: data.lat,
+				longitude: data.lng,
+				type: data.type?.code,
+				description: data.description,
 				address: data.address
 					? (typeof data.address === "string"
 							? data.address
-							: `${data.address.street || ""}, ${data.address.city || ""}, ${data.address.country || ""}`.trim())
+							: `${data.address.street}, ${data.address.city}, ${data.address.country}`.trim())
 					: [data.route, data.ville, data.code_postal, data.pays]
 							.filter(Boolean)
 							.join(", "),
-				rating:
-					data.rating ||
-					(data.note_moyenne ? parseFloat(data.note_moyenne) : 0),
+rating: data.rating,
 				rawData: data,
 			};
 		}

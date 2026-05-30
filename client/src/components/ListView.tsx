@@ -47,7 +47,7 @@ const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, on
         </div>
         {places.map((place) => {
           const isFavorite = favorites.includes(place.id);
-          const photo = place.photos?.[0]?.thumbUrl || place.photos?.[0]?.url_thumb;
+          const photo = place.photos?.[0]?.thumbUrl;
           return (
             <div
               key={place.id}
@@ -56,7 +56,7 @@ const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, on
             >
               <div className="w-36 h-36 flex-shrink-0 bg-gray-100 overflow-hidden">
                 {photo ? (
-                  <img src={photo} alt={place.title || place.name} className="w-full h-full object-cover" />
+                  <img src={photo} alt={place.title} className="w-full h-full object-cover" />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center text-gray-300">
                     <MapPin size={32} strokeWidth={1.5} />
@@ -66,7 +66,7 @@ const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, on
               <div className="flex-1 p-5 flex flex-col justify-between">
                 <div>
                   <div className="flex justify-between items-start">
-                    <h3 className="font-bold text-gray-900 line-clamp-1">{place.title || place.name}</h3>
+                    <h3 className="font-bold text-gray-900 line-clamp-1">{place.title}</h3>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -87,8 +87,8 @@ const ListView: React.FC<ListViewProps> = ({ places, onPlaceClick, favorites, on
                       <span className="text-sm font-bold">{place.rating ?? '0'}</span>
                       <span className="text-xs text-gray-400">({place.reviewCount ?? 0})</span>
                     </div>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${TYPE_COLORS[place.type || ''] || 'bg-gray-100 text-gray-600'}`}>
-                      {TYPE_NAMES[place.type || ''] || 'Spot'}
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${TYPE_COLORS[place.type] || ''}`}>
+                      {TYPE_NAMES[place.type] || ''}
                     </span>
                   </div>
                   <p className="text-xs text-gray-500 mt-2 line-clamp-1 italic">{place.address}</p>

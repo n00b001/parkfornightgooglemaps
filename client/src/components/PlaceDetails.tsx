@@ -91,7 +91,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
     const request = {
       location: new google.maps.LatLng(parseFloat(place.latitude), parseFloat(place.longitude)),
       radius: 50,
-      keyword: place.title || place.name
+      keyword: place.title
     };
 
     service.nearbySearch(request, (results, status) => {
@@ -116,7 +116,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
         axios.get(`/api/places/${place.id}/reviews`)
       ]);
       const local = localRes.data;
-      const p4n = p4nRes.data?.reviews || [];
+      const p4n = p4nRes.data?.reviews ?? [];
       setReviews(local);
       setP4nReviews(p4n);
       await saveReviews(place.id, { local, p4n });
@@ -124,8 +124,8 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
       console.error('Failed to fetch reviews, trying cache', err);
       const cached = await getCachedReviews(place.id);
       if (cached) {
-        setReviews(cached.local || []);
-        setP4nReviews(cached.p4n || []);
+setReviews(cached.local ?? []);
+        setP4nReviews(cached.p4n ?? []);
       }
     } finally {
       setIsLoadingReviews(false);
@@ -141,8 +141,8 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   }, [place]);
 
   const addToGoogleMaps = () => {
-    const googlePlaceId = googleDetails?.place_id || place.google_place_id || place.rawData?.google_place_id;
-    const query = encodeURIComponent(`${place.title || place.name} ${place.address || ''}`);
+    const googlePlaceId = googleDetails?.place_id ?? place.google_place_id;
+    const query = encodeURIComponent(`${place.title} ${place.address ?? ''}`);
     const url = googlePlaceId
       ? `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${googlePlaceId}`
       : `https://www.google.com/maps/search/?api=1&query=${query}`;
@@ -155,12 +155,12 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
   };
 
   const sharePlace = async () => {
-    const url = new URL(window.location.origin);
-    url.searchParams.set('place', place.id.toString());
+    const shareUrl = new URL(window.location.origin);
+    shareUrl.searchParams.set('place', place.id.toString());
     const shareData = {
-      title: place.title || place.name,
-      text: `Check out this parking spot on Park4Night: ${place.title || place.name}`,
-      url: url.toString(),
+      title: place.title,
+      text: `Check out this parking spot on Park4Night: ${place.title}`,
+      url: shareUrl.toString(),
     };
     if (navigator.share) {
       try {
@@ -174,14 +174,14 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
     }
   };
 
-  const photos = place.photos || [];
+  const photos = place.photos ?? [];
 
   return (
     <div className="fixed bottom-4 left-4 right-4 md:w-[450px] z-40 bg-white rounded-3xl shadow-2xl overflow-hidden max-h-[85vh] flex flex-col">
       {photos.length > 0 && (
         <div className="h-48 overflow-x-auto flex gap-1 snap-x bg-gray-100">
           {photos.map((p: any, idx: number) => (
-            <img key={idx} src={p.thumbUrl || p.lien_mini} alt={`Spot ${idx}`} className="h-full object-cover snap-center min-w-[80%]" />
+            <img key={idx} src={p.thumbUrl} alt={`Spot ${idx}`} className="h-full object-cover snap-center min-w-[80%]" />
           ))}
         </div>
       )}
@@ -206,10 +206,10 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
       <div className="p-6 overflow-y-auto flex-1">
       <div className="flex justify-between items-start mb-1">
         <div>
-          <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full uppercase mb-2 ${TYPE_COLORS[place.type || ''] || 'bg-gray-100 text-gray-600'}`}>
-            {TYPE_NAMES[place.type || ''] || 'Spot'}
+          <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full uppercase mb-2 ${TYPE_COLORS[place.type] || ''}`}>
+            {TYPE_NAMES[place.type] || ''}
           </span>
-          <h2 className="text-2xl font-bold leading-tight">{place.title || place.name}</h2>
+          <h2 className="text-2xl font-bold leading-tight">{place.title}</h2>
         </div>
         <div className="flex gap-2">
           <button onClick={sharePlace} className="p-1 text-gray-500 hover:text-blue-600 transition-colors">
@@ -278,7 +278,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
         <div className="grid grid-cols-4 gap-3">
           {AMENITIES.map(amenity => {
             // Check in top level (Prisma) or rawData (Live/Local)
-            const hasAmenity = place[amenity.key] === '1' || place.rawData?.[amenity.key] === '1';
+            const hasAmenity = place[amenity.key] === '1';
             if (!hasAmenity) return null;
             return (
               <div key={amenity.key} className="flex flex-col items-center p-3 bg-white rounded-2xl border border-gray-100 shadow-sm hover:border-blue-200 transition-colors">
@@ -287,7 +287,7 @@ const PlaceDetails: React.FC<any> = ({ place, onClose, onToggleFavorite, isFavor
               </div>
             );
           })}
-          {!AMENITIES.some(a => place[a.key] === '1' || place.rawData?.[a.key] === '1') && <p className="text-sm text-gray-400 italic col-span-4">No amenity info available.</p>}
+          {!AMENITIES.some(a => place[a.key] === '1') && <p className="text-sm text-gray-400 italic col-span-4">No amenity info available.</p>}
         </div>
       </div>
 

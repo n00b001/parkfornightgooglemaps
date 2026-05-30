@@ -1,6 +1,9 @@
 const prisma = require("../config/db");
 const LRUCache = require("../services/lruCache");
-const { transformPlaces, transformPlace } = require("../services/placeTransform");
+const {
+	transformPlaces,
+	transformPlace,
+} = require("../services/placeTransform");
 
 const MAX_PLACES_LIMIT = 200;
 
@@ -9,7 +12,7 @@ const placesCache = new LRUCache(100, 5 * 60 * 1000);
 
 // Build a cache key from query params
 const cacheKey = (lat, lng, type, minRating, sortBy, limit) =>
-	`${lat},${lng}|${type || "*"}|${minRating || "*"}|${sortBy || "*"}|${limit}`;
+	`${lat},${lng}|${type}|${minRating}|${sortBy}|${limit}`;
 
 // Simple Euclidean distance (good enough for sorting nearby places)
 const distance = (aLat, aLng, bLat, bLng) =>

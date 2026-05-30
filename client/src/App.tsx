@@ -36,7 +36,7 @@ const placesCache = new LRUCache<string, any[]>(100, 5 * 60 * 1000);
 const App: React.FC = () => {
 	const { isLoaded } = useJsApiLoader({
 		id: "google-map-script",
-		googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "",
+		googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
 		libraries: LIBRARIES,
 	});
 
@@ -149,7 +149,7 @@ const App: React.FC = () => {
 		if (filters.minRating) {
 			filtered = filtered.filter(
 				(p: any) =>
-					(parseFloat(p.rating) || 0) >= parseFloat(filters.minRating),
+					parseFloat(p.rating) >= parseFloat(filters.minRating),
 			);
 		}
 
@@ -165,15 +165,15 @@ const App: React.FC = () => {
 			const q = searchQuery.toLowerCase();
 			filtered = filtered.filter(
 				(p: any) =>
-					(p.title || "").toLowerCase().includes(q) ||
-					(p.address || "").toLowerCase().includes(q),
+					p.title.toLowerCase().includes(q) ||
+					p.address.toLowerCase().includes(q),
 			);
 		}
 
 		// Sort
 		if (filters.sortBy === "rating") {
 			filtered.sort(
-				(a, b) => (parseFloat(b.rating) || 0) - (parseFloat(a.rating) || 0),
+				(a, b) => parseFloat(b.rating) - parseFloat(a.rating),
 			);
 		} else if (filters.sortBy === "distance") {
 			filtered.sort((a, b) => {

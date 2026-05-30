@@ -18,7 +18,7 @@ const getIcon = (type: string, isFavorite: boolean, isVisited: boolean) => {
     paid: '#EAB308', // Yellow
   };
 
-  const color = colors[type] || '#3B82F6';
+  const color = colors[type];
 
   let strokeColor = '#FFFFFF';
   let strokeWeight = 2;

@@ -30,7 +30,7 @@ router.get("/google/callback", (req, res, next) => {
 					.status(401)
 					.json({
 						error: "Authentication failed",
-						message: info?.message || "Unknown error",
+						message: info?.message,
 					});
 			}
 			req.login(user, (loginErr) => {
@@ -48,7 +48,7 @@ router.get("/google/callback", (req, res, next) => {
 						});
 				}
 
-				let returnTo = process.env.CLIENT_URL || "/";
+				let returnTo = process.env.CLIENT_URL;
 				if (req.query.state) {
 					try {
 						const state = JSON.parse(
