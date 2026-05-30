@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { supabase } from "../lib/supabase";
+import { api } from "../lib/api";
 import { savePendingVisit } from "../services/db";
 
 export const useGpsTracking = (
@@ -46,7 +46,8 @@ export const useGpsTracking = (
 						if (onVisitRecordedRef.current)
 							onVisitRecordedRef.current(place.id);
 						try {
-							await supabase.functions.invoke("record-visit", {
+							await api("record-visit", {
+								method: "POST",
 								body: { placeId: place.id },
 							});
 						} catch (err) {

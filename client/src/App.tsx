@@ -25,6 +25,7 @@ import PlaceDetails from "./components/PlaceDetails";
 import { useGpsTracking } from "./hooks/useGpsTracking";
 import { useJsApiLoader } from "@react-google-maps/api";
 import { supabase, signInWithGoogle, signOut, type User } from "./lib/supabase";
+import { api } from "./lib/api";
 
 const LIBRARIES: ("places" | "drawing" | "geometry" | "visualization")[] = [
 	"places",
@@ -70,7 +71,8 @@ const App: React.FC = () => {
 			const pendingVisits = await getPendingVisits();
 			for (const visit of pendingVisits) {
 				try {
-					await supabase.functions.invoke("record-visit", {
+					await api("record-visit", {
+						method: "POST",
 						body: { placeId: visit.placeId },
 					});
 					await removePendingVisit(visit.placeId);
@@ -85,13 +87,14 @@ const App: React.FC = () => {
 			for (const fav of pendingFavs) {
 				try {
 					if (fav.action === "add") {
-						await supabase.functions.invoke("add-favorite", {
+						await api("add-favorite", {
+							method: "POST",
 							body: { placeId: fav.placeId },
 						});
 					} else {
-						await supabase.functions.invoke("remove-favorite", {
-							body: { placeId: fav.placeId },
+						await api("remove-favorite", {
 							method: "DELETE",
+							body: { placeId: fav.placeId },
 						});
 					}
 					await removePendingFavorite(fav.placeId);
@@ -104,7 +107,8 @@ const App: React.FC = () => {
 			const pendingReviews = await getPendingReviews();
 			for (const review of pendingReviews) {
 				try {
-					await supabase.functions.invoke("add-review", {
+					await api("add-review", {
+						method: "POST",
 						body: {
 							placeId: review.placeId,
 							content: review.content,
@@ -134,15 +138,14 @@ const App: React.FC = () => {
 			const cached = placesCache.get(key);
 			if (cached !== undefined) return cached;
 
-			const { data, error } = await supabase.functions.invoke("get-places", {
-				body: {
-					lat: lastFetchedCenter.lat,
-					lng: lastFetchedCenter.lng,
-					limit: 150,
+			const data = await api("get-places", {
+				searchParams: {
+					lat: String(lastFetchedCenter.lat),
+					lng: String(lastFetchedCenter.lng),
+					limit: "150",
 				},
 			});
 
-			if (error) throw error;
 			placesCache.set(key, data);
 			return data;
 		},
@@ -234,28 +237,23 @@ const App: React.FC = () => {
 			data: { subscription },
 		} = supabase.auth.onAuthStateChange(async (_event, session) => {
 			if (session) {
-				const { data: profile, error } = await supabase.functions.invoke(
-					"get-user",
-					{ body: {} },
-				);
-				if (!error && profile) {
-					setUser(profile);
-					// Load favorites
-					const { data: favs } = await supabase.functions.invoke(
-						"get-favorites",
-						{ body: {} },
-					);
-					if (favs) {
-						setFavorites(favs.map((f: any) => f.id));
+				try {
+					const profile = await api("get-user");
+					if (profile) {
+						setUser(profile);
+						// Load favorites
+						const favs = await api("get-favorites");
+						if (favs) {
+							setFavorites(favs.map((f: any) => f.id));
+						}
+						// Load visits
+						const visits = await api("get-visits");
+						if (visits) {
+							setVisited(visits.map((v: any) => v.placeId));
+						}
 					}
-					// Load visits
-					const { data: visits } = await supabase.functions.invoke(
-						"get-visits",
-						{ body: {} },
-					);
-					if (visits) {
-						setVisited(visits.map((v: any) => v.placeId));
-					}
+				} catch (err) {
+					console.error("Failed to load user data:", err);
 				}
 			} else {
 				setUser(null);
@@ -318,9 +316,9 @@ const App: React.FC = () => {
 		if (isCurrentlyFavorite) {
 			setFavorites(favorites.filter((id) => id !== placeId));
 			try {
-				await supabase.functions.invoke("remove-favorite", {
-					body: { placeId },
+				await api("remove-favorite", {
 					method: "DELETE",
+					body: { placeId },
 				});
 			} catch (err) {
 				if (!navigator.onLine) {
@@ -330,7 +328,8 @@ const App: React.FC = () => {
 		} else {
 			setFavorites([...favorites, placeId]);
 			try {
-				await supabase.functions.invoke("add-favorite", {
+				await api("add-favorite", {
+					method: "POST",
 					body: { placeId },
 				});
 			} catch (err) {

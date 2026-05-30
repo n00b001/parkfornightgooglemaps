@@ -1,6 +1,6 @@
 import React, { useState } from "react";
-import { X, Star, Send } from "lucide-react";
-import { supabase } from "../lib/supabase";
+import { Star, Send } from "lucide-react";
+import { api } from "../lib/api";
 import { savePendingReview } from "../services/db";
 
 const ReviewForm: React.FC<any> = ({ placeId, onSuccess }) => {
@@ -11,7 +11,8 @@ const ReviewForm: React.FC<any> = ({ placeId, onSuccess }) => {
 		e.preventDefault();
 		const reviewData = { placeId, content, rating };
 		try {
-			await supabase.functions.invoke("add-review", {
+			await api("add-review", {
+				method: "POST",
 				body: reviewData,
 			});
 			setContent("");

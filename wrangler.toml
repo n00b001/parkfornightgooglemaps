@@ -1,0 +1,20 @@
+name = "parking"
+main = "worker/index.ts"
+compatibility_date = "2025-01-01"
+
+# Enable workers.dev subdomain for preview URLs
+workers_dev = true
+
+# Static assets from Vite build
+[assets]
+directory = "client/dist"
+binding = "ASSETS"
+# SPA fallback: serve index.html for unknown routes
+single_page_application = true
+
+# Environment variables
+[vars]
+SUPABASE_URL = "https://vsfbbzqiljbtcesremjn.supabase.co"
+
+# Secrets (set via wrangler secret put):
+# SUPABASE_SERVICE_ROLE_KEY

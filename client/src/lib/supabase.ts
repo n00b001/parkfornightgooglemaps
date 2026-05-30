@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { api } from "./api";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -16,7 +17,7 @@ export type User = {
 };
 
 /**
- * Fetch the app user profile from the get-user edge function.
+ * Fetch the app user profile from the worker API.
  */
 export async function getUserProfile(): Promise<User | null> {
 	const {
@@ -24,16 +25,13 @@ export async function getUserProfile(): Promise<User | null> {
 	} = await supabase.auth.getSession();
 	if (!session) return null;
 
-	const { data, error } = await supabase.functions.invoke("get-user", {
-		body: {},
-	});
-
-	if (error) {
-		console.error("Failed to get user profile:", error);
+	try {
+		const data = await api("get-user");
+		return data;
+	} catch (err) {
+		console.error("Failed to get user profile:", err);
 		return null;
 	}
-
-	return data;
 }
 
 /**
