@@ -627,14 +627,12 @@ def run_pipeline(
                             _stage_timers["translate"].add(result.get("translate", 0))
                             _stage_timers["normalize"].add(result.get("normalize", 0))
 
-                        # Enqueue R2 upload
+                        # Enqueue R2 upload (non-blocking — pool handles backpressure)
                         t0 = time.time()
-                        r2_task = enqueue_r2(place, r2_pool)
-                        if r2_task is not None:
-                            r2_task.done_event.wait()
+                        enqueue_r2(place, r2_pool)
                         r2_time = time.time() - t0
 
-                        # Enqueue DB insert
+                        # Enqueue DB insert (non-blocking)
                         t0 = time.time()
                         enqueue_db(place, db_pool)
                         db_time = time.time() - t0
