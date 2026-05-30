@@ -25,19 +25,17 @@ Why disk cache over checkpointing:
   - Easier to debug: ls the cache directory to see what's cached
   - Harder to get wrong: can't forget to update the checkpoint
 
-Stages (use --stage to run individually):
-  scrape    - Extract places from API, download images, fetch reviews
-              Saves to cache/scraped/{place_id}.json
-  normalize - Translate text to English, normalize into DB-ready format
-              Reads from cache/scraped/, writes to cache/normalized/
-  upload    - Upload images to R2, insert records to Supabase
-              Reads from cache/normalized/
+Pipeline stages (run end-to-end):
+  1. Extract places from API (fetch_places)
+  2. Download images (download_image)
+  3. Fetch reviews (fetch_reviews)
+  4. Translate text to English (translate_text)
+  5. Normalize into DB-ready format (normalize_place)
+  6. Upload images to R2 (upload_to_r2)
+  7. Insert records to Supabase (upload_to_supabase)
 
 Usage:
     cd scripts/pipeline && uv run python pipeline.py --limit 10
-    cd scripts/pipeline && uv run python pipeline.py --stage scrape --limit 10
-    cd scripts/pipeline && uv run python pipeline.py --stage normalize --limit 10
-    cd scripts/pipeline && uv run python pipeline.py --stage upload --limit 10
     cd scripts/pipeline && uv run python pipeline.py --limit 10 --no-disk-cache
     cd scripts/pipeline && uv run python pipeline.py --dry-run
 
@@ -70,17 +68,10 @@ from typing import Any
 # Ensure pipeline package is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from frozendict import frozendict  # type: ignore[import-not-found]
+
 from api_client import Park4NightAPI  # type: ignore[import-not-found]
-from cache import (  # type: ignore[import-not-found]
-    get_cache_stats,
-    norm_cache_get,
-    norm_cache_set,
-    place_completed_get,
-    place_completed_set,
-    scrape_cache_get,
-    scrape_cache_list,
-    scrape_cache_set,
-)
+from cache_config import disk_cache, no_disk_cache  # type: ignore[import-not-found]
 from config import (  # type: ignore[import-not-found]
     ACTIVITY_CODES,
     PLACE_TYPE_CODES,
@@ -97,16 +88,96 @@ from logging_setup import (  # type: ignore[import-not-found]
     setup_logging,
 )
 from normalizer import (  # type: ignore[import-not-found]
-    normalize_place,
     normalize_review,
 )
 from r2_worker import R2UploadTask, R2WorkerPool  # type: ignore[import-not-found]
+from stages import (  # type: ignore[import-not-found]
+    normalize_place,
+)
 from translator import (  # type: ignore[import-not-found]
     ensure_packages_installed,
     preload_models,
     save_cache,
     translate_batch,
 )
+
+# ── Cache functions (ALL via @disk_cache.memoize() decorators) ────────
+# ABSOLUTE RULE: Never call disk_cache.get(), disk_cache.set(), or
+# disk_cache[key] = value. All caching MUST use @disk_cache.memoize().
+# Custom cache code = untested code = bugs.
+#
+# Pattern: functions accept optional `data` parameter. When provided,
+# the function returns it (write path → cached by decorator). When None,
+# returns None (read path → decorator returns previously cached value).
+# `ignore=('data',)` ensures cache key is just place_id.
+# `frozendict` makes dict arguments hashable for the decorator.
+
+
+@disk_cache.memoize(ignore=("data",))
+def _get_scraped_place(place_id: int, data: frozendict | None = None) -> dict | None:
+    """Get or cache scraped place data.
+
+    Write: _get_scraped_place(place_id, frozendict(data)) → caches data
+    Read:  _get_scraped_place(place_id) → returns cached dict or None
+    """
+    if data is not None:
+        return dict(data)
+    return None
+
+
+@disk_cache.memoize(ignore=("data",))
+def _get_normalized_place(place_id: int, data: frozendict | None = None) -> dict | None:
+    """Get or cache normalized place data.
+
+    Write: _get_normalized_place(place_id, frozendict(data)) → caches data
+    Read:  _get_normalized_place(place_id) → returns cached dict or None
+    """
+    if data is not None:
+        return dict(data)
+    return None
+
+
+@disk_cache.memoize(ignore=("data",))
+def _get_place_completed(place_id: int, data: frozendict | None = None) -> dict | None:
+    """Get or cache completion record for a place.
+
+    Write: _get_place_completed(place_id, frozendict(metadata)) → caches
+    Read:  _get_place_completed(place_id) → returns cached dict or None
+    """
+    if data is not None:
+        return dict(data)
+    return None
+
+
+def _list_scraped_place_ids() -> list[int]:
+    """List all place IDs cached by _get_scraped_place.
+
+    Iterates diskcache keys to find entries from the memoized function.
+    This is structural discovery (not data management) — the decorator
+    handles all get/set operations.
+    """
+    if no_disk_cache:
+        return []
+    ids: list[int] = []
+    for key in disk_cache.iterkeys():
+        # diskcache memoize keys are tuples: (func_name, ENOVAL, arg_index, value, ...)
+        if isinstance(key, tuple) and len(key) >= 3:
+            if key[0] == "_get_scraped_place":
+                # Find the place_id in the key tuple
+                for item in key:
+                    if isinstance(item, int) and item > 0:
+                        ids.append(item)
+                        break
+    return sorted(ids)
+
+
+def get_cache_stats() -> dict[str, Any]:
+    """Get statistics about the cache."""
+    return {
+        "total_entries": len(disk_cache),
+        "size": disk_cache.size,
+    }
+
 
 logger = logging.getLogger("pipeline")
 
@@ -306,9 +377,7 @@ def stage_translate(place: dict, no_disk_cache: bool = False) -> dict:
     # Note: do NOT update _stats here — this function runs in a worker process
     # (spawn) and threading.Lock does not work across processes.
     if texts_to_translate:
-        translations = translate_batch(
-            texts_to_translate, max_workers=8, no_disk_cache=no_disk_cache
-        )
+        translations = translate_batch(texts_to_translate, max_workers=8)
 
         # Apply translations to descriptions
         if isinstance(raw_desc, dict):
@@ -357,7 +426,7 @@ def stage_normalize(place: dict) -> tuple[dict | None, bool]:
     place_id = place["id"]
 
     # Check normalization cache
-    cached = norm_cache_get(place_id)
+    cached = _get_normalized_place(place_id)
     if cached is not None:
         # Still need to normalize reviews (they're not cached separately)
         normalized_reviews = []
@@ -368,7 +437,7 @@ def stage_normalize(place: dict) -> tuple[dict | None, bool]:
         cached["reviews"] = normalized_reviews
         return cached, True  # cache hit
 
-    normalized = normalize_place(place)
+    normalized = normalize_place(place_id, frozendict(place))
     if not normalized:
         return None, False  # cache miss
 
@@ -381,7 +450,7 @@ def stage_normalize(place: dict) -> tuple[dict | None, bool]:
     normalized["reviews"] = normalized_reviews
 
     # Cache normalized data
-    norm_cache_set(place_id, normalized)
+    _get_normalized_place(place_id, frozendict(normalized))
 
     return normalized, False  # cache miss
 
@@ -515,8 +584,8 @@ def _worker_init(no_disk_cache: bool, preload_translation: bool = True) -> None:
     _no_disk_cache_global = no_disk_cache  # Set correctly in worker (spawn resets globals)
     if preload_translation:
         preload_models()
-    _worker_api = Park4NightAPI(no_disk_cache=no_disk_cache)
-    _worker_downloader = ImageDownloader(no_disk_cache=no_disk_cache)
+    _worker_api = Park4NightAPI()
+    _worker_downloader = ImageDownloader()
 
 
 # ── Scrape worker (must be top-level for pickling) ──────────────────
@@ -528,7 +597,7 @@ def _worker_scrape_place(
     """Scrape a single place: extract → download images → fetch reviews.
 
     Saves complete scraped data to cache/scraped/{place_id}.json.
-    Used by --stage scrape.
+    Used by the scrape stage.
 
     Returns result dict with place_id, elapsed time, and scraped place data.
     """
@@ -536,15 +605,14 @@ def _worker_scrape_place(
     place_start = time.time()
 
     # Check if already scraped (disk cache)
-    if not no_disk_cache:
-        cached = scrape_cache_get(place_id)
-        if cached is not None:
-            return {
-                "place_id": place_id,
-                "elapsed": 0,
-                "cached": True,
-                "place": cached,
-            }
+    cached = _get_scraped_place(place_id)
+    if cached is not None:
+        return {
+            "place_id": place_id,
+            "elapsed": 0,
+            "cached": True,
+            "place": cached,
+        }
 
     # ── Stage 1: Extract ─
     place = extract_place_data(raw_place)
@@ -563,7 +631,7 @@ def _worker_scrape_place(
     # Save to scrape cache (so normalize stage can read it)
     # Remove _raw_photos before caching (not needed by normalize stage)
     place.pop("_raw_photos", None)
-    scrape_cache_set(place_id, place)
+    _get_scraped_place(place_id, frozendict(place))
 
     elapsed = time.time() - place_start
     return {
@@ -583,16 +651,16 @@ def _worker_normalize_place(
 
     Reads from cache/scraped/{place_id}.json.
     Saves normalized data to cache/normalized/{place_id}.json.
-    Used by --stage normalize.
+    Used by the normalize stage.
 
     Returns result dict with place_id, elapsed time, and normalized place data.
     """
     place_start = time.time()
 
     # Read from scrape cache
-    place = scrape_cache_get(place_id)
+    place = _get_scraped_place(place_id)
     if place is None:
-        return {"error": f"Place {place_id} not found in scrape cache (run --stage scrape first)"}
+        return {"error": f"Place {place_id} not found in scrape cache"}
 
     # ── Stage 4: Translate ─
     place = stage_translate(place, no_disk_cache=no_disk_cache)
@@ -716,7 +784,7 @@ def run_scrape_stage(
     extract_start = time.time()
     extract_tracker = ProgressTracker("Extracting places", total=limit or 0)
     places_to_process = []
-    for place, grid_point in place_source(Park4NightAPI(no_disk_cache=no_disk_cache), limit=limit):
+    for place, grid_point in place_source(Park4NightAPI(), limit=limit):
         places_to_process.append((place, grid_point))
         extract_tracker.update(len(places_to_process))
     extract_tracker.finish()
@@ -754,23 +822,20 @@ def run_scrape_stage(
         to_process = []
         for raw_place, grid_point in places_to_process:
             place_id = int(raw_place.get("id") or 0)
-            if not no_disk_cache:
-                cached_data = scrape_cache_get(place_id)
-                if cached_data is not None:
-                    cached += 1
-                    place_num += 1
-                    with _stats_lock:
-                        _stats["places_processed"] += 1
-                        _stats["images_downloaded"] += len(cached_data.get("photos", []))
-                    console.print(
-                        f"  [bold yellow]✓ Place {place_id} cached (skipped)[/bold yellow]"
-                    )
-                    logger.info(
-                        f"Scrape place {place_num}/{total_places} ({place_id}): cached (skipped)"
-                    )
-                    progress.update(task, completed=place_num)
-                    process_tracker.update(place_num)
-                    continue
+            cached_data = _get_scraped_place(place_id)
+            if cached_data is not None:
+                cached += 1
+                place_num += 1
+                with _stats_lock:
+                    _stats["places_processed"] += 1
+                    _stats["images_downloaded"] += len(cached_data.get("photos", []))
+                console.print(f"  [bold yellow]✓ Place {place_id} cached (skipped)[/bold yellow]")
+                logger.info(
+                    f"Scrape place {place_num}/{total_places} ({place_id}): cached (skipped)"
+                )
+                progress.update(task, completed=place_num)
+                process_tracker.update(place_num)
+                continue
             to_process.append((raw_place, grid_point))
 
         # Only spawn workers for places that actually need work.
@@ -881,9 +946,9 @@ def run_normalize_stage(
         return
 
     # Get list of scraped place IDs
-    scraped_ids = scrape_cache_list()
+    scraped_ids = _list_scraped_place_ids()
     if not scraped_ids:
-        console.print("[yellow]No scraped places found. Run --stage scrape first.[/yellow]")
+        console.print("[yellow]No scraped places found.[/yellow]")
         return
 
     # Apply limit
@@ -915,23 +980,19 @@ def run_normalize_stage(
         # Checking here means cached places are handled instantly with zero spawn cost.
         to_process = []
         for place_id in scraped_ids:
-            if not no_disk_cache:
-                cached_data = norm_cache_get(place_id)
-                if cached_data is not None:
-                    cached += 1
-                    place_num += 1
-                    with _stats_lock:
-                        _stats["places_processed"] += 1
-                    console.print(
-                        f"  [bold yellow]✓ Place {place_id} cached (skipped)[/bold yellow]"
-                    )
-                    logger.info(
-                        f"Normalize place {place_num}/{len(scraped_ids)} "
-                        f"({place_id}): cached (skipped)"
-                    )
-                    progress.update(task, completed=place_num)
-                    process_tracker.update(place_num)
-                    continue
+            cached_data = _get_normalized_place(place_id)
+            if cached_data is not None:
+                cached += 1
+                place_num += 1
+                with _stats_lock:
+                    _stats["places_processed"] += 1
+                console.print(f"  [bold yellow]✓ Place {place_id} cached (skipped)[/bold yellow]")
+                logger.info(
+                    f"Normalize place {place_num}/{len(scraped_ids)} ({place_id}): cached (skipped)"
+                )
+                progress.update(task, completed=place_num)
+                process_tracker.update(place_num)
+                continue
             to_process.append(place_id)
 
         # Only spawn workers for places that actually need work.
@@ -1080,7 +1141,7 @@ def run_upload_stage(
     if not normalized_ids:
         console.print(
             "[yellow]No normalized places found. "
-            "Run --stage normalize (or full pipeline) first.[/yellow]"
+            "Run the full pipeline first.[/yellow]"
         )
         if r2_pool is not None:
             r2_pool.shutdown()
@@ -1112,25 +1173,22 @@ def run_upload_stage(
             place_num += 1
 
             # Check if already fully completed (skip R2+DB re-upload)
-            if not no_disk_cache:
-                completed = place_completed_get(place_id)
-                if completed is not None:
-                    with _stats_lock:
-                        _stats["places_processed"] += 1
-                        _stats["cache_hits"] += 1
-                    console.print(
-                        f"  [bold green]✓ Place {place_id} completed (skipped)[/bold green]"
-                    )
-                    logger.info(
-                        f"Upload place {place_num}/{len(normalized_ids)} "
-                        f"({place_id}): completed (skipped)"
-                    )
-                    progress.update(task, completed=place_num)
-                    process_tracker.update(place_num)
-                    continue
+            completed = _get_place_completed(place_id)
+            if completed is not None:
+                with _stats_lock:
+                    _stats["places_processed"] += 1
+                    _stats["cache_hits"] += 1
+                console.print(f"  [bold green]✓ Place {place_id} completed (skipped)[/bold green]")
+                logger.info(
+                    f"Upload place {place_num}/{len(normalized_ids)} "
+                    f"({place_id}): completed (skipped)"
+                )
+                progress.update(task, completed=place_num)
+                process_tracker.update(place_num)
+                continue
 
             # Load normalized place from cache
-            place = norm_cache_get(place_id)
+            place = _get_normalized_place(place_id)
             if place is None:
                 console.print(f"  [red]✗ Place {place_id} not found in normalize cache[/red]")
                 errors += 1
@@ -1160,15 +1218,16 @@ def run_upload_stage(
                     _stage_timers["db_insert"].add(db_time)
 
                 # Mark as fully completed so next run skips entirely
-                if not no_disk_cache:
-                    place_completed_set(
-                        place_id,
+                _get_place_completed(
+                    place_id,
+                    frozendict(
                         {
                             "completed_at": datetime.now(UTC).isoformat(),
                             "photos": len(place.get("photos", [])),
                             "reviews": len(place.get("reviews", [])),
-                        },
-                    )
+                        }
+                    ),
+                )
 
                 console.print(
                     f"  [bold green]✓ Place {place_id} "
@@ -1385,7 +1444,7 @@ def run_full_pipeline(
     extract_start = time.time()
     extract_tracker = ProgressTracker("Extracting places", total=limit or 0)
     places_to_process = []
-    for place, grid_point in place_source(Park4NightAPI(no_disk_cache=no_disk_cache), limit=limit):
+    for place, grid_point in place_source(Park4NightAPI(), limit=limit):
         places_to_process.append((place, grid_point))
         extract_tracker.update(len(places_to_process))
     extract_tracker.finish()
@@ -1437,67 +1496,61 @@ def run_full_pipeline(
             place_id = int(raw_place.get("id") or 0)
 
             # Fast path: place already completed all stages (scrape → normalize → R2 → DB)
-            if not no_disk_cache:
-                completed = place_completed_get(place_id)
-                if completed is not None:
-                    place_num += 1
-                    with _stats_lock:
-                        _stats["places_processed"] += 1
-                        _stats["cache_hits"] += 1
-                    console.print(
-                        f"  [bold green]✓ Place {place_id} completed (skipped)[/bold green]"
-                    )
-                    logger.info(
-                        f"Place {place_num}/{total_places} ({place_id}): "
-                        f"completed (skipped all stages)"
-                    )
-                    progress.update(task, completed=place_num)
-                    process_tracker.update(place_num)
-                    continue
+            completed = _get_place_completed(place_id)
+            if completed is not None:
+                place_num += 1
+                with _stats_lock:
+                    _stats["places_processed"] += 1
+                    _stats["cache_hits"] += 1
+                console.print(f"  [bold green]✓ Place {place_id} completed (skipped)[/bold green]")
+                logger.info(
+                    f"Place {place_num}/{total_places} ({place_id}): completed (skipped all stages)"
+                )
+                progress.update(task, completed=place_num)
+                process_tracker.update(place_num)
+                continue
 
             # Slower path: normalized data exists but may need R2/DB upload
-            if not no_disk_cache:
-                cached_data = norm_cache_get(place_id)
-                if cached_data is not None:
-                    # Already normalized — enqueue R2 + DB directly, skip worker.
-                    place = cached_data
-                    t0 = time.time()
-                    r2_task = stage_enqueue_r2(place, r2_pool)
-                    if r2_task is not None:
-                        r2_task.done_event.wait()
-                    r2_time = time.time() - t0
+            cached_data = _get_normalized_place(place_id)
+            if cached_data is not None:
+                # Already normalized — enqueue R2 + DB directly, skip worker.
+                place = cached_data
+                t0 = time.time()
+                r2_task = stage_enqueue_r2(place, r2_pool)
+                if r2_task is not None:
+                    r2_task.done_event.wait()
+                r2_time = time.time() - t0
 
-                    t0 = time.time()
-                    stage_enqueue_db(place, db_pool)
-                    db_time = time.time() - t0
+                t0 = time.time()
+                stage_enqueue_db(place, db_pool)
+                db_time = time.time() - t0
 
-                    with _stats_lock:
-                        _stats["places_processed"] += 1
-                        _stats["images_downloaded"] += len(place.get("photos", []))
-                        _stage_timers["r2_upload"].add(r2_time)
-                        _stage_timers["db_insert"].add(db_time)
+                with _stats_lock:
+                    _stats["places_processed"] += 1
+                    _stats["images_downloaded"] += len(place.get("photos", []))
+                    _stage_timers["r2_upload"].add(r2_time)
+                    _stage_timers["db_insert"].add(db_time)
 
-                    # Mark as fully completed so next run skips entirely
-                    if not no_disk_cache:
-                        place_completed_set(
-                            place_id,
-                            {
-                                "completed_at": datetime.now(UTC).isoformat(),
-                                "photos": len(place.get("photos", [])),
-                                "reviews": len(place.get("reviews", [])),
-                            },
-                        )
+                # Mark as fully completed so next run skips entirely
+                _get_place_completed(
+                    place_id,
+                    frozendict(
+                        {
+                            "completed_at": datetime.now(UTC).isoformat(),
+                            "photos": len(place.get("photos", [])),
+                            "reviews": len(place.get("reviews", [])),
+                        }
+                    ),
+                )
 
-                    place_num += 1
-                    console.print(
-                        f"  [bold yellow]✓ Place {place_id} cached (R2+DB only)[/bold yellow]"
-                    )
-                    logger.info(
-                        f"Place {place_num}/{total_places} ({place_id}): cached (R2+DB only)"
-                    )
-                    progress.update(task, completed=place_num)
-                    process_tracker.update(place_num)
-                    continue
+                place_num += 1
+                console.print(
+                    f"  [bold yellow]✓ Place {place_id} cached (R2+DB only)[/bold yellow]"
+                )
+                logger.info(f"Place {place_num}/{total_places} ({place_id}): cached (R2+DB only)")
+                progress.update(task, completed=place_num)
+                process_tracker.update(place_num)
+                continue
             to_process.append((raw_place, grid_point))
 
         # Use spawn (not fork) to avoid inheriting argos locks.
@@ -1581,15 +1634,16 @@ def run_full_pipeline(
 
                         # Mark place as fully completed (all stages done).
                         # Next run will find this in completed cache and skip entirely.
-                        if not no_disk_cache:
-                            place_completed_set(
-                                place_id,
+                        _get_place_completed(
+                            place_id,
+                            frozendict(
                                 {
                                     "completed_at": datetime.now(UTC).isoformat(),
                                     "photos": len(place.get("photos", [])),
                                     "reviews": len(place.get("reviews", [])),
-                                },
-                            )
+                                }
+                            ),
+                        )
 
                         rate = place_num / result["elapsed"] if result["elapsed"] > 0 else 0
                         console.print(
@@ -1726,25 +1780,14 @@ def run_pipeline(
     limit: int | None = None,
     no_disk_cache: bool = False,
     dry_run: bool = False,
-    stage: str | None = None,
 ) -> None:
-    """Run the pipeline, routing to the appropriate stage.
+    """Run the full pipeline end-to-end.
 
     Args:
         limit: Maximum number of places to process.
         no_disk_cache: Bypass all disk caches.
         dry_run: Show what would be done without making changes.
-        stage: Run only a specific stage ('scrape', 'normalize', 'upload').
-               None (default) runs all stages.
     """
-    if stage == "scrape":
-        return run_scrape_stage(limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run)
-    elif stage == "normalize":
-        return run_normalize_stage(limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run)
-    elif stage == "upload":
-        return run_upload_stage(limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run)
-
-    # Default: run all stages (original behavior)
     return run_full_pipeline(limit=limit, no_disk_cache=no_disk_cache, dry_run=dry_run)
 
 
@@ -1758,8 +1801,7 @@ def main() -> None:
         "Idempotent: re-running with same --limit completes instantly (disk cache).\n"
         "Completed places cache: places that finished ALL stages are skipped entirely\n"
         "on subsequent runs (no worker spawn, no R2/DB re-upload).\n"
-        "Use --no-disk-cache to bypass all caches and re-process everything.\n"
-        "Use --stage to run only a specific stage.",
+        "Use --no-disk-cache to bypass all caches and re-process everything.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -1772,12 +1814,6 @@ def main() -> None:
         "--dry-run",
         action="store_true",
         help="Show what would be done without making changes",
-    )
-    parser.add_argument(
-        "--stage",
-        choices=["scrape", "normalize", "upload"],
-        default=None,
-        help="Run only a specific stage (default: all stages)",
     )
     parser.add_argument(
         "--r2-config",
@@ -1838,7 +1874,6 @@ def main() -> None:
         limit=args.limit,
         no_disk_cache=args.no_disk_cache,
         dry_run=args.dry_run,
-        stage=args.stage,
     )
 
 

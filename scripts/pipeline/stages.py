@@ -36,22 +36,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import diskcache as dc
+from frozendict import frozendict  # type: ignore[import-not-found]
+
+from cache_config import disk_cache  # type: ignore[import-not-found]
 
 logger = logging.getLogger("pipeline.stages")
-
-# ── Cache directory ──────────────────────────────────────────────────
-_CACHE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data",
-    "cache",
-    "diskcache",
-)
-
-# ── diskcache.FanoutCache (process-safe, high concurrency) ───────────
-# FanoutCache distributes entries across 8 sub-databases for better
-# concurrent write performance across multiple worker processes.
-disk_cache = dc.FanoutCache(_CACHE_DIR)
 
 # ── Module-level singletons (per worker process) ─────────────────────
 _api_client: Any = None
@@ -86,11 +75,6 @@ def init_stages(r2_config: dict | None = None, no_disk_cache: bool = False) -> N
             aws_secret_access_key=r2_config["secretAccessKey"],
             region_name=r2_config.get("region", "auto"),
         )
-
-
-def shutdown_stages() -> None:
-    """Clean up worker process resources."""
-    disk_cache.close()
 
 
 # ── Helper: lazy singleton getters ───────────────────────────────────
@@ -153,7 +137,7 @@ def convert_to_webp(jpg_path: str, webp_path: str) -> str | None:
     """Convert a JPG image to WebP format.
 
     Disk cached: same input/output paths return cached result.
-    Side effect: writes WebP file and deletes JPG on first call.
+    Side effect: writes WebP file on first call.
     Returns None if conversion fails.
     """
     from PIL import Image
@@ -175,7 +159,6 @@ def convert_to_webp(jpg_path: str, webp_path: str) -> str | None:
             elif img.mode != "RGB":
                 img = img.convert("RGB")
             img.save(webp, "WEBP", quality=50, method=6)
-        jpg.unlink(missing_ok=True)
         return str(webp)
     except Exception as e:
         logger.error(f"Failed to convert {jpg_path} to WebP: {e}")
@@ -242,39 +225,41 @@ def translate_text(text: str, src_lang: str) -> str:
         return text.strip()
 
     from translator import (  # type: ignore[import-not-found]
-        _translate_single,
         ensure_packages_installed,
+        translate_text,
     )
 
     ensure_packages_installed()
-    _, translated = _translate_single(text.strip(), src_lang)
-    return translated
+    return translate_text(text.strip(), src_lang)
 
 
 # ── Stage: normalize_place ───────────────────────────────────────────
 @disk_cache.memoize()
-def normalize_place(place_id: int, place_data: dict) -> dict | None:
+def normalize_place(place_id: int, place_data: frozendict) -> dict | None:
     """Normalize a place record into DB-ready format.
 
     Disk cached: same place_id + data returns cached normalized data.
     Pure function: no side effects, no I/O.
+    Caller must wrap place_data in frozendict() for hashability.
     """
     from normalizer import normalize_place as _do_normalize  # type: ignore[import-not-found]
 
-    return _do_normalize(place_data)
+    return _do_normalize(dict(place_data))
 
 
 # ── Stage: upload_to_supabase ────────────────────────────────────────
 @disk_cache.memoize()
-def upload_to_supabase(place_id: int, place_data: dict, reviews: list[dict]) -> bool:
+def upload_to_supabase(
+    place_id: int, place_data: frozendict, reviews: frozendict
+) -> bool:
     """Upload a normalized place + reviews to Supabase.
 
     Disk cached: same place_id + data returns cached result.
     Side effect: upserts place and reviews to Supabase on first call.
     Returns True if upload succeeded, False otherwise.
+    Caller must wrap place_data and reviews in frozendict() for hashability.
     """
     import json
-    import os
     import uuid
 
     try:

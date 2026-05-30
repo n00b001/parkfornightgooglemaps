@@ -9,10 +9,9 @@ All source languages are known from data structure:
   - Pricing: always French
   - Reviews: always French (Park4Night is a French site)
 
-Translation cache: persistent disk cache (scripts/data/cache/translations.json)
-loaded at startup and saved periodically. This ensures re-running the pipeline
-does not re-translate already-translated strings (argos-translate is slow:
-~100ms per string, so 10,000 strings = ~17 minutes without cache).
+Translation cache: persistent disk cache via @disk_cache.memoize() decorator.
+Re-running the pipeline does not re-translate cached strings
+(argos-translate is slow: ~100ms per string).
 """
 
 from __future__ import annotations
@@ -28,13 +27,11 @@ import argostranslate.translate as argos_translate
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from cache import TranslationCache  # type: ignore[import-not-found]
+from cache_config import disk_cache, no_disk_cache  # type: ignore[import-not-found]
 
 logger = logging.getLogger("pipeline")
 
 # ── Shared state ──────────────────────────────────────────────────────
-# Persistent translation cache (loaded from disk at startup).
-_translate_cache: TranslationCache | None = None
 _PACKAGES_INITIALIZED = False
 _PACKAGES_LOCK = threading.Lock()
 
@@ -174,42 +171,72 @@ def preload_models() -> None:
 # ── Translation ───────────────────────────────────────────────────────
 
 
-def _get_cache(no_disk_cache: bool = False) -> TranslationCache:
-    """Get or create the global translation cache instance.
+@disk_cache.memoize()
+def _translate_cached(text: str, src_lang: str) -> str:
+    """Translate a single text to English, cached via diskcache.
 
-    Why check no_disk_cache every call: if the caller passes no_disk_cache=True
-    on a subsequent call (e.g., --no-disk-cache mode), we must recreate the
-    cache as empty instead of returning the cached (populated) instance.
+    Args:
+        text: Text to translate (already stripped).
+        src_lang: ISO 639-1 source language code.
+
+    Returns translated text. Returns original if already English or empty.
     """
-    global _translate_cache
-    if _translate_cache is None:
-        _translate_cache = TranslationCache(no_disk_cache=no_disk_cache)
-    elif no_disk_cache:
-        # Recreate cache as empty when no_disk_cache is requested.
-        # Why: --no-disk-cache mode should bypass all caches, including translation.
-        _translate_cache = TranslationCache(no_disk_cache=True)
-    return _translate_cache
+    if not text or not text.strip():
+        return text
+
+    if src_lang == "en":
+        return text.strip()
+
+    # Check if translation model exists
+    installed = argos_package.get_installed_packages()
+    has_model = any(pkg.from_code == src_lang and pkg.to_code == "en" for pkg in installed)
+    if not has_model:
+        logger.warning(
+            "No translation model for %s→en, skipping: %s...",
+            src_lang,
+            text[:80],
+        )
+        return text.strip()
+
+    translated = argos_translate.translate(text.strip(), from_code=src_lang, to_code="en")
+    if not translated or not translated.strip():
+        raise RuntimeError(f"Translation returned empty result ({src_lang}→en): {text[:80]}...")
+    return translated.strip()
 
 
-def _translate_single(text: str, src_lang: str) -> tuple[str, str]:
-    """Translate a single text to English using argos-translate.
+def translate_text(text: str, src_lang: str) -> str:
+    """Translate a single text to English.
 
     Args:
         text: Text to translate.
-        src_lang: ISO 639-1 source language code (e.g. 'fr', 'de').
+        src_lang: ISO 639-1 source language code.
 
-    Returns (original, translated). Fails loudly on any error.
+    Uses @disk_cache.memoize() for persistent disk cache.
+    Returns the original text if already English or empty.
     """
+    if not text or not text.strip():
+        return text
+
+    stripped = text.strip()
+
+    if no_disk_cache:
+        # Bypass cache — translate directly
+        _, translated = _do_translate(stripped, src_lang)
+        return translated
+
+    return _translate_cached(stripped, src_lang)
+
+
+def _do_translate(text: str, src_lang: str) -> tuple[str, str]:
+    """Translate without caching. Returns (original, translated)."""
     if not text or not text.strip():
         return (text, text)
 
     stripped = text.strip()
 
-    # No translation needed if already English
     if src_lang == "en":
         return (text, stripped)
 
-    # Check if translation model exists
     installed = argos_package.get_installed_packages()
     has_model = any(pkg.from_code == src_lang and pkg.to_code == "en" for pkg in installed)
     if not has_model:
@@ -229,84 +256,59 @@ def _translate_single(text: str, src_lang: str) -> tuple[str, str]:
 def translate_batch(
     texts: list[tuple[str, str]],
     max_workers: int = 8,
-    no_disk_cache: bool = False,
 ) -> dict[str, str]:
     """Translate a batch of texts to English using parallel argos-translate.
 
-    Uses persistent disk cache: already-translated strings are loaded from
-    disk at startup and saved periodically. Re-running the pipeline does not
-    re-translate cached strings.
+    Uses @disk_cache.memoize() for persistent disk cache.
+    Re-running the pipeline does not re-translate cached strings.
 
     Args:
         texts: List of (text, src_lang) tuples.
         max_workers: Number of parallel threads.
-        no_disk_cache: Bypass disk cache (re-translate everything).
 
     Returns:
         {original_text: translated_text} for all inputs.
     """
-    # Ensure packages are installed before any translation
     _ensure_packages_installed()
 
-    cache = _get_cache(no_disk_cache=no_disk_cache)
-
-    # Filter out already-cached texts
-    uncached = [(t, lang) for t, lang in texts if cache.get_or_none(t) is None]
-
-    if not uncached:
-        # All cached — return immediately
-        return {t: cache.get_or_none(t) or t for t, _ in texts}
-
-    # Translate uncached texts in parallel
     results: dict[str, str] = {}
+
+    if no_disk_cache:
+        # Bypass cache — translate everything
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_do_translate, text.strip(), lang): text.strip()
+                for text, lang in texts
+                if text and text.strip()
+            }
+            for future in as_completed(futures):
+                original, translated = future.result()
+                results[original] = translated
+        # Fill in empty strings
+        for text, _ in texts:
+            if text not in results:
+                results[text] = text
+        return results
+
+    # Use cached translation — parallel for uncached, instant for cached
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_translate_single, text, lang): (text, lang) for text, lang in uncached
+            executor.submit(_translate_cached, text.strip(), lang): text.strip()
+            for text, lang in texts
+            if text and text.strip()
         }
         for future in as_completed(futures):
-            original, translated = future.result()
-            results[original] = translated
+            original = futures[future]
+            results[original] = future.result()
 
-    # Update persistent cache
-    cache.bulk_set(results)
+    # Fill in empty strings
+    for text, _ in texts:
+        if text not in results:
+            results[text] = text
 
-    # Return results for all inputs (cached + newly translated)
-    return {t: (cache.get_or_none(t) or t) for t, _ in texts}
-
-
-def translate_text(text: str, src_lang: str) -> str:
-    """Translate a single text to English.
-
-    Args:
-        text: Text to translate.
-        src_lang: ISO 639-1 source language code.
-
-    Uses persistent disk cache for repeated strings.
-    Returns the original text if already English or empty.
-    """
-    if not text or not text.strip():
-        return text
-
-    stripped = text.strip()
-    cache = _get_cache()
-
-    cached = cache.get_or_none(stripped)
-    if cached is not None:
-        return cached
-
-    _, translated = _translate_single(stripped, src_lang)
-    cache.set(stripped, translated)
-    return translated
-
-
-def get_cache_size() -> int:
-    """Return the number of entries in the translation cache."""
-    if _translate_cache is not None:
-        return _translate_cache.size
-    return 0
+    return results
 
 
 def save_cache() -> None:
-    """Force save translation cache to disk. Call on shutdown."""
-    if _translate_cache is not None:
-        _translate_cache.save()
+    """No-op: diskcache persists immediately on each write."""
+    pass

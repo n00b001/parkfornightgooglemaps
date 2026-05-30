@@ -88,6 +88,45 @@ This project uses **uv** (astral-sh/uv) as the sole Python package manager and r
 - `uv.lock` ensures reproducible builds across machines
 - `pyproject.toml` is the single source of truth for dependencies
 
+## Pipeline Caching — DECORATOR-ONLY RULE
+
+The pipeline (`scripts/pipeline/`) uses `diskcache` library for persistent disk caching.
+
+**ABSOLUTE RULE: NEVER call `disk_cache.get()`, `disk_cache.set()`, or `disk_cache[key]` directly.**
+
+All caching MUST use `@disk_cache.memoize()` function decorators. Custom cache management code means untested code which means bugs.
+
+### Correct Pattern
+```python
+from cache_config import disk_cache
+
+@disk_cache.memoize()
+def fetch_places(latitude: float, longitude: float) -> list[dict]:
+    """Fetch places from API. Automatically cached by decorator."""
+    return api_client.get_places(latitude, longitude)
+```
+
+### Wrong Pattern (NEVER DO THIS)
+```python
+# ❌ WRONG — manual cache management
+result = disk_cache.get(key)
+if result is None:
+    result = do_expensive_thing()
+    disk_cache.set(key, result)
+```
+
+### Key Rules
+1. **Decorator-only**: All cached operations must be functions decorated with `@disk_cache.memoize()`
+2. **`frozendict` for dict args**: Stage functions taking dicts must receive `frozendict`-wrapped arguments to satisfy decorator hashing requirements
+3. **`--no-disk-cache` bypass**: Uses `func.__wrapped__(*args)` to skip the decorator entirely — never deletes cache
+4. **No manual cache code**: Zero manual get/set anywhere in the codebase
+5. **Shared instance**: Import `disk_cache` from `cache_config` — never instantiate your own
+
+### Why
+- `diskcache` decorators are battle-tested and handle edge cases (hash collisions, cache eviction, type serialization)
+- Custom cache code is untested and introduces bugs
+- Decorator pattern makes caching explicit and auditable at function definition time
+
 ### Example
 ```bash
 # Add a new dependency to the scraper:
