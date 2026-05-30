@@ -35,9 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 logger = logging.getLogger("pipeline")
 
 # ── HTTP server configuration ─────────────────────────────────────────
-_DEFAULT_SERVER_URL = os.environ.get(
-    "TRANSLATION_SERVER_URL", "http://127.0.0.1:8765"
-)
+_DEFAULT_SERVER_URL = os.environ.get("TRANSLATION_SERVER_URL", "http://127.0.0.1:8765")
 _HTTP_TIMEOUT = 120  # seconds — large batches can take a while
 
 # Source languages to install translation packages for (→ English).
@@ -150,12 +148,24 @@ def preload_models() -> None:
     """Preload all translation models into memory.
 
     Call this in each worker process (spawn method).
+    Uses realistic text to fully warm stanza splitters + ctranslate2 pipeline.
     """
+    warmup_text = (
+        "C'est un bel endroit pour camper avec beaucoup d'espace et des installations propres "
+        "et un accès facile à la mer pour les caravanes et les camping-cars. "
+        "Nous avons passé une excellente nuit ici et nous reviendrons certainement."
+    )
     logger.info("Preloading translation models...")
     for lang_code in REQUIRED_SOURCE_LANGUAGES:
         try:
             argos_translate.translate(
                 "test sentence for preloading",
+                from_code=lang_code,
+                to_code="en",
+            )
+            # Second pass: warm stanza splitters + ctranslate2 inference pipeline
+            argos_translate.translate(
+                warmup_text,
                 from_code=lang_code,
                 to_code="en",
             )
@@ -171,6 +181,7 @@ def _translate_single(text: str, src_lang: str) -> tuple[str, str]:
     """Translate a single text to English using argos-translate.
 
     Pure translation — no caching. Caching handled by stages.translate_text().
+    English source text is returned immediately without any processing.
     """
     if not text or not text.strip():
         return (text, text)
@@ -178,6 +189,7 @@ def _translate_single(text: str, src_lang: str) -> tuple[str, str]:
     stripped = text.strip()
 
     if src_lang == "en":
+        # English source → no translation needed, return immediately
         return (text, stripped)
 
     installed = argos_package.get_installed_packages()
@@ -252,8 +264,12 @@ def translate_batch_http(
 
     import httpx
 
+    # Filter out English source texts — no translation needed
+    non_en_texts = [(text, lang) for text, lang in texts if lang != "en"]
+    en_texts = {text: text.strip() for text, lang in texts if lang == "en"}
+
     # Convert [(text, lang), ...] to [[text, lang], ...] for JSON
-    payload = {"texts": [[text, lang] for text, lang in texts]}
+    payload = {"texts": [[text, lang] for text, lang in non_en_texts]}
 
     try:
         response = httpx.post(
@@ -278,7 +294,10 @@ def translate_batch_http(
         raise RuntimeError(f"Translation server error: {e.response.status_code}") from e
 
     result = response.json()
-    return result.get("translations", {})
+    translations = result.get("translations", {})
+    # Merge English texts back (no translation needed)
+    translations.update(en_texts)
+    return translations
 
 
 def translate_batch_with_fallback(
@@ -307,9 +326,7 @@ def translate_batch_with_fallback(
         try:
             return translate_batch_http(texts, server)
         except RuntimeError as e:
-            logger.warning(
-                "HTTP translation failed (%s), falling back to local argos", e
-            )
+            logger.warning("HTTP translation failed (%s), falling back to local argos", e)
 
     # Fallback: local argos-translate (slow but reliable)
     return translate_batch(texts)

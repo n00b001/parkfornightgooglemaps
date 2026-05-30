@@ -55,9 +55,35 @@ TRANSLATION_THREADS = int(os.environ.get("TRANSLATION_THREADS", "32"))
 
 # Source languages (same as translator.py)
 REQUIRED_SOURCE_LANGUAGES = [
-    "fr", "de", "es", "it", "nl", "pt", "pl", "ru", "sv", "da",
-    "nb", "fi", "cs", "el", "hu", "ro", "bg", "sk", "sl", "et",
-    "lt", "lv", "uk", "tr", "sq", "ca", "gl", "eu", "ga",
+    "fr",
+    "de",
+    "es",
+    "it",
+    "nl",
+    "pt",
+    "pl",
+    "ru",
+    "sv",
+    "da",
+    "nb",
+    "fi",
+    "cs",
+    "el",
+    "hu",
+    "ro",
+    "bg",
+    "sk",
+    "sl",
+    "et",
+    "lt",
+    "lv",
+    "uk",
+    "tr",
+    "sq",
+    "ca",
+    "gl",
+    "eu",
+    "ga",
 ]
 
 # ── Global State ─────────────────────────────────────────────────────
@@ -85,9 +111,7 @@ class TranslationEngine:
         installed_packages = argos_package.get_installed_packages()
 
         installed_pairs = {
-            (pkg.from_code, pkg.to_code)
-            for pkg in installed_packages
-            if hasattr(pkg, "from_code")
+            (pkg.from_code, pkg.to_code) for pkg in installed_packages if hasattr(pkg, "from_code")
         }
 
         packages_to_install = []
@@ -114,9 +138,7 @@ class TranslationEngine:
             )
 
         if packages_to_install:
-            logger.info(
-                f"Installing {len(packages_to_install)} translation packages..."
-            )
+            logger.info(f"Installing {len(packages_to_install)} translation packages...")
             for lang_code, pkg in packages_to_install:
                 logger.info(f"  Installing {lang_code} → en...")
                 download_path = pkg.download()
@@ -126,12 +148,31 @@ class TranslationEngine:
             logger.info("All translation packages already installed")
 
     def preload_models(self) -> None:
-        """Preload all translation models into memory."""
+        """Preload all translation models into memory.
+
+        Uses realistic French text (long review-style sentence) to fully warm
+        stanza sentence splitters, ctranslate2 models, and torch LSTM layers.
+        A simple "test" sentence only loads the model but doesn't initialize
+        the inference pipeline — first real requests would still be slow.
+        """
+        # Realistic text that exercises stanza segmentation + ctranslate2 inference
+        warmup_text = (
+            "C'est un bel endroit pour camper avec beaucoup d'espace et des installations propres "
+            "et un accès facile à la mer pour les caravanes et les camping-cars. "
+            "Nous avons passé une excellente nuit ici et nous reviendrons certainement."
+        )
         logger.info("Preloading %d translation models...", len(REQUIRED_SOURCE_LANGUAGES))
         for lang_code in REQUIRED_SOURCE_LANGUAGES:
             try:
+                # First pass: load the model
                 argos_translate.translate(
                     "test sentence for preloading",
+                    from_code=lang_code,
+                    to_code="en",
+                )
+                # Second pass: warm stanza splitters + ctranslate2 inference pipeline
+                argos_translate.translate(
+                    warmup_text,
                     from_code=lang_code,
                     to_code="en",
                 )
@@ -159,19 +200,14 @@ class TranslationEngine:
 
         # Check if model exists
         installed = argos_package.get_installed_packages()
-        has_model = any(
-            pkg.from_code == src_lang and pkg.to_code == "en"
-            for pkg in installed
-        )
+        has_model = any(pkg.from_code == src_lang and pkg.to_code == "en" for pkg in installed)
         if not has_model:
             logger.warning("No model for %s→en, returning original", src_lang)
             return stripped
 
         # Translate
         try:
-            translated = argos_translate.translate(
-                stripped, from_code=src_lang, to_code="en"
-            )
+            translated = argos_translate.translate(stripped, from_code=src_lang, to_code="en")
             result = translated.strip() if translated else stripped
         except Exception as e:
             logger.warning("Translation failed (%s→en): %s", src_lang, e)
@@ -195,12 +231,16 @@ class TranslationEngine:
         if not texts:
             return {}
 
-        # Deduplicate by (text, lang)
+        # Deduplicate by (text, lang) and skip English-to-English
         unique_items: dict[str, tuple[str, str]] = {}
         for text, lang in texts:
-            key = f"{text.strip()}|{lang}"
+            stripped = text.strip()
+            if lang == "en":
+                # English source → no translation needed
+                continue
+            key = f"{stripped}|{lang}"
             if key not in unique_items:
-                unique_items[key] = (text.strip(), lang)
+                unique_items[key] = (stripped, lang)
 
         # Check session cache first
         cached_results: dict[str, str] = {}
@@ -285,9 +325,7 @@ def create_app() -> Any:
         translations = engine.translate_batch(text_tuples)
         elapsed = time.time() - start_time
 
-        logger.debug(
-            "Translated %d texts in %.3fs", len(text_tuples), elapsed
-        )
+        logger.debug("Translated %d texts in %.3fs", len(text_tuples), elapsed)
 
         return {"translations": translations}
 
@@ -348,9 +386,7 @@ def start_server(
             access_log=False,
         )
 
-    _server_thread = threading.Thread(
-        target=_run_server, daemon=True, name="translation-server"
-    )
+    _server_thread = threading.Thread(target=_run_server, daemon=True, name="translation-server")
     _server_thread.start()
 
     # Wait for server to be ready
@@ -359,9 +395,7 @@ def start_server(
     deadline = time.time() + 30  # 30 second timeout
     while time.time() < deadline:
         try:
-            response = httpx.get(
-                f"http://{host}:{port}/health", timeout=1.0
-            )
+            response = httpx.get(f"http://{host}:{port}/health", timeout=1.0)
             if response.status_code == 200:
                 logger.info(
                     "Translation server ready on %s:%d (threads=%d)",
