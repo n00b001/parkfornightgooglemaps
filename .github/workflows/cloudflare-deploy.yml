@@ -43,6 +43,13 @@ jobs:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
 
+      - name: Install worker dependencies
+        run: npm ci
+        working-directory: worker
+
+      - name: Setup Wrangler
+        run: npm install -g wrangler
+
       - name: Deploy to Cloudflare Workers (PR preview)
         if: github.event_name == 'pull_request'
         env:
