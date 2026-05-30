@@ -30,6 +30,7 @@ import logging
 import multiprocessing
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -63,12 +64,14 @@ from normalizer import (  # type: ignore[import-not-found]
     normalize_review,
 )
 from r2_worker import R2UploadTask, R2WorkerPool  # type: ignore[import-not-found]
-from translator import (  # type: ignore[import-not-found]
-    ensure_packages_installed,
+from translator import (
     translate_batch,
 )
 
 logger = logging.getLogger("pipeline")
+
+# ── Translation server port ──────────────────────────────────────────
+SERVER_PORT = int(os.environ.get("TRANSLATION_PORT", "8765"))
 
 # ── Disk cache (process-safe FanoutCache) ────────────────────────────
 _CACHE_DIR = os.path.join(
@@ -448,13 +451,63 @@ def _handle_signal(signum: int, frame: Any) -> None:
 
 
 def _worker_init(no_disk_cache: bool) -> None:
-    """Initialize worker process: set global flag only.
+    """Initialize worker process: set global flag.
 
-    Models load lazily on first translate() call — no preloading needed.
-    Preloading 29 models × 16 workers = 464 model loads that take minutes.
+    Translation is handled by the HTTP server — no local model preload needed.
     """
     global NO_DISK_CACHE
     NO_DISK_CACHE = no_disk_cache
+
+
+# ── Translation server lifecycle ─────────────────────────────────────
+
+
+def _start_translation_server() -> subprocess.Popen | None:
+    """Start the translation server as a subprocess.
+
+    Returns a Popen object so the caller can kill/wait on it.
+    Returns None if the server fails to start.
+    """
+    server_dir = os.path.dirname(os.path.abspath(__file__))
+    server_script = os.path.join(server_dir, "translation_server.py")
+
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, server_script],
+            stdout=open(
+                os.path.join(server_dir, "..", "..", "logs", "translation_server.log"),
+                "a",
+            ),
+            stderr=subprocess.STDOUT,
+        )
+        # Wait for server to be ready
+        import httpx as httpx_lib
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                logger.error("Translation server exited prematurely")
+                return None
+            try:
+                resp = httpx_lib.get(
+                    f"http://127.0.0.1:{SERVER_PORT}/health",
+                    timeout=2,
+                )
+                if resp.status_code == 200:
+                    console.print(
+                        f"  [green]✓ Translation server started on port {SERVER_PORT}[/green]"
+                    )
+                    return proc
+            except httpx_lib.ConnectError:
+                pass
+            except Exception as e:
+                logger.warning(f"Health check error: {e}")
+            time.sleep(0.5)
+        logger.error("Translation server failed to start within 30s")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to start translation server: {e}")
+        return None
 
 
 # ── Worker function (must be top-level for pickling) ─────────────────
@@ -527,7 +580,8 @@ def run_pipeline(
         db_pool = DBWorkerPool(total_expected=limit or 0)
         db_pool.start()
 
-    ensure_packages_installed()
+    # ── Start translation server ────────────────────────────────────
+    translation_server = _start_translation_server()
 
     limit_label = f" (limit {limit})" if limit else ""
     workers_label = f" with {num_workers} workers"
@@ -535,6 +589,9 @@ def run_pipeline(
 
     if dry_run:
         console.print("[bold yellow]=== DRY RUN — stopping here ===[/bold yellow]")
+        if translation_server is not None:
+            translation_server.kill()
+            translation_server.wait(timeout=5)
         if r2_pool is not None:
             r2_pool.shutdown()
         if db_pool is not None:

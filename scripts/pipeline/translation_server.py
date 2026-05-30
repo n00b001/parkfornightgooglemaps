@@ -1,18 +1,23 @@
-"""Shared translation server for the pipeline.
+"""HTTP translation server for the pipeline.
 
-Replaces per-worker argos-translate instances with a single server process
-that batches translations from all workers.
+Runs argostranslate in a single process with ThreadPoolExecutor so that
+multiple worker processes can translate concurrently via HTTP without
+each loading their own copy of the models.
 
 Architecture:
   Worker 1 ─┐
-  Worker 2 ─┼──→ [Translation Server] ─→ response Queue
-  ...       │    (1 model, ThreadPool(4) = 63 texts/s)
-  Worker 24 ┘
+  Worker 2 ─┼──→ [FastAPI Server :8765] ─→ ThreadPoolExecutor(32)
+  ...       │    (1 set of models, 32 threads, GIL released by ctranslate2)
+  Worker 16 ┘
 
-Workers send requests via request Queue, poll response Queue for their results.
-Each response has a request_id so workers can match responses to requests.
+cttranslate2 releases the Python GIL during inference, so 32 threads
+actually utilize 32 cores for the neural network computation.
 
-Caching: uses joblib.Memory for disk persistence across restarts.
+Usage:
+    # Start server manually:
+    cd scripts/pipeline && uv run python -m translation_server
+
+    # Or let pipeline.py start it automatically (default behavior).
 """
 
 from __future__ import annotations
@@ -20,198 +25,261 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import get_context
-from typing import Any
+from contextlib import asynccontextmanager
 
-from joblib import Memory
+import argostranslate.package as argos_package
+import argostranslate.translate as argos_translate
+from fastapi import FastAPI
+from pydantic import BaseModel
+from uvicorn import Config, Server
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 logger = logging.getLogger("pipeline.translation_server")
 
-# Batch size: collect this many strings before translating.
-BATCH_SIZE = 128
-# Batch timeout: don't wait longer than this for a full batch.
-BATCH_TIMEOUT = 0.05  # seconds
-# Thread pool for translation (benchmarked: 4 = optimal for ctranslate2)
-TRANSLATION_THREADS = 4
+# ── Configuration ─────────────────────────────────────────────────────
+SERVER_HOST = "127.0.0.1"
+SERVER_PORT = int(os.environ.get("TRANSLATION_PORT", "8765"))
+TRANSLATION_THREADS = int(os.environ.get("TRANSLATION_THREADS", "32"))
 
-# Use spawn context explicitly to match ProcessPoolExecutor
-_mp_ctx = get_context("spawn")
+REQUIRED_SOURCE_LANGUAGES = [
+    "fr",
+    "de",
+    "es",
+    "it",
+    "nl",
+    "pt",
+    "pl",
+    "ru",
+    "sv",
+    "da",
+    "nb",
+    "fi",
+    "cs",
+    "el",
+    "hu",
+    "ro",
+    "bg",
+    "sk",
+    "sl",
+    "et",
+    "lt",
+    "lv",
+    "uk",
+    "tr",
+    "sq",
+    "ca",
+    "gl",
+    "eu",
+    "ga",
+]
 
-# Cache directory for translation results
-_CACHE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data",
-    "cache",
-    "joblib",
-)
+# ── Request/Response schemas ──────────────────────────────────────────
+
+
+class TranslationItem(BaseModel):
+    text: str
+    lang: str
+
+
+class TranslationRequest(BaseModel):
+    items: list[TranslationItem]
+
+
+class TranslationResponse(BaseModel):
+    results: dict[str, str]  # original_text -> translated_text
+
+
+# ── Model lifecycle ───────────────────────────────────────────────────
+_models_ready = False
+_models_lock = threading.Lock()
+
+
+def _ensure_models_loaded() -> None:
+    """Install packages and preload all translation models (once)."""
+    global _models_ready
+    with _models_lock:
+        if _models_ready:
+            return
+
+        logger.info("Loading argos-translate packages...")
+        argos_package.update_package_index()
+
+        installed_pairs = {
+            (pkg.from_code, pkg.to_code)
+            for pkg in argos_package.get_installed_packages()
+            if hasattr(pkg, "from_code")
+        }
+
+        available = argos_package.get_available_packages()
+        for lang in REQUIRED_SOURCE_LANGUAGES:
+            if (lang, "en") not in installed_pairs:
+                match = next(
+                    (p for p in available if p.from_code == lang and p.to_code == "en"),
+                    None,
+                )
+                if match:
+                    path = match.download()
+                    argos_package.install_from_path(path)
+                    path.unlink(missing_ok=True)
+                    logger.info("Installed %s → en", lang)
+
+        # Preload all models into memory
+        logger.info("Preloading %d translation models...", len(REQUIRED_SOURCE_LANGUAGES))
+        for lang in REQUIRED_SOURCE_LANGUAGES:
+            try:
+                argos_translate.translate("preload test", from_code=lang, to_code="en")
+            except Exception as e:
+                logger.warning("Failed to preload %s: %s", lang, e)
+
+        _models_ready = True
+        logger.info(
+            "Translation server ready — %d threads, port %d",
+            TRANSLATION_THREADS,
+            SERVER_PORT,
+        )
+
+
+def _translate_one(item: TranslationItem) -> tuple[str, str]:
+    """Translate a single text. Called from thread pool."""
+    text = item.text.strip()
+    lang = item.lang
+
+    if not text or lang == "en":
+        return (item.text, text)
+
+    installed = argos_package.get_installed_packages()
+    has_model = any(
+        pkg.from_code == lang and pkg.to_code == "en"
+        for pkg in installed
+        if hasattr(pkg, "from_code")
+    )
+    if not has_model:
+        return (item.text, text)
+
+    try:
+        translated = argos_translate.translate(text, from_code=lang, to_code="en")
+        result = translated.strip() if translated else text
+        return (item.text, result)
+    except Exception as e:
+        logger.warning("Translation failed (%s→en): %s", lang, e)
+        return (item.text, text)
+
+
+# ── FastAPI app ───────────────────────────────────────────────────────
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _ensure_models_loaded()
+    yield
+
+
+app = FastAPI(title="Translation Server", lifespan=lifespan)
+
+
+@app.post("/translate", response_model=TranslationResponse)
+def translate_endpoint(request: TranslationRequest) -> TranslationResponse:
+    """Translate a batch of texts to English.
+
+    Deduplicates identical texts before translating.
+    """
+    if not request.items:
+        return TranslationResponse(results={})
+
+    # Deduplicate by (text, lang) — same text+lang only translated once
+    seen: dict[tuple[str, str], str] = {}  # (original_text, lang) -> original_text
+    unique: list[TranslationItem] = []
+    for item in request.items:
+        key = (item.text, item.lang)
+        if key not in seen:
+            seen[key] = item.text
+            unique.append(item)
+
+    # Translate in parallel threads
+    results: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=TRANSLATION_THREADS) as pool:
+        for original, translated in pool.map(_translate_one, unique):
+            results[original] = translated
+
+    return TranslationResponse(results=results)
+
+
+@app.get("/health")
+def health_check() -> dict[str, str]:
+    return {"status": "ok", "threads": str(TRANSLATION_THREADS)}
+
+
+# ── Server runner ─────────────────────────────────────────────────────
+
+
+def run_server(host: str = SERVER_HOST, port: int = SERVER_PORT) -> None:
+    """Run the translation server (blocking)."""
+    config = Config(app, host=host, port=port, log_level="info")
+    server = Server(config)
+    server.run()
 
 
 class TranslationServer:
-    """Translation server running in a separate process.
+    """Manage the translation server as a background process.
 
-    Workers submit via request_queue, poll response_queue for results.
-    All multiprocessing objects use 'spawn' context to avoid fork/spawn conflicts.
+    Used by pipeline.py to start/stop the server automatically.
     """
 
-    def __init__(self) -> None:
-        self._process: Any = None
-        self._request_queue: Any = _mp_ctx.Queue()
-        self._response_queue: Any = _mp_ctx.Queue()
-        # Shared dict for non-blocking results: request_id -> {text: translation}
-        self._results: Any = _mp_ctx.Manager().dict()
+    def __init__(self, host: str = SERVER_HOST, port: int = SERVER_PORT) -> None:
+        self.host = host
+        self.port = port
+        self._server: Server | None = None
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        """Start the translation server process."""
-        self._process = _mp_ctx.Process(
-            target=_server_main,
-            args=(self._request_queue, self._response_queue, self._results),
-            daemon=True,
-            name="translation-server",
-        )
-        self._process.start()
-        logger.info(f"Translation server started (pid={self._process.pid})")
+        """Start the server in a background thread."""
+        _ensure_models_loaded()
+        config = Config(app, host=self.host, port=self.port, log_level="warning")
+        self._server = Server(config)
+        self._thread = threading.Thread(target=self._server.run, daemon=True)
+        self._thread.start()
+        # Wait for server to be ready
+        import httpx as httpx_lib
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                resp = httpx_lib.get(f"http://{self.host}:{self.port}/health", timeout=2)
+                if resp.status_code == 200:
+                    logger.info("Translation server started on %s:%d", self.host, self.port)
+                    return
+            except Exception:
+                pass
+            time.sleep(0.5)
+        logger.error("Translation server failed to start within 30s")
+        raise RuntimeError("Translation server failed to start")
 
     def shutdown(self) -> None:
-        """Shutdown the translation server."""
-        try:
-            self._request_queue.put_nowait(("shutdown", []))
-        except Exception:
-            pass
-        if self._process and self._process.is_alive():
-            self._process.join(timeout=10)
-            if self._process.is_alive():
-                self._process.terminate()
-                self._process.join(timeout=5)
+        """Shutdown the server."""
+        if self._server:
+            self._server.should_exit = True
+        if self._thread:
+            self._thread.join(timeout=5)
         logger.info("Translation server shut down")
 
     @property
-    def is_running(self) -> bool:
-        return self._process is not None and self._process.is_alive()
+    def url(self) -> str:
+        return f"http://{self.host}:{self.port}"
 
 
-def _server_main(
-    request_queue: Any,
-    response_queue: Any,
-    results_dict: Any,
-) -> None:
-    """Main loop for the translation server process."""
-    import argostranslate.package as argos_package
-    import argostranslate.translate as argos_translate
+# ── CLI entry point ───────────────────────────────────────────────────
+if __name__ == "__main__":
+    import argparse
+    import time
 
-    logger.info("Translation server: installing packages...")
-    argos_package.update_package_index()
+    parser = argparse.ArgumentParser(description="Translation Server")
+    parser.add_argument("--host", default=SERVER_HOST)
+    parser.add_argument("--port", type=int, default=SERVER_PORT)
+    args = parser.parse_args()
 
-    # joblib.Memory for disk-persistent translation cache
-    memory = Memory(_CACHE_DIR, verbose=0)
-
-    @memory.cache
-    def _cached_translate(text: str, lang: str) -> str:
-        """Translate a single text — cached on disk via joblib."""
-        translated = argos_translate.translate(text, from_code=lang, to_code="en")
-        return translated.strip()
-
-    logger.info("Translation server: preloading French model...")
-    argos_translate.translate("test", from_code="fr", to_code="en")
-    logger.info("Translation server: ready")
-
-    # In-memory cache for current session (fast hits)
-    _session_cache: dict[str, str] = {}
-
-    # Buffer: request_id -> [(text, lang), ...]
-    buffer: dict[str, list[tuple[str, str]]] = {}
-
-    def _get_translation(text: str, lang: str) -> str:
-        """Get translation from session cache, disk cache, or compute."""
-        key = f"{text}|{lang}"
-        if key in _session_cache:
-            return _session_cache[key]
-        result = _cached_translate(text, lang)
-        _session_cache[key] = result
-        return result
-
-    def _process_batch() -> None:
-        if not buffer:
-            return
-
-        # Group by language, deduplicate
-        by_lang: dict[str, set[str]] = {}
-        for texts in buffer.values():
-            for text, lang in texts:
-                by_lang.setdefault(lang, set()).add(text.strip())
-
-        # Translate
-        all_results: dict[str, str] = {}
-        for lang, lang_texts in by_lang.items():
-            lang_texts_list = list(lang_texts)
-
-            def _translate_one(text: str) -> tuple[str, str]:
-                try:
-                    translated = _get_translation(text, lang)
-                    return (text, translated)
-                except Exception as e:
-                    logger.warning(f"Translation failed ({lang}): {e}")
-                    return (text, text)
-
-            with ThreadPoolExecutor(max_workers=TRANSLATION_THREADS) as executor:
-                for original, translated in executor.map(_translate_one, lang_texts_list):
-                    all_results[original] = translated
-
-        # Send responses for each request
-        for req_id, texts in buffer.items():
-            response: dict[str, str] = {}
-            for text, lang in texts:
-                stripped = text.strip()
-                if lang == "en":
-                    response[text] = stripped
-                elif stripped in all_results:
-                    response[text] = all_results[stripped]
-                else:
-                    response[text] = stripped
-            response_queue.put((req_id, response))
-            # Also store in shared dict for non-blocking access
-            response["_done"] = "yes"
-            results_dict[req_id] = response
-
-        buffer.clear()
-
-    # Main loop
-    batch_timer = time.time()
-
-    while True:
-        try:
-            try:
-                item = request_queue.get(timeout=0.05)
-            except Exception:
-                item = None
-
-            if item is None:
-                if time.time() - batch_timer >= BATCH_TIMEOUT and buffer:
-                    _process_batch()
-                    batch_timer = time.time()
-                continue
-
-            req_id, texts = item
-
-            if req_id == "shutdown":
-                if buffer:
-                    _process_batch()
-                logger.info("Translation server: shutting down")
-                break
-
-            buffer[req_id] = texts
-
-            total_texts = sum(len(t) for t in buffer.values())
-            if total_texts >= BATCH_SIZE or time.time() - batch_timer >= BATCH_TIMEOUT:
-                _process_batch()
-                batch_timer = time.time()
-
-        except KeyboardInterrupt:
-            if buffer:
-                _process_batch()
-            break
-        except Exception as e:
-            logger.error(f"Translation server error: {e}", exc_info=True)
+    logging.basicConfig(level=logging.INFO)
+    run_server(host=args.host, port=args.port)
