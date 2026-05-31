@@ -346,11 +346,14 @@ const PlaceDetails: React.FC<any> = ({
 				<div className="flex flex-col gap-3">
 					<div className="flex gap-2">
 						<button
-							onClick={() =>
-								window.open(
-									`https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}`,
-								)
-							}
+							onClick={() => {
+								const googlePlaceId =
+									googleDetails?.place_id ?? place.google_place_id;
+								const url = googlePlaceId
+									? `https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}&destination_place_id=${googlePlaceId}`
+									: `https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}`;
+								window.open(url, "_blank");
+							}}
 							className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-2xl font-bold transition-colors flex items-center justify-center gap-2 shadow-lg shadow-blue-200"
 						>
 							<Navigation size={18} /> Directions
@@ -391,7 +394,29 @@ const PlaceDetails: React.FC<any> = ({
 					<div className="grid grid-cols-4 gap-3">
 						{AMENITIES.map((amenity) => {
 							// Check in top level (Prisma) or rawData (Live/Local)
-							const hasAmenity = place[amenity.key] === "1";
+							// Fallback to rawData keys if normalized key is missing
+							const rawKeysMap: Record<string, string> = {
+								waterPoint: "point_eau",
+								electricity: "electricite",
+								trashCan: "poubelle",
+								wifi: "wifi",
+								wasteWaterDrain: "vidange_eaux_usees",
+								toiletDrain: "vidange_wc",
+								shower: "douche",
+								swimming: "baignade",
+								pets: "animaux",
+								picnicArea: "aire_pique_nique",
+								laundry: "laverie",
+								publicToilet: "wc_public",
+							};
+							const rawKey = rawKeysMap[amenity.key];
+							const hasAmenity =
+								place[amenity.key] === "1" ||
+								(place.rawData &&
+									(place.rawData[rawKey] === "1" ||
+										place.rawData[rawKey] === 1 ||
+										place.rawData[rawKey] === true));
+
 							if (!hasAmenity) return null;
 							return (
 								<div

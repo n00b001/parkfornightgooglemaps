@@ -1,5 +1,6 @@
 const prisma = require("../config/db");
 const LRUCache = require("../services/lruCache");
+const p4n = require("../services/park4night");
 const {
 	transformPlaces,
 	transformPlace,
@@ -38,39 +39,88 @@ const getPlaces = async (req, res) => {
 	}
 
 	try {
-		const where = {
-			latitude: { gte: lat - 0.5, lte: lat + 0.5 },
-			longitude: { gte: lng - 0.5, lte: lng + 0.5 },
+		const boundingBox = {
+			latMin: lat - 0.5,
+			latMax: lat + 0.5,
+			lngMin: lng - 0.5,
+			lngMax: lng + 0.5,
 		};
 
-		if (type) where.type = type;
-		if (minRating) where.rating = { gte: parseFloat(minRating) };
-
-		const orderBy = {};
-		if (sortBy === "rating") orderBy.rating = "desc";
-
-		// Fetch from DB, sort by distance, take closest N
-		let places = await prisma.place.findMany({
-			where,
-			orderBy: Object.keys(orderBy).length > 0 ? orderBy : undefined,
+		// 1. Check local database first (spots updated in the last 24h)
+		const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+		let dbPlaces = await prisma.place.findMany({
+			where: {
+				latitude: { gte: boundingBox.latMin, lte: boundingBox.latMax },
+				longitude: { gte: boundingBox.lngMin, lte: boundingBox.lngMax },
+				lastFetched: { gte: oneDayAgo },
+			},
 			include: {
 				type: true,
 				placeServices: { include: { service: true } },
 			},
 		});
 
-		// Sort by distance from query point (closest first)
-		places.sort(
+		// 2. Hybrid Fallback: If < 10 spots, fetch live from Park4Night
+		if (dbPlaces.length < 10) {
+			console.log(`Only ${dbPlaces.length} spots in DB. Fetching live data...`);
+			try {
+				const livePlaces = await p4n.getPlaces(lat, lng);
+
+				// Upsert live results to DB in parallel
+				await Promise.allSettled(
+					livePlaces.map((p) =>
+						prisma.place.upsert({
+							where: { id: p.id },
+							update: {
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								rating: p.rating,
+								lastFetched: new Date(),
+								// We don't update complex relations here for speed
+							},
+							create: {
+								id: p.id,
+								name: p.name,
+								latitude: p.latitude,
+								longitude: p.longitude,
+								rating: p.rating,
+								lastFetched: new Date(),
+							},
+						}),
+					),
+				);
+
+				// Re-query DB to get consistent results with filters and relations
+				const where = {
+					latitude: { gte: boundingBox.latMin, lte: boundingBox.latMax },
+					longitude: { gte: boundingBox.lngMin, lte: boundingBox.lngMax },
+				};
+				if (type) where.type = { originalCode: type }; // Adjust if type is code
+				if (minRating) where.rating = { gte: parseFloat(minRating) };
+
+				dbPlaces = await prisma.place.findMany({
+					where,
+					include: {
+						type: true,
+						placeServices: { include: { service: true } },
+					},
+				});
+			} catch (apiError) {
+				console.warn("Park4Night API failed, using available DB data:", apiError.message);
+			}
+		}
+
+		// 3. Sorting & Response
+		dbPlaces.sort(
 			(a, b) =>
 				distance(lat, lng, a.latitude, a.longitude) -
 				distance(lat, lng, b.latitude, b.longitude),
 		);
 
-		// Return only the closest N
-		places = places.slice(0, maxLimit);
-		const transformed = transformPlaces(places);
-		placesCache.set(key, transformed);
-		res.json(transformed);
+		const result = transformPlaces(dbPlaces.slice(0, maxLimit));
+		placesCache.set(key, result);
+		res.json(result);
 	} catch (error) {
 		console.error("Unexpected error in getPlaces:", error.message, error.stack);
 		res
