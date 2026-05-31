@@ -73,14 +73,22 @@ function transformPlace(place) {
 	// Map type code to client-friendly type string
 	if (place.type && place.type.originalCode) {
 		result.type = TYPE_CODE_MAP[place.type.originalCode];
+	} else if (place.rawData && place.rawData.code) {
+		result.type = TYPE_CODE_MAP[place.rawData.code];
 	}
 
-	// Photos use R2 URLs only
+	// Photos use R2 URLs only, with fallback to rawData photos for live results
 	if (Array.isArray(place.photos)) {
 		result.photos = place.photos.map((photo) => ({
 			...photo,
-			thumbUrl: photo.r2_url_thumb ?? "",
-			largeUrl: photo.r2_url_large ?? "",
+			thumbUrl: photo.r2_url_thumb ?? photo.path_thumb ?? "",
+			largeUrl: photo.r2_url_large ?? photo.path_large ?? "",
+		}));
+	} else if (place.rawData && Array.isArray(place.rawData.photos)) {
+		result.photos = place.rawData.photos.map((photo) => ({
+			...photo,
+			thumbUrl: photo.path_thumb ?? "",
+			largeUrl: photo.path_large ?? "",
 		}));
 	}
 
@@ -107,12 +115,14 @@ function transformPlace(place) {
 		}
 	}
 
-	// Extract description from descriptions JSON
+	// Extract description from descriptions JSON or rawData
 	if (place.descriptions && typeof place.descriptions === "object") {
 		result.description = place.descriptions.en ?? "";
+	} else if (place.rawData && place.rawData.description_en) {
+		result.description = place.rawData.description_en;
 	}
 
-	// Extract address string from address JSON
+	// Extract address string from address JSON or rawData
 	if (place.address && typeof place.address === "object") {
 		const parts = [
 			place.address.street,
@@ -121,6 +131,29 @@ function transformPlace(place) {
 			place.address.country,
 		].filter(Boolean);
 		result.address = parts.join(", ");
+	} else if (place.rawData && typeof place.rawData === "object") {
+		// Park4night guest API format
+		const parts = [
+			place.rawData.route,
+			place.rawData.ville,
+			place.rawData.code_postal,
+			place.rawData.pays,
+		].filter(Boolean);
+		if (parts.length > 0) {
+			result.address = parts.join(", ");
+		}
+	}
+
+	// Build amenity fields from rawData boolean flags
+	if (place.rawData && typeof place.rawData === "object") {
+		Object.keys(SERVICE_AMENITY_MAP).forEach((code) => {
+			if (place.rawData[code] === "1" || place.rawData[code] === 1 || place.rawData[code] === true) {
+				const amenityKey = SERVICE_AMENITY_MAP[code];
+				if (amenityKey) {
+					result[amenityKey] = "1";
+				}
+			}
+		});
 	}
 
 	return result;

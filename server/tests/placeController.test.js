@@ -5,6 +5,7 @@ jest.mock("../src/config/db", () => ({
 		findMany: jest.fn(),
 		findUnique: jest.fn(),
 		count: jest.fn(),
+		upsert: jest.fn(),
 	},
 	review: {
 		count: jest.fn(),

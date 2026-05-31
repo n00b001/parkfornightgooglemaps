@@ -116,15 +116,29 @@ const App: React.FC = () => {
 			const cached = placesCache.get(key);
 			if (cached !== undefined) return cached;
 
-			const res = await axios.get("/api/places", {
-				params: {
-					lat: lastFetchedCenter.lat,
-					lng: lastFetchedCenter.lng,
-					limit: 150,
-				},
-			});
-			placesCache.set(key, res.data);
-			return res.data;
+			try {
+				const res = await axios.get("/api/places", {
+					params: {
+						lat: lastFetchedCenter.lat,
+						lng: lastFetchedCenter.lng,
+						limit: 150,
+					},
+				});
+				placesCache.set(key, res.data);
+				// Offline persistence: save to IndexedDB
+				const { savePlaces } = await import("./services/db");
+				await savePlaces(res.data);
+				return res.data;
+			} catch (err) {
+				// Fallback to IndexedDB when offline or API fails
+				const { getCachedPlaces } = await import("./services/db");
+				const cachedPlaces = await getCachedPlaces();
+				if (cachedPlaces && cachedPlaces.length > 0) {
+					console.log("Offline: Loaded places from IndexedDB");
+					return cachedPlaces;
+				}
+				throw err;
+			}
 		},
 		staleTime: 5 * 60 * 1000, // 5 minutes — prevent aggressive refetches
 		refetchOnWindowFocus: false,
