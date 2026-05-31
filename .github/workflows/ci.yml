@@ -25,36 +25,22 @@ jobs:
       - name: Install root dependencies
         run: npm ci
 
-      - name: Install server dependencies
-        run: npm ci
-        working-directory: server
-
       - name: Install client dependencies
         run: npm ci
         working-directory: client
-
-      - name: Generate Prisma client
-        run: npx prisma generate
-        working-directory: server
-
-      - name: Lint server
-        run: npm run lint
-        working-directory: server
 
       - name: Lint client
         run: npm run lint
         working-directory: client
 
-      - name: Build server
-        run: npm run build
-        working-directory: server
-
       - name: Build client
         run: npm run build
         working-directory: client
-
-      - name: Run server tests
-        run: npm test
-        working-directory: server
         env:
-          NODE_ENV: test
+          VITE_GOOGLE_MAPS_API_KEY: fake-key-for-ci
+          VITE_SUPABASE_URL: https://fake.supabase.co
+          VITE_SUPABASE_ANON_KEY: fake-anon-key
+
+      - name: Run client tests
+        run: npm test
+        working-directory: client

@@ -1,0 +1,6 @@
+# Edge Functions config
+# JWT verification is handled per-function via getAuthUser()
+# Public functions (get-places, get-place, get-place-reviews, get-stats) don't require auth
+# Auth functions call getAuthUser() which decodes the JWT from Authorization header
+
+[functions]

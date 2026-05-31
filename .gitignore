@@ -105,3 +105,5 @@ scripts/data/cache/
 !.crew/graphs/
 !.crew/artifacts/.gitkeep
 !.crew/graphs/.gitkeep
+# Supabase local dev
+.supabase/
