@@ -2,9 +2,9 @@
 
 ## What This Project Is
 
-**This is a Progressive Web App (PWA) deployed to Render that shows camping and parking spaces on Google Maps.** Users browse places, read reviews, see photos, filter by services/activities, favourite places, and write their own reviews — all with Google login.
+**This is a Progressive Web App (PWA) deployed entirely on Supabase that shows camping and parking spaces on Google Maps.** Users browse places, read reviews, see photos, filter by services/activities, favourite places, and write their own reviews — all with Google login via Supabase Auth.
 
-**Infrastructure**: Supabase PostgreSQL (database) + Cloudflare R2 (image storage). The data pipeline uploads to these services.
+**Infrastructure**: Supabase for everything — PostgreSQL (database), Auth (Google OAuth), Edge Functions (API), Storage (static files). Cloudflare R2 (image storage). The data pipeline uploads to these services.
 
 The Python scripts in `scripts/` are **just data collection** — they scrape, translate, and upload place data to the database. They are a means to an end, not the product itself.
 
@@ -47,15 +47,20 @@ const PORT = process.env.PORT; // required — server won't start without it
 ```
 
 ### Required Environment Variables
-The server **must not start** without these. No defaults:
-- `DATABASE_URL` — Supabase connection string
-- `DIRECT_URL` — Supabase session pooler (migrations)
-- `SESSION_SECRET` — Session encryption
-- `CLIENT_URL` — CORS origin
-- `PORT` — Server port
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Auth
 
-If any are missing, the server crashes immediately with a clear error message.
+**Client (Vite env vars):**
+- `VITE_SUPABASE_URL` — Supabase project URL
+- `VITE_SUPABASE_ANON_KEY` — Supabase anon/public key
+- `VITE_API_URL` — Edge Function URL
+- `VITE_GOOGLE_MAPS_API_KEY` — Google Maps JS API key
+
+**Edge Functions:**
+- `SUPABASE_URL` — Supabase project URL
+- `SUPABASE_SERVICE_ROLE_KEY` — Service role key (server-only, never expose)
+
+**Migrations (Prisma):**
+- `DATABASE_URL` — Supabase transaction pooler connection string
+- `DIRECT_URL` — Supabase session pooler (for migrations)
 
 ### Images
 - **ALL images come from R2 only** (`r2_url_thumb`, `r2_url_large`)

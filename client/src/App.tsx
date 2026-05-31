@@ -25,6 +25,7 @@ import FilterModal from "./components/FilterModal";
 import PlaceDetails from "./components/PlaceDetails";
 import { useGpsTracking } from "./hooks/useGpsTracking";
 import { useJsApiLoader } from "@react-google-maps/api";
+import { supabase } from "./lib/supabase";
 
 const LIBRARIES: ("places" | "drawing" | "geometry" | "visualization")[] = [
 	"places",
@@ -219,21 +220,62 @@ const App: React.FC = () => {
 		}
 	}, []);
 
+	// Auth: check Supabase session on mount and listen for changes
 	useEffect(() => {
-		axios
-			.get("/auth/me")
-			.then((res) => {
-				setUser(res.data);
-				if (res.data) {
-					axios
-						.get("/api/favorites")
-						.then((fRes) => setFavorites(fRes.data.map((f: any) => f.placeId)));
-					axios
-						.get("/api/visits")
-						.then((vRes) => setVisited(vRes.data.map((v: any) => v.placeId)));
+		// Check current session
+		supabase.auth
+			.getUser()
+			.then(({ data: { user }, error }) => {
+				if (error || !user) {
+					setUser(null);
+					return;
 				}
+				const userData = {
+					id: user.id,
+					email: user.email,
+					name:
+						user.user_metadata?.full_name || user.user_metadata?.name || null,
+					avatar: user.user_metadata?.avatar_url || null,
+				};
+				setUser(userData);
+				axios
+					.get("/api/favorites")
+					.then((fRes) => setFavorites(fRes.data.map((f: any) => f.placeId)));
+				axios
+					.get("/api/visits")
+					.then((vRes) => setVisited(vRes.data.map((v: any) => v.placeId)));
 			})
 			.catch(() => setUser(null));
+
+		// Listen for auth state changes (login, logout, token refresh)
+		const {
+			data: { subscription },
+		} = supabase.auth.onAuthStateChange((_event, session) => {
+			if (session?.user) {
+				const userData = {
+					id: session.user.id,
+					email: session.user.email,
+					name:
+						session.user.user_metadata?.full_name ||
+						session.user.user_metadata?.name ||
+						null,
+					avatar: session.user.user_metadata?.avatar_url || null,
+				};
+				setUser(userData);
+				axios
+					.get("/api/favorites")
+					.then((fRes) => setFavorites(fRes.data.map((f: any) => f.placeId)));
+				axios
+					.get("/api/visits")
+					.then((vRes) => setVisited(vRes.data.map((v: any) => v.placeId)));
+			} else {
+				setUser(null);
+				setFavorites([]);
+				setVisited([]);
+			}
+		});
+
+		return () => subscription.unsubscribe();
 	}, []);
 
 	// Deep linking: check for place ID in URL on load
@@ -277,8 +319,12 @@ const App: React.FC = () => {
 
 	const handleToggleFavorite = async (placeId: number) => {
 		if (!user) {
-			const returnTo = window.location.origin;
-			window.location.href = `${import.meta.env.VITE_API_URL}/auth/google?returnTo=${encodeURIComponent(returnTo)}`;
+			await supabase.auth.signInWithOAuth({
+				provider: "google",
+				options: {
+					redirectTo: `${window.location.origin}/auth/callback`,
+				},
+			});
 			return;
 		}
 
@@ -306,17 +352,17 @@ const App: React.FC = () => {
 	};
 
 	const handleLogout = async () => {
-		try {
-			await axios.get("/auth/logout");
-			setUser(null);
-			setFavorites([]);
-			setVisited([]);
-		} catch (err) {
-			console.error("Logout failed", err);
-		}
+		await supabase.auth.signOut();
 	};
 
-	const loginUrl = `${import.meta.env.VITE_API_URL}/auth/google?returnTo=${encodeURIComponent(window.location.origin)}`;
+	const handleLogin = async () => {
+		await supabase.auth.signInWithOAuth({
+			provider: "google",
+			options: {
+				redirectTo: `${window.location.origin}/auth/callback`,
+			},
+		});
+	};
 
 	return (
 		<div className="flex flex-col h-screen w-screen overflow-hidden bg-gray-100">
@@ -369,12 +415,12 @@ const App: React.FC = () => {
 							</button>
 						</div>
 					) : (
-						<a
-							href={loginUrl}
+						<button
+							onClick={handleLogin}
 							className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-blue-700 transition-colors"
 						>
 							Sign In
-						</a>
+						</button>
 					)}
 				</div>
 			</header>

@@ -8,21 +8,6 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-// ── User ────────────────────────────────────────────────────────────────
-
-model User {
-  id        String    @id @default(uuid())
-  googleId  String    @unique
-  email     String    @unique
-  name      String?
-  avatar    String?
-  favorites Favorite[]
-  reviews   Review[]
-  visits    Visit[]
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-}
-
 // ── Place ───────────────────────────────────────────────────────────────
 
 model Place {
@@ -87,10 +72,10 @@ model VehicleType {
 }
 
 // ── Favorite ────────────────────────────────────────────────────────────
+// userId references auth.users.id (Supabase Auth) — FK enforced by raw SQL migration
 
 model Favorite {
   id        String   @id @default(uuid())
-  user      User     @relation(fields: [userId], references: [id])
   userId    String
   place     Place    @relation(fields: [placeId], references: [id])
   placeId   Int
@@ -100,6 +85,7 @@ model Favorite {
 }
 
 // ── Review ──────────────────────────────────────────────────────────────
+// userId references auth.users.id (Supabase Auth) — FK enforced by raw SQL migration
 
 model Review {
   id            String     @id @default(uuid())
@@ -109,7 +95,6 @@ model Review {
   vehicleType   VehicleType? @relation(fields: [vehicleTypeId], references: [id])
   authorName    String?
   authorId      String?
-  user          User       @relation(fields: [userId], references: [id])
   userId        String
   place         Place      @relation(fields: [placeId], references: [id])
   placeId       Int
@@ -117,26 +102,16 @@ model Review {
 }
 
 // ── Visit ───────────────────────────────────────────────────────────────
+// userId references auth.users.id (Supabase Auth) — FK enforced by raw SQL migration
 
 model Visit {
   id        String   @id @default(uuid())
-  user      User     @relation(fields: [userId], references: [id])
   userId    String
   place     Place    @relation(fields: [placeId], references: [id])
   placeId   Int
   visitedAt DateTime @default(now())
 
   @@unique([userId, placeId])
-}
-
-// ── Session ─────────────────────────────────────────────────────────────
-
-model Session {
-  sid    String   @id
-  sess   Json
-  expire DateTime
-
-  @@index([expire], name: "IDX_session_expire")
 }
 
 // ── Junction Tables ─────────────────────────────────────────────────────

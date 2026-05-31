@@ -105,3 +105,11 @@ scripts/data/cache/
 !.crew/graphs/
 !.crew/artifacts/.gitkeep
 !.crew/graphs/.gitkeep
+
+# Supabase
+supabase/.temp/
+supabase/functions/.env
+
+# Cloudflare Workers
+.wrangler/
+worker/.wrangler/

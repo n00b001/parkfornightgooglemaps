@@ -4,15 +4,15 @@
   "description": "A modern PWA for finding and sharing parking spots with Google Maps integration",
   "private": true,
   "scripts": {
-    "install:all": "npm install && npm --prefix server install && npm --prefix client install",
-    "dev": "concurrently \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
-    "build": "npm --prefix server run build && npm --prefix client run build",
-    "build:server": "npm --prefix server run build",
+    "install:all": "npm install && npm --prefix client install",
+    "dev": "concurrently \"supabase functions serve --no-verify-jwt\" \"npm --prefix client run dev\"",
+    "build": "npm --prefix client run build",
     "build:client": "npm --prefix client run build",
-    "start:server": "npm --prefix server start",
     "start:client": "npm --prefix client preview",
-    "test": "npm --prefix server test && npm --prefix client test",
-    "lint": "npm --prefix server run lint && npm --prefix client run lint"
+    "test": "npm --prefix client test",
+    "lint": "npm --prefix client run lint",
+    "db:migrate": "cd server && npx prisma migrate deploy",
+    "deploy:functions": "supabase functions deploy api"
   },
   "keywords": [
     "pwa",
