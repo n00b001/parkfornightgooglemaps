@@ -9,7 +9,7 @@ import './index.css';
 if (import.meta.env.PROD) {
   registerSW({
     onNeedRefresh() {
-      if (confirm('New content available. Reload?')) {
+      if (window.confirm('New content available. Reload?')) {
         window.location.reload();
       }
     },
